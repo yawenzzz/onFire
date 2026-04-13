@@ -1,0 +1,24 @@
+{
+  "session_id": "demo-s1",
+  "surface_id": "polymarket-us",
+  "outcome_count": 2,
+  "ordered_thresholds": true,
+  "offset_relation": false,
+  "legs": [
+    {
+      "market_id": "m1",
+      "side": "BUY",
+      "price": 0.4,
+      "market_state": "OPEN",
+      "tick_valid": true,
+      "visible_depth_qty": 10,
+      "preview_ok": true,
+      "clarification_hash": "a"
+    }
+  ],
+  "pi_min_stress_usd": 1.0,
+  "hedge_completion_prob": 0.99,
+  "capital_efficiency": 0.5,
+  "surface_resolved": true,
+  "jurisdiction_eligible": true
+}

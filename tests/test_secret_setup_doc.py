@@ -1,0 +1,22 @@
+import unittest
+from pathlib import Path
+
+
+class SecretSetupDocTests(unittest.TestCase):
+    def test_secret_setup_doc_exists(self) -> None:
+        text = Path('docs/secret-setup.md').read_text()
+        self.assertIn('export PM_ACCESS_KEY', text)
+        self.assertIn('scripts/generate_pm_auth.sh', text)
+        self.assertIn('POLYMARKET_KEY_ID', text)
+        self.assertIn('POLYMARKET_SECRET_KEY', text)
+        self.assertIn('CLOB_PRIVATE_KEY', text)
+        self.assertIn('SIGNATURE_TYPE', text)
+        self.assertIn('FUNDER_ADDRESS', text)
+        self.assertIn('ORDER_TOKEN_ID', text)
+        self.assertIn('ORDER_PRICE', text)
+        self.assertIn('ORDER_SIZE', text)
+        self.assertIn('ORDER_TYPE', text)
+        self.assertIn('press `p`', text)
+        self.assertIn('account-only', text)
+        self.assertIn('.env.local', text)
+        self.assertIn('do not commit', text)

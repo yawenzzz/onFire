@@ -1,0 +1,14 @@
+.env
+.env.local
+.env.*.local
+.DS_Store
+.pytest_cache/
+.omx/
+__pycache__/
+*.pyc
+alerts.json
+dashboard.json
+health.json
+metrics.json
+demo-report.json
+runtime-*/

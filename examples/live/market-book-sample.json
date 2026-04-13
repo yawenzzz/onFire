@@ -1,0 +1,30 @@
+{
+  "marketData": {
+    "marketSlug": "aec-nba-sa-chi-2025-11-10",
+    "bids": [],
+    "offers": [],
+    "state": "MARKET_STATE_EXPIRED",
+    "stats": {
+      "closePx": {
+        "value": "0.543",
+        "currency": "USD"
+      },
+      "settlementPx": {
+        "value": "1.000",
+        "currency": "USD"
+      },
+      "closeSetTime": "2025-11-10T22:00:00.013034229Z",
+      "lastTradeSetTime": "2025-11-10T14:04:53.578892568Z",
+      "settlementSetTime": "2025-11-11T03:27:12.365947535Z",
+      "openInterestSetTime": "2025-11-11T03:27:12.325923334Z",
+      "notionalSetTime": "2025-11-10T22:00:00.013121771Z",
+      "settlementPriceCalculationMethod": "SETTLEMENT_PRICE_CALCULATION_METHOD_EVENT_TIER_1",
+      "currentPx": {
+        "value": "1.000",
+        "currency": "USD"
+      },
+      "lastPriceSample": null
+    },
+    "transactTime": "2026-02-20T03:07:32.040207473Z"
+  }
+}

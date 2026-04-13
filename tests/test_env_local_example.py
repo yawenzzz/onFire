@@ -1,0 +1,27 @@
+import unittest
+from pathlib import Path
+
+
+class EnvLocalExampleTests(unittest.TestCase):
+    def test_env_local_example_exists_with_expected_keys(self) -> None:
+        text = Path('.env.local.example').read_text()
+        for key in [
+            'PRIVATE_KEY=',
+            'CLOB_PRIVATE_KEY=',
+            'SIGNATURE_TYPE=',
+            'FUNDER_ADDRESS=',
+            'ORDER_TOKEN_ID=',
+            'ORDER_SIDE=',
+            'ORDER_PRICE=',
+            'ORDER_SIZE=',
+            'ORDER_TYPE=',
+            'POLYMARKET_KEY_ID=',
+            'POLYMARKET_SECRET_KEY=',
+            'PM_ACCESS_KEY=',
+            'PM_SIGNATURE=',
+            'PM_TIMESTAMP=',
+            'CLOB_API_KEY=',
+            'CLOB_SECRET=',
+            'CLOB_PASS_PHRASE=',
+        ]:
+            self.assertIn(key, text)

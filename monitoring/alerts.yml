@@ -1,0 +1,5 @@
+groups:
+  - name: polymarket-arb
+    rules:
+      - alert: feed_stale
+        expr: vector(1)
