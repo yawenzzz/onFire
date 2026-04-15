@@ -270,7 +270,9 @@ fn format_seconds(timeout_ms: u64) -> String {
     format!("{}.{:03}", timeout_ms / 1_000, timeout_ms % 1_000)
 }
 
-fn parse_http_response(output: CommandOutput) -> Result<HttpSubmitResponse, HttpSubmitCommandError> {
+fn parse_http_response(
+    output: CommandOutput,
+) -> Result<HttpSubmitResponse, HttpSubmitCommandError> {
     let (body, status) = output
         .stdout
         .rsplit_once(HTTP_STATUS_MARKER)
