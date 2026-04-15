@@ -121,7 +121,8 @@ impl LeaderStateCache {
                 asset_id: asset_id.to_string(),
             })?;
         let activity =
-            entry.last_activity
+            entry
+                .last_activity
                 .as_ref()
                 .ok_or_else(|| LeaderStateError::MissingActivity {
                     leader_id: leader_id.to_string(),
@@ -137,7 +138,8 @@ impl LeaderStateCache {
         }
 
         let position =
-            entry.last_position
+            entry
+                .last_position
                 .as_ref()
                 .ok_or_else(|| LeaderStateError::MissingPosition {
                     leader_id: leader_id.to_string(),

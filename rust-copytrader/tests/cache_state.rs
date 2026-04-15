@@ -59,21 +59,11 @@ fn market_cache_rejects_stale_quote_reads() {
 fn leader_state_updates_activity_and_position_for_a_market() {
     let mut cache = LeaderStateCache::new(25);
     cache.record_activity(ActivityEvent::new(
-        "leader-1",
-        "0xtx-1",
-        "BUY",
-        "asset-9",
-        4,
-        1_000,
+        "leader-1", "0xtx-1", "BUY", "asset-9", 4, 1_000,
     ));
     cache.update_position(PositionSnapshot::new("leader-1", "asset-9", 12, 1_004, 2));
     cache.record_activity(ActivityEvent::new(
-        "leader-1",
-        "0xtx-2",
-        "BUY",
-        "asset-9",
-        6,
-        1_010,
+        "leader-1", "0xtx-2", "BUY", "asset-9", 6, 1_010,
     ));
     cache.update_position(PositionSnapshot::new("leader-1", "asset-9", 18, 1_012, 1));
     cache.record_activity(ActivityEvent::new(
@@ -104,16 +94,13 @@ fn leader_state_updates_activity_and_position_for_a_market() {
 fn leader_state_rejects_stale_position_reads() {
     let mut cache = LeaderStateCache::new(10);
     cache.record_activity(ActivityEvent::new(
-        "leader-1",
-        "0xtx-1",
-        "SELL",
-        "asset-9",
-        2,
-        1_000,
+        "leader-1", "0xtx-1", "SELL", "asset-9", 2, 1_000,
     ));
     cache.update_position(PositionSnapshot::new("leader-1", "asset-9", 12, 1_004, 8));
 
-    let error = cache.market_state("leader-1", "asset-9", 1_010).unwrap_err();
+    let error = cache
+        .market_state("leader-1", "asset-9", 1_010)
+        .unwrap_err();
 
     assert_eq!(
         error,
