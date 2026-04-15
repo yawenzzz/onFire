@@ -5,53 +5,51 @@ _Scope reviewed:_ `rust-copytrader/`
 
 ## Summary
 
-The committed Rust scaffold is a good contract-first starting point for the PRD. It already captures the most important safety boundaries:
+The Rust scaffold is now in better shape than the earlier scaffold review implied. The current crate already covers the core contract slices for the approved PRD items:
 
-- live mode is explicitly blocked until the leader-activity source is verified
-- stale positions and stale quotes are rejected instead of tolerated
-- the 200ms submit ceiling is represented as a hard budget, not an aspiration
-- submit failure and post-submit verification failure are modeled as different states
-- file persistence remains append-only and local-file-only
+- preview + submit-facing contract skeletons with fail-closed budget checks
+- deeper session-level snapshots + telemetry wiring
+- explicit transport boundaries for future activity/positions/market-ws/verification integrations
 
-## What is already implemented well
+This remains a scaffold, but it is no longer “missing an orchestrator” or “missing replay coverage.” Those pieces now exist and are test-backed.
 
-### 1. Live-mode safety is fail-closed
-`src/config.rs`, `src/app.rs`, and `src/adapters/activity.rs` collectively prevent unsupported `live_listen` mode from activating without explicit capability checks. This matches the PRD requirement to keep live mode gated while official leader-activity listening remains unresolved.
+## What is implemented well
 
-### 2. Core hot-path contracts are test-backed
-The existing test suite covers:
-- blocked live mode without verified activity source
-- stale `/positions` rejection
-- no-net-change suppression after reconciliation
-- stale quote rejection and spread validation
-- hard latency budget scheduling checks
-- separation of submit failure from verification-pending states
+### 1. Lane 1 contracts are encoded in runtime code, not only in tests
+- `src/pipeline/orchestrator.rs` enforces the fixed stage order and keeps latency rejection ahead of submit.
+- `src/execution/pre_trade_gate.rs` blocks invalid market state, price shape, quantity, and exhausted remaining budget before an order intent is emitted.
+- `src/execution/state_machine.rs` keeps `submit_failed`, `submitted_unverified`, `verified`, `verification_mismatch`, and `verification_timeout` distinct.
 
-### 3. The scaffold stays small and reviewable
-The crate currently avoids premature abstractions, extra dependencies, or storage expansion beyond JSONL append. That keeps the diff easy to reason about and aligned with the single-node/local-file-only constraints.
+### 2. Lane 2 runtime evidence is wired through one session surface
+- `src/app.rs` centralizes bootstrap choice, orchestrator execution, runtime metrics, latency accumulation, and latest snapshot materialization.
+- `src/persistence/snapshots.rs` defines a stable JSON shape for local runtime evidence.
+- `src/telemetry/metrics.rs` and `src/telemetry/latency.rs` keep the runtime accounting small and deterministic.
 
-## Gaps that remain open
+### 3. Lane 3 transport boundaries preserve replay parity
+- `src/adapters/activity.rs` keeps live/shadow/replay selection explicit and fail-closed.
+- `src/adapters/positions.rs`, `src/adapters/market_ws.rs`, and `src/adapters/verification.rs` define the current input/output contracts that future live adapters need to satisfy.
+- `src/replay/harness.rs` and `tests/e2e_replay.rs` protect the same ordered path expected from eventual live transport wiring.
 
-These are implementation gaps, not regressions in the current scaffold:
+## Review findings
 
-1. No full orchestrator yet for the end-to-end ordered path `activity -> positions -> market websocket -> submit -> verification`.
-2. No preview/order adapter wiring yet, so remaining-budget checks before submit are not enforced end-to-end.
-3. No verification adapter yet, so verified/mismatch/timeout transitions are modeled but not fed by a concrete transport.
-4. No deterministic replay harness yet, even though the design already assumes replay/shadow modes.
-5. `TraceContext` currently records only a subset of the eventual stage timeline; later lanes should extend it carefully once the orchestrator exists.
+### Strengths
+- The implementation stays intentionally small and readable.
+- The 200ms hard ceiling is enforced in code paths, not treated as operator guidance.
+- Replay and orchestrator coverage make regressions in stage order or lifecycle status hard to hide.
+- The code respects the single-node/local-file-only constraint and avoids premature infrastructure expansion.
 
-## Recommendation for integration
+### Remaining gaps
 
-When cherry-picking worker lanes into the leader branch, keep this scaffold positioned as a contract baseline. Add new runtime code by extending these existing contracts instead of bypassing them. In particular:
+These are remaining breadth gaps, not correctness defects in the implemented scaffold:
 
-- do not relax the live-mode gate to “best effort” behavior
-- do not allow submit attempts once the remaining budget is exhausted
-- do not fold verification mismatch/timeout into generic submit errors
-- do not replace append-only local durability with broader storage scope without an explicit scope change
+1. The preview/submit boundary is still an in-process contract; no concrete authenticated venue/router client is wired yet.
+2. `RuntimeSession` currently retains/render snapshots in memory, but does not yet own session-level file persistence/rotation.
+3. External metrics export and operator-facing reporting remain outside the crate.
+4. Adapter boundaries are currently concrete module contracts rather than async trait-object integrations; that is acceptable for the scaffold, but future live wiring should preserve replay parity and fail-closed behavior.
 
-## Suggested verification baseline for future lanes
+## Evidence reviewed
 
-Every lane that extends `rust-copytrader/` should continue to run at least:
+Verified locally with:
 
 ```bash
 cd rust-copytrader
@@ -60,4 +58,13 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --check
 ```
 
-If a later lane adds the real orchestrator or adapter I/O, add replay-based end-to-end tests before claiming the fixed path is implemented.
+## Recommendation for integration
+
+Treat this crate as the contract baseline for the Rust copy-trader lane:
+
+- keep live mode fail-closed until the external leader-activity capability is actually verified
+- keep latency rejection ahead of submit when remaining budget is exhausted
+- keep verification mismatch/timeout distinct from submit failure
+- preserve replay parity when real transports are introduced
+
+If future workers add real transport I/O, they should do so by extending these boundaries, not by bypassing the orchestrator/session contracts already in place.
