@@ -60,6 +60,13 @@ impl OrderLifecycle {
         self
     }
 
+    pub fn submitted_at_ms(&self) -> Option<u64> {
+        match self.status {
+            OrderStatus::SubmittedUnverified { submitted_at_ms } => Some(submitted_at_ms),
+            _ => None,
+        }
+    }
+
     pub fn is_verification_pending(&self) -> bool {
         matches!(self.status, OrderStatus::SubmittedUnverified { .. })
     }

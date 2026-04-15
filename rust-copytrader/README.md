@@ -23,6 +23,7 @@ Its current focus is to lock the non-negotiable execution contracts before live 
 
 ### Post-submit state and local persistence
 - `src/execution/state_machine.rs` distinguishes submit failure from post-submit verification outcomes.
+- `src/adapters/verification.rs` correlates own-order verification events, explicit mismatches, and timeout-driven fail-closed outcomes.
 - `src/persistence/jsonl.rs` provides append-only local durability aligned with the no-database constraint.
 
 ## Test coverage in the scaffold
@@ -34,6 +35,7 @@ The current integration tests are intentionally contract-first:
 - `tests/hot_path_budget.rs` — hard latency budget, freshness checks, trace timing, JSONL durability
 - `tests/reconciliation_and_market_ws.rs` — stale snapshot rejection, no-net-change handling, fresh/stale quote validation
 - `tests/verification_state.rs` — separation between submit failure, verification pending, and terminal verification outcomes
+- `tests/verification_adapter.rs` — correlation checks, explicit mismatch rejection, and timeout-driven verification transitions
 
 Run them with:
 
