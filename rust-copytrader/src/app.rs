@@ -1,5 +1,5 @@
 use crate::adapters::transport::{
-    select_transport_boundary, ActivityTransport, PositionsTransport,
+    ActivityTransport, PositionsTransport, select_transport_boundary,
 };
 use crate::config::TransportBoundaryConfig;
 use crate::config::{ActivityMode, LiveModeGate};
