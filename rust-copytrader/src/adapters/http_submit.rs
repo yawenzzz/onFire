@@ -1,5 +1,6 @@
 use crate::adapters::auth::{AuthRuntimeState, L2AuthHeaders};
 use std::collections::BTreeMap;
+use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpMethod {
@@ -141,6 +142,102 @@ impl HttpSubmitRequestBuilder {
             headers: spec_headers,
             body: render_batch_json(batch),
         })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurlCommandSpec {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandOutput {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpSubmitCommandError {
+    Io(String),
+    NonZeroExit { code: i32, stderr: String },
+}
+
+pub trait CommandRunner {
+    fn run(&mut self, command: &CurlCommandSpec) -> Result<CommandOutput, HttpSubmitCommandError>;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct StdCommandRunner;
+
+impl CommandRunner for StdCommandRunner {
+    fn run(&mut self, command: &CurlCommandSpec) -> Result<CommandOutput, HttpSubmitCommandError> {
+        let output = Command::new(&command.program)
+            .args(&command.args)
+            .output()
+            .map_err(|err| HttpSubmitCommandError::Io(err.to_string()))?;
+        let exit_code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if output.status.success() {
+            Ok(CommandOutput {
+                exit_code,
+                stdout,
+                stderr,
+            })
+        } else {
+            Err(HttpSubmitCommandError::NonZeroExit {
+                code: exit_code,
+                stderr,
+            })
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpSubmitExecutor {
+    curl_program: String,
+}
+
+impl HttpSubmitExecutor {
+    pub fn new(program: impl Into<String>) -> Self {
+        Self {
+            curl_program: program.into(),
+        }
+    }
+
+    pub fn build_command(&self, spec: &HttpRequestSpec) -> CurlCommandSpec {
+        let mut args = vec![
+            "-sS".to_string(),
+            "-X".to_string(),
+            method_label(spec.method).to_string(),
+        ];
+        for (name, value) in &spec.headers {
+            args.push("-H".to_string());
+            args.push(format!("{}: {}", name, value));
+        }
+        args.push("--data-binary".to_string());
+        args.push(spec.body.clone());
+        args.push(spec.url.clone());
+        CurlCommandSpec {
+            program: self.curl_program.clone(),
+            args,
+        }
+    }
+
+    pub fn execute<R: CommandRunner>(
+        &self,
+        runner: &mut R,
+        spec: &HttpRequestSpec,
+    ) -> Result<CommandOutput, HttpSubmitCommandError> {
+        runner.run(&self.build_command(spec))
+    }
+}
+
+fn method_label(method: HttpMethod) -> &'static str {
+    match method {
+        HttpMethod::Post => "POST",
     }
 }
 
