@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 pub enum Stage {
     ActivityObserved,
     PositionsReconciled,
+    MarketQuoted,
+    PreTradeValidated,
     OrderSubmitted,
+    VerificationObserved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
