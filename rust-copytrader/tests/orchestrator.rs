@@ -2,11 +2,35 @@ use rust_copytrader::pipeline::orchestrator::HotPathOrchestrator;
 use rust_copytrader::replay::fixture::{
     ReplayFixture, ReplaySubmitResult, ReplayVerificationFrame,
 };
+use rust_copytrader::{
+    adapters::transport::select_transport_boundary,
+    config::{ActivityMode, LiveModeGate, TransportBoundaryConfig},
+};
 
 #[test]
 fn orchestrator_accepts_verified_happy_path() {
     let fixture = ReplayFixture::success_buy_follow();
     let outcome = HotPathOrchestrator::default().run(&fixture);
+
+    assert_eq!(outcome.reject_reason(), None);
+    assert_eq!(outcome.lifecycle_status_label(), Some("verified"));
+    assert_eq!(
+        outcome.order_side(),
+        Some(rust_copytrader::adapters::order_api::OrderSide::Buy)
+    );
+}
+
+#[test]
+fn orchestrator_accepts_verified_happy_path_via_selected_transport_boundary() {
+    let fixture = ReplayFixture::success_buy_follow();
+    let transport = select_transport_boundary(
+        TransportBoundaryConfig::for_mode(ActivityMode::Replay),
+        LiveModeGate::for_mode(ActivityMode::Replay),
+        &fixture,
+    )
+    .expect("replay boundary should be selectable");
+
+    let outcome = HotPathOrchestrator::default().run_transport(&transport, &fixture);
 
     assert_eq!(outcome.reject_reason(), None);
     assert_eq!(outcome.lifecycle_status_label(), Some("verified"));

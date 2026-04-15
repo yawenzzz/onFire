@@ -1,13 +1,16 @@
 use crate::adapters::market_ws::{MarketQuoteGate, QuoteRejection};
 use crate::adapters::order_api::{OrderIntent, OrderSide};
 use crate::adapters::positions::{PositionsOutcome, PositionsReconciler};
+use crate::adapters::transport::{
+    ActivityTransport, MarketTransport, PositionsTransport, ReplayTransportBoundary,
+    VerificationTransport,
+};
+use crate::adapters::verification::VerificationChannelKind;
 use crate::domain::budget::{LatencyBudget, StageBudget};
 use crate::execution::pre_trade_gate::{PreTradeGate, PreTradeInput};
 use crate::execution::state_machine::{OrderLifecycle, SubmitFailure};
 use crate::pipeline::trace_context::{Stage, TraceContext};
-use crate::replay::fixture::{
-    ReplayFixture, ReplayPreviewResult, ReplaySubmitResult, ReplayVerificationFrame,
-};
+use crate::replay::fixture::{ReplayFixture, ReplayPreviewResult, ReplaySubmitResult};
 
 #[derive(Debug, Clone)]
 pub struct HotPathOrchestrator {
@@ -84,16 +87,29 @@ impl PipelineOutcome {
 
 impl HotPathOrchestrator {
     pub fn run(&self, fixture: &ReplayFixture) -> PipelineOutcome {
+        let transport = ReplayTransportBoundary::new(fixture);
+        self.run_transport(&transport, fixture)
+    }
+
+    pub fn run_transport<T>(&self, transport: &T, fixture: &ReplayFixture) -> PipelineOutcome
+    where
+        T: ActivityTransport + PositionsTransport + MarketTransport + VerificationTransport,
+    {
+        let activity = transport.read_activity();
+        let positions = transport.read_positions();
+        let quote_frame = transport.read_market_quote();
+        let verification_frame = transport.read_verification(&fixture.correlation_id);
+
         let mut trace = TraceContext::new(
-            fixture.activity.proxy_wallet.clone(),
-            fixture.activity.transaction_hash.clone(),
-            fixture.activity.observed_at_ms,
+            activity.proxy_wallet.clone(),
+            activity.transaction_hash.clone(),
+            activity.observed_at_ms,
         );
-        trace.mark(Stage::ActivityObserved, fixture.activity.observed_at_ms);
+        trace.mark(Stage::ActivityObserved, activity.observed_at_ms);
 
         let delta = match self
             .positions_reconciler
-            .reconcile(&fixture.previous_position, &fixture.current_position)
+            .reconcile(&positions.previous, &positions.current)
         {
             PositionsOutcome::Rejected(reason) => return PipelineOutcome::rejected(trace, reason),
             PositionsOutcome::NoNetChange => {
@@ -101,14 +117,14 @@ impl HotPathOrchestrator {
             }
             PositionsOutcome::Delta(delta) => delta,
         };
-        trace.mark(Stage::PositionsReconciled, delta.observed_at_ms);
+        trace.mark(Stage::PositionsReconciled, positions.reconciled_at_ms);
 
         let quote = match self.quote_gate.validate(
-            fixture.quote.asset_id.clone(),
-            fixture.quote.best_bid,
-            fixture.quote.best_ask,
-            fixture.quote.quote_age_ms,
-            fixture.quote.observed_at_ms,
+            quote_frame.asset_id.clone(),
+            quote_frame.best_bid,
+            quote_frame.best_ask,
+            quote_frame.quote_age_ms,
+            quote_frame.observed_at_ms,
         ) {
             Ok(quote) => quote,
             Err(error) => {
@@ -121,9 +137,7 @@ impl HotPathOrchestrator {
         };
         trace.mark(Stage::MarketQuoted, quote.observed_at_ms);
 
-        let elapsed_ms = quote
-            .observed_at_ms
-            .saturating_sub(fixture.activity.observed_at_ms);
+        let elapsed_ms = quote.observed_at_ms.saturating_sub(activity.observed_at_ms);
         if !self
             .total_budget
             .can_schedule(elapsed_ms, &self.submit_stage)
@@ -150,7 +164,7 @@ impl HotPathOrchestrator {
             side: order_side,
             size: delta.delta_size.unsigned_abs(),
             limit_price,
-            market_open: fixture.quote.market_open,
+            market_open: quote_frame.market_open,
             preview_ok,
             remaining_budget_ms,
         }) {
@@ -178,7 +192,7 @@ impl HotPathOrchestrator {
 
         if fixture
             .submit_ack_at_ms
-            .saturating_sub(fixture.activity.observed_at_ms)
+            .saturating_sub(activity.observed_at_ms)
             > self.total_budget.hard_limit_ms()
         {
             return PipelineOutcome::rejected(trace, "latency_budget_exhausted");
@@ -186,18 +200,26 @@ impl HotPathOrchestrator {
 
         trace.mark(Stage::OrderSubmitted, fixture.submit_ack_at_ms);
         let lifecycle = base_lifecycle.mark_submitted(fixture.submit_ack_at_ms);
-        let verification = fixture.verification;
-        trace.mark(Stage::VerificationObserved, verification.observed_at_ms());
-        let lifecycle = lifecycle.apply_verification(match verification {
-            ReplayVerificationFrame::Verified { verified_at_ms } => {
-                crate::execution::state_machine::VerificationOutcome::Verified { verified_at_ms }
-            }
-            ReplayVerificationFrame::Mismatch { observed_at_ms } => {
-                crate::execution::state_machine::VerificationOutcome::Mismatch { observed_at_ms }
-            }
-            ReplayVerificationFrame::Timeout { observed_at_ms } => {
-                crate::execution::state_machine::VerificationOutcome::Timeout { observed_at_ms }
-            }
+        trace.mark(
+            Stage::VerificationObserved,
+            verification_frame.observed_at_ms,
+        );
+        let lifecycle = lifecycle.apply_verification(match verification_frame.event {
+            Some(event) => match event.kind {
+                VerificationChannelKind::OrderMatched => {
+                    crate::execution::state_machine::VerificationOutcome::Verified {
+                        verified_at_ms: event.observed_at_ms,
+                    }
+                }
+                VerificationChannelKind::OrderMismatch => {
+                    crate::execution::state_machine::VerificationOutcome::Mismatch {
+                        observed_at_ms: event.observed_at_ms,
+                    }
+                }
+            },
+            None => crate::execution::state_machine::VerificationOutcome::Timeout {
+                observed_at_ms: verification_frame.observed_at_ms,
+            },
         });
 
         PipelineOutcome::with_lifecycle(trace, lifecycle, Some(order_intent))

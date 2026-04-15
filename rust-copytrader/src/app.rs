@@ -1,3 +1,7 @@
+use crate::adapters::transport::{
+    select_transport_boundary, ActivityTransport, PositionsTransport,
+};
+use crate::config::TransportBoundaryConfig;
 use crate::config::{ActivityMode, LiveModeGate};
 use crate::persistence::jsonl::{RotatingJsonlWriter, SessionLogKind};
 use crate::persistence::snapshots::{
@@ -183,8 +187,12 @@ impl RuntimeSession {
     }
 
     pub fn process_replay(&mut self, fixture: &ReplayFixture) -> SessionOutcome {
+        self.process_fixture(fixture)
+    }
+
+    pub fn process_fixture(&mut self, fixture: &ReplayFixture) -> SessionOutcome {
         let decision = self.bootstrap.decide();
-        let leader_snapshot = LeaderStateSnapshot {
+        let blocked_snapshot = LeaderStateSnapshot {
             leader_id: fixture.activity.proxy_wallet.clone(),
             last_activity_at_ms: fixture.activity.observed_at_ms,
             last_transaction_hash: fixture.activity.transaction_hash.clone(),
@@ -193,7 +201,7 @@ impl RuntimeSession {
 
         if let BootstrapDecision::Blocked(ref reason) = decision {
             self.latest_snapshot = Some(SnapshotBundle {
-                leader: leader_snapshot,
+                leader: blocked_snapshot,
                 runtime: RuntimeSnapshot {
                     mode: mode_label(&decision).to_string(),
                     live_mode_unlocked: false,
@@ -209,7 +217,40 @@ impl RuntimeSession {
             return SessionOutcome::Blocked(reason.to_string());
         }
 
-        let outcome = self.orchestrator.run(fixture);
+        let transport = match select_transport_boundary(
+            TransportBoundaryConfig::for_mode(self.bootstrap.requested_mode),
+            self.bootstrap.gate.clone(),
+            fixture,
+        ) {
+            Ok(transport) => transport,
+            Err(reason) => {
+                self.latest_snapshot = Some(SnapshotBundle {
+                    leader: blocked_snapshot,
+                    runtime: RuntimeSnapshot {
+                        mode: "blocked".to_string(),
+                        live_mode_unlocked: false,
+                        blocked_reason: Some(reason.clone()),
+                        verification_pending: 0,
+                        last_submit_status: format!("blocked:{reason}"),
+                        last_correlation_id: None,
+                        last_reject_reason: None,
+                        last_stage: None,
+                        last_total_elapsed_ms: 0,
+                    },
+                });
+                return SessionOutcome::Blocked(reason);
+            }
+        };
+        let activity = transport.read_activity();
+        let positions = transport.read_positions();
+        let leader_snapshot = LeaderStateSnapshot {
+            leader_id: activity.proxy_wallet.clone(),
+            last_activity_at_ms: activity.observed_at_ms,
+            last_transaction_hash: activity.transaction_hash.clone(),
+            last_position_size: positions.current.current_size,
+        };
+
+        let outcome = self.orchestrator.run_transport(&transport, fixture);
         self.latency.record_trace(outcome.trace());
 
         let mut verification_pending = 0_u64;
@@ -267,7 +308,7 @@ impl RuntimeSession {
             verification_pending,
             last_submit_status,
             last_correlation_id: Some(if rejected_reason.is_some() {
-                fixture.activity.transaction_hash.clone()
+                activity.transaction_hash.clone()
             } else {
                 fixture.correlation_id.clone()
             }),

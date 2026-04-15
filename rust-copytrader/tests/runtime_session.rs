@@ -154,6 +154,32 @@ fn shadow_poll_session_reports_runtime_mode_without_live_unlock() {
 }
 
 #[test]
+fn live_session_processes_fixture_through_unified_transport_when_gate_is_unlocked() {
+    let mut gate = LiveModeGate::for_mode(ActivityMode::LiveListen);
+    gate.activity_source_verified = true;
+    gate.activity_source_under_budget = true;
+    gate.activity_capability_detected = true;
+    gate.positions_under_budget = true;
+    gate.execution_surface_ready = true;
+
+    let mut session = RuntimeSession::new(ActivityMode::LiveListen, gate);
+    let fixture = ReplayFixture::success_buy_follow();
+
+    let outcome = session.process_fixture(&fixture);
+    let snapshot = session.snapshot().expect("live snapshot expected");
+
+    assert_eq!(outcome, SessionOutcome::Processed);
+    assert_eq!(snapshot.runtime.mode, "live_listen");
+    assert!(snapshot.runtime.live_mode_unlocked);
+    assert_eq!(snapshot.runtime.blocked_reason, None);
+    assert_eq!(snapshot.runtime.last_submit_status, "verified");
+    assert_eq!(
+        snapshot.runtime.last_stage.as_deref(),
+        Some("verification_observed")
+    );
+}
+
+#[test]
 fn replay_session_tracks_verification_timeout_metrics_and_snapshot_state() {
     let gate = LiveModeGate::for_mode(ActivityMode::Replay);
     let mut session = RuntimeSession::new(ActivityMode::Replay, gate);
