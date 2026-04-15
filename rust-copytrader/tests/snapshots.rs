@@ -27,6 +27,10 @@ fn snapshot_bundle_renders_stable_json_shape() {
             blocked_reason: Some("activity_source_unverified".into()),
             verification_pending: 2,
             last_submit_status: "submitted_unverified".into(),
+            last_correlation_id: Some("corr-7".into()),
+            last_reject_reason: Some("quote_stale".into()),
+            last_stage: Some("market_quoted".into()),
+            last_total_elapsed_ms: 94,
         },
     };
 
@@ -37,4 +41,8 @@ fn snapshot_bundle_renders_stable_json_shape() {
     assert!(json.contains("\"mode\":\"shadow_poll\""));
     assert!(json.contains("\"blocked_reason\":\"activity_source_unverified\""));
     assert!(json.contains("\"verification_pending\":2"));
+    assert!(json.contains("\"last_correlation_id\":\"corr-7\""));
+    assert!(json.contains("\"last_reject_reason\":\"quote_stale\""));
+    assert!(json.contains("\"last_stage\":\"market_quoted\""));
+    assert!(json.contains("\"last_total_elapsed_ms\":94"));
 }
