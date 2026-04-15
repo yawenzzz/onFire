@@ -12,3 +12,5 @@ health.json
 metrics.json
 demo-report.json
 runtime-*/
+
+rust-copytrader/target/
