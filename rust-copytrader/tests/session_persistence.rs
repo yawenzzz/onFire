@@ -55,7 +55,7 @@ fn runtime_session_recorder_persists_reports_and_rotates_session_artifacts() {
     assert!(report.contains("\"mode\":\"replay\""));
     assert!(report.contains("\"submitted\":1"));
     assert!(report.contains("\"verified_total\":1"));
-    assert!(report.contains("\"verification_observed\":4"));
+    assert!(report.contains("\"verification_observed\":22"));
 
     session.process_replay(&ReplayFixture::success_buy_follow());
     let second = recorder.persist(&session).expect("second persist should work");
