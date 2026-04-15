@@ -41,6 +41,17 @@ fn pre_trade_gate_rejects_market_closed_and_invalid_price_shape() {
         remaining_budget_ms: 90,
     });
     assert_eq!(invalid_price.unwrap_err(), "price_out_of_range");
+
+    let zero_size = gate.evaluate(PreTradeInput {
+        asset_id: "asset-9".into(),
+        side: OrderSide::Sell,
+        size: 0,
+        limit_price: 0.48,
+        market_open: true,
+        preview_ok: true,
+        remaining_budget_ms: 90,
+    });
+    assert_eq!(zero_size.unwrap_err(), "quantity_must_be_positive");
 }
 
 #[test]
