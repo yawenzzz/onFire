@@ -68,35 +68,80 @@ impl RuntimeSession {
 
     pub fn process_replay(&mut self, fixture: &ReplayFixture) -> SessionOutcome {
         let decision = self.bootstrap.decide();
-        if let BootstrapDecision::Blocked(reason) = decision {
-            return SessionOutcome::Blocked(reason);
+        let leader_snapshot = LeaderStateSnapshot {
+            leader_id: fixture.activity.proxy_wallet.clone(),
+            last_activity_at_ms: fixture.activity.observed_at_ms,
+            last_transaction_hash: fixture.activity.transaction_hash.clone(),
+            last_position_size: fixture.current_position.current_size,
+        };
+
+        if let BootstrapDecision::Blocked(ref reason) = decision {
+            self.latest_snapshot = Some(SnapshotBundle {
+                leader: leader_snapshot,
+                runtime: RuntimeSnapshot {
+                    mode: mode_label(&decision).to_string(),
+                    live_mode_unlocked: false,
+                    blocked_reason: Some(reason.clone()),
+                    verification_pending: 0,
+                    last_submit_status: format!("blocked:{reason}"),
+                    last_correlation_id: None,
+                    last_reject_reason: None,
+                    last_stage: None,
+                    last_total_elapsed_ms: 0,
+                },
+            });
+            return SessionOutcome::Blocked(reason.to_string());
         }
 
         let outcome = self.orchestrator.run(fixture);
         self.latency.record_trace(outcome.trace());
 
         let mut verification_pending = 0_u64;
-        let last_submit_status = if let Some(reason) = outcome.reject_reason() {
-            self.metrics.record_reject(reason);
-            format!("rejected:{reason}")
+        let rejected_reason = outcome.reject_reason().map(str::to_string);
+        let (last_submit_status, last_reject_reason) = if let Some(reason) = rejected_reason.clone()
+        {
+            self.metrics.record_reject(&reason);
+            (format!("rejected:{reason}"), Some(reason))
         } else if let Some(lifecycle) = outcome.lifecycle() {
             let label = lifecycle.status_label().to_string();
             match label.as_str() {
-                "submit_failed" => self.metrics.record_reject("submit_failed"),
+                "submit_failed" => {
+                    if fixture.preview == crate::replay::fixture::ReplayPreviewResult::Rejected {
+                        self.metrics.record_reject("preview_rejected");
+                        ("preview_rejected".to_string(), None)
+                    } else if fixture.submit == crate::replay::fixture::ReplaySubmitResult::Rejected
+                    {
+                        self.metrics.record_reject("submit_rejected");
+                        ("submit_rejected".to_string(), None)
+                    } else {
+                        self.metrics.record_reject("submit_failed");
+                        (label, None)
+                    }
+                }
                 "submitted_unverified" => {
                     self.metrics.record_submit();
                     verification_pending = 1;
+                    (label, None)
                 }
                 "verification_timeout" => {
                     self.metrics.record_submit();
                     self.metrics.record_verification_timeout();
+                    (label, None)
                 }
-                "verified" | "verification_mismatch" => self.metrics.record_submit(),
-                _ => {}
+                "verified" => {
+                    self.metrics.record_submit();
+                    self.metrics.record_verified();
+                    (label, None)
+                }
+                "verification_mismatch" => {
+                    self.metrics.record_submit();
+                    self.metrics.record_verification_mismatch();
+                    (label, None)
+                }
+                _ => (label, None),
             }
-            label
         } else {
-            "unknown".to_string()
+            ("unknown".to_string(), None)
         };
 
         let runtime_snapshot = RuntimeSnapshot {
@@ -105,12 +150,14 @@ impl RuntimeSession {
             blocked_reason: None,
             verification_pending,
             last_submit_status,
-        };
-        let leader_snapshot = LeaderStateSnapshot {
-            leader_id: fixture.activity.proxy_wallet.clone(),
-            last_activity_at_ms: fixture.activity.observed_at_ms,
-            last_transaction_hash: fixture.activity.transaction_hash.clone(),
-            last_position_size: fixture.current_position.current_size,
+            last_correlation_id: Some(if rejected_reason.is_some() {
+                fixture.activity.transaction_hash.clone()
+            } else {
+                fixture.correlation_id.clone()
+            }),
+            last_reject_reason,
+            last_stage: outcome.trace().last_stage().map(stage_label),
+            last_total_elapsed_ms: outcome.trace().total_elapsed_ms(),
         };
         self.latest_snapshot = Some(SnapshotBundle {
             leader: leader_snapshot,
@@ -140,4 +187,16 @@ fn mode_label(decision: &BootstrapDecision) -> &'static str {
         BootstrapDecision::Replay => "replay",
         BootstrapDecision::Blocked(_) => "blocked",
     }
+}
+
+fn stage_label(stage: crate::pipeline::trace_context::Stage) -> String {
+    match stage {
+        crate::pipeline::trace_context::Stage::ActivityObserved => "activity_observed",
+        crate::pipeline::trace_context::Stage::PositionsReconciled => "positions_reconciled",
+        crate::pipeline::trace_context::Stage::MarketQuoted => "market_quoted",
+        crate::pipeline::trace_context::Stage::PreTradeValidated => "pre_trade_validated",
+        crate::pipeline::trace_context::Stage::OrderSubmitted => "order_submitted",
+        crate::pipeline::trace_context::Stage::VerificationObserved => "verification_observed",
+    }
+    .to_string()
 }

@@ -24,7 +24,10 @@ fn replay_transport_boundary_exposes_fixture_frames_without_losing_stage_data() 
     assert_eq!(quote.observed_at_ms, 1_028);
     assert_eq!(verification.observed_at_ms, 1_082);
     assert_eq!(
-        verification.event.expect("verification event expected").kind,
+        verification
+            .event
+            .expect("verification event expected")
+            .kind,
         VerificationChannelKind::OrderMatched
     );
 }

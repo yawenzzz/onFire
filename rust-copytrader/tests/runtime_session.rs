@@ -48,7 +48,10 @@ fn replay_session_accumulates_submit_metrics_and_snapshot_after_success() {
     assert_eq!(snapshot.runtime.mode, "replay");
     assert_eq!(snapshot.runtime.blocked_reason, None);
     assert_eq!(snapshot.runtime.last_submit_status, "verified");
-    assert_eq!(snapshot.runtime.last_correlation_id.as_deref(), Some("corr-success"));
+    assert_eq!(
+        snapshot.runtime.last_correlation_id.as_deref(),
+        Some("corr-success")
+    );
     assert_eq!(snapshot.runtime.last_reject_reason, None);
     assert_eq!(
         snapshot.runtime.last_stage.as_deref(),
@@ -77,12 +80,18 @@ fn replay_session_tracks_reject_reason_and_preserves_latest_leader_snapshot() {
         snapshot.runtime.last_submit_status,
         "rejected:no_net_position_change"
     );
-    assert_eq!(snapshot.runtime.last_correlation_id.as_deref(), Some("0xtx-success"));
+    assert_eq!(
+        snapshot.runtime.last_correlation_id.as_deref(),
+        Some("0xtx-success")
+    );
     assert_eq!(
         snapshot.runtime.last_reject_reason.as_deref(),
         Some("no_net_position_change")
     );
-    assert_eq!(snapshot.runtime.last_stage.as_deref(), Some("activity_observed"));
+    assert_eq!(
+        snapshot.runtime.last_stage.as_deref(),
+        Some("activity_observed")
+    );
     assert_eq!(snapshot.runtime.last_total_elapsed_ms, 0);
     assert_eq!(snapshot.leader.last_position_size, 10);
 }
@@ -102,8 +111,14 @@ fn replay_session_distinguishes_preview_rejections_from_submit_failures() {
     assert_eq!(preview_outcome, SessionOutcome::Processed);
     assert_eq!(preview_session.metrics().submitted(), 0);
     assert_eq!(preview_session.metrics().rejected_total(), 1);
-    assert_eq!(preview_session.metrics().reject_count("preview_rejected"), 1);
-    assert_eq!(preview_snapshot.runtime.last_submit_status, "preview_rejected");
+    assert_eq!(
+        preview_session.metrics().reject_count("preview_rejected"),
+        1
+    );
+    assert_eq!(
+        preview_snapshot.runtime.last_submit_status,
+        "preview_rejected"
+    );
 
     let mut submit_session = RuntimeSession::new(ActivityMode::Replay, gate);
     let mut submit_fixture = ReplayFixture::success_buy_follow();
@@ -116,5 +131,8 @@ fn replay_session_distinguishes_preview_rejections_from_submit_failures() {
     assert_eq!(submit_session.metrics().submitted(), 0);
     assert_eq!(submit_session.metrics().rejected_total(), 1);
     assert_eq!(submit_session.metrics().reject_count("submit_rejected"), 1);
-    assert_eq!(submit_snapshot.runtime.last_submit_status, "submit_rejected");
+    assert_eq!(
+        submit_snapshot.runtime.last_submit_status,
+        "submit_rejected"
+    );
 }
