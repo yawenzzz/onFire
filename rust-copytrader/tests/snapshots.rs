@@ -46,3 +46,37 @@ fn snapshot_bundle_renders_stable_json_shape() {
     assert!(json.contains("\"last_stage\":\"market_quoted\""));
     assert!(json.contains("\"last_total_elapsed_ms\":94"));
 }
+
+#[test]
+fn snapshot_bundle_renders_nulls_and_escaped_strings_for_operator_reports() {
+    let snapshot = SnapshotBundle {
+        leader: LeaderStateSnapshot {
+            leader_id: "leader-\\\"1".into(),
+            last_activity_at_ms: 2_000,
+            last_transaction_hash: "0x\\\"tx".into(),
+            last_position_size: -2,
+        },
+        runtime: RuntimeSnapshot {
+            mode: "replay".into(),
+            live_mode_unlocked: true,
+            blocked_reason: None,
+            verification_pending: 0,
+            last_submit_status: "rejected:\\\"quote_stale".into(),
+            last_correlation_id: None,
+            last_reject_reason: None,
+            last_stage: None,
+            last_total_elapsed_ms: 0,
+        },
+    };
+
+    let json = snapshot.render_json();
+
+    assert!(json.contains("\"leader_id\":\"leader-\\\\\\\"1\""));
+    assert!(json.contains("\"last_transaction_hash\":\"0x\\\\\\\"tx\""));
+    assert!(json.contains("\"live_mode_unlocked\":true"));
+    assert!(json.contains("\"blocked_reason\":null"));
+    assert!(json.contains("\"last_submit_status\":\"rejected:\\\\\\\"quote_stale\""));
+    assert!(json.contains("\"last_correlation_id\":null"));
+    assert!(json.contains("\"last_reject_reason\":null"));
+    assert!(json.contains("\"last_stage\":null"));
+}

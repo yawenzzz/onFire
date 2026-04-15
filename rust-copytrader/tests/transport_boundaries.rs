@@ -3,7 +3,7 @@ use rust_copytrader::adapters::transport::{
     VerificationTransport,
 };
 use rust_copytrader::adapters::verification::VerificationChannelKind;
-use rust_copytrader::replay::fixture::ReplayFixture;
+use rust_copytrader::replay::fixture::{ReplayFixture, ReplayVerificationFrame};
 
 #[test]
 fn replay_transport_boundary_exposes_fixture_frames_without_losing_stage_data() {
@@ -30,4 +30,30 @@ fn replay_transport_boundary_exposes_fixture_frames_without_losing_stage_data() 
             .kind,
         VerificationChannelKind::OrderMatched
     );
+}
+
+#[test]
+fn replay_transport_boundary_maps_mismatch_and_timeout_verification_frames() {
+    let mut mismatch_fixture = ReplayFixture::success_buy_follow();
+    mismatch_fixture.verification = ReplayVerificationFrame::Mismatch {
+        observed_at_ms: 1_091,
+    };
+    let mismatch_boundary = ReplayTransportBoundary::new(&mismatch_fixture);
+    let mismatch = mismatch_boundary.read_verification("corr-success");
+
+    assert_eq!(mismatch.observed_at_ms, 1_091);
+    assert_eq!(
+        mismatch.event.expect("mismatch event expected").kind,
+        VerificationChannelKind::OrderMismatch
+    );
+
+    let mut timeout_fixture = ReplayFixture::success_buy_follow();
+    timeout_fixture.verification = ReplayVerificationFrame::Timeout {
+        observed_at_ms: 1_120,
+    };
+    let timeout_boundary = ReplayTransportBoundary::new(&timeout_fixture);
+    let timeout = timeout_boundary.read_verification("corr-success");
+
+    assert_eq!(timeout.observed_at_ms, 1_120);
+    assert_eq!(timeout.event, None);
 }

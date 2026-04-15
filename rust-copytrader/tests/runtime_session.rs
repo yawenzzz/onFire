@@ -1,6 +1,6 @@
 use rust_copytrader::app::{RuntimeSession, SessionOutcome};
 use rust_copytrader::config::{ActivityMode, LiveModeGate};
-use rust_copytrader::replay::fixture::ReplayFixture;
+use rust_copytrader::replay::fixture::{ReplayFixture, ReplayVerificationFrame};
 
 #[test]
 fn blocked_live_session_reports_reason_without_processing_fixture() {
@@ -135,4 +135,82 @@ fn replay_session_distinguishes_preview_rejections_from_submit_failures() {
         submit_snapshot.runtime.last_submit_status,
         "submit_rejected"
     );
+}
+
+#[test]
+fn shadow_poll_session_reports_runtime_mode_without_live_unlock() {
+    let gate = LiveModeGate::for_mode(ActivityMode::ShadowPoll);
+    let mut session = RuntimeSession::new(ActivityMode::ShadowPoll, gate);
+    let fixture = ReplayFixture::success_buy_follow();
+
+    let outcome = session.process_replay(&fixture);
+    let snapshot = session.snapshot().expect("shadow-poll snapshot expected");
+
+    assert_eq!(outcome, SessionOutcome::Processed);
+    assert_eq!(snapshot.runtime.mode, "shadow_poll");
+    assert!(!snapshot.runtime.live_mode_unlocked);
+    assert_eq!(snapshot.runtime.blocked_reason, None);
+    assert_eq!(snapshot.runtime.last_submit_status, "verified");
+}
+
+#[test]
+fn replay_session_tracks_verification_timeout_metrics_and_snapshot_state() {
+    let gate = LiveModeGate::for_mode(ActivityMode::Replay);
+    let mut session = RuntimeSession::new(ActivityMode::Replay, gate);
+    let mut fixture = ReplayFixture::success_buy_follow();
+    fixture.verification = ReplayVerificationFrame::Timeout {
+        observed_at_ms: 1_140,
+    };
+
+    let outcome = session.process_replay(&fixture);
+    let snapshot = session.snapshot().expect("timeout snapshot expected");
+
+    assert_eq!(outcome, SessionOutcome::Processed);
+    assert_eq!(session.metrics().submitted(), 1);
+    assert_eq!(session.metrics().verified_total(), 0);
+    assert_eq!(session.metrics().verification_timeouts(), 1);
+    assert_eq!(session.metrics().verification_mismatches(), 0);
+    assert_eq!(snapshot.runtime.last_submit_status, "verification_timeout");
+    assert_eq!(snapshot.runtime.verification_pending, 0);
+    assert_eq!(
+        snapshot.runtime.last_correlation_id.as_deref(),
+        Some("corr-success")
+    );
+    assert_eq!(
+        snapshot.runtime.last_stage.as_deref(),
+        Some("verification_observed")
+    );
+    assert_eq!(snapshot.runtime.last_total_elapsed_ms, 140);
+}
+
+#[test]
+fn replay_session_tracks_verification_mismatch_metrics_and_snapshot_state() {
+    let gate = LiveModeGate::for_mode(ActivityMode::Replay);
+    let mut session = RuntimeSession::new(ActivityMode::Replay, gate);
+    let mut fixture = ReplayFixture::success_buy_follow();
+    fixture.verification = ReplayVerificationFrame::Mismatch {
+        observed_at_ms: 1_090,
+    };
+
+    let outcome = session.process_replay(&fixture);
+    let snapshot = session
+        .snapshot()
+        .expect("verification-mismatch snapshot expected");
+
+    assert_eq!(outcome, SessionOutcome::Processed);
+    assert_eq!(session.metrics().submitted(), 1);
+    assert_eq!(session.metrics().verified_total(), 0);
+    assert_eq!(session.metrics().verification_timeouts(), 0);
+    assert_eq!(session.metrics().verification_mismatches(), 1);
+    assert_eq!(snapshot.runtime.last_submit_status, "verification_mismatch");
+    assert_eq!(snapshot.runtime.verification_pending, 0);
+    assert_eq!(
+        snapshot.runtime.last_correlation_id.as_deref(),
+        Some("corr-success")
+    );
+    assert_eq!(
+        snapshot.runtime.last_stage.as_deref(),
+        Some("verification_observed")
+    );
+    assert_eq!(snapshot.runtime.last_total_elapsed_ms, 90);
 }
