@@ -9,11 +9,27 @@ fn blocked_live_session_reports_reason_without_processing_fixture() {
     let fixture = ReplayFixture::success_buy_follow();
 
     let outcome = session.process_replay(&fixture);
+    let snapshot = session.snapshot().expect("blocked snapshot expected");
 
     assert_eq!(
         outcome,
         SessionOutcome::Blocked("activity_source_unverified".into())
     );
+    assert_eq!(session.metrics().submitted(), 0);
+    assert_eq!(session.metrics().rejected_total(), 0);
+    assert_eq!(snapshot.runtime.mode, "blocked");
+    assert_eq!(
+        snapshot.runtime.blocked_reason.as_deref(),
+        Some("activity_source_unverified")
+    );
+    assert!(!snapshot.runtime.live_mode_unlocked);
+    assert_eq!(
+        snapshot.runtime.last_submit_status,
+        "blocked:activity_source_unverified"
+    );
+    assert_eq!(snapshot.runtime.verification_pending, 0);
+    assert_eq!(snapshot.leader.leader_id, "leader-1");
+    assert_eq!(snapshot.leader.last_transaction_hash, "0xtx-success");
 }
 
 #[test]
@@ -69,4 +85,36 @@ fn replay_session_tracks_reject_reason_and_preserves_latest_leader_snapshot() {
     assert_eq!(snapshot.runtime.last_stage.as_deref(), Some("activity_observed"));
     assert_eq!(snapshot.runtime.last_total_elapsed_ms, 0);
     assert_eq!(snapshot.leader.last_position_size, 10);
+}
+
+#[test]
+fn replay_session_distinguishes_preview_rejections_from_submit_failures() {
+    let gate = LiveModeGate::for_mode(ActivityMode::Replay);
+    let mut preview_session = RuntimeSession::new(ActivityMode::Replay, gate.clone());
+    let mut preview_fixture = ReplayFixture::success_buy_follow();
+    preview_fixture.preview = rust_copytrader::replay::fixture::ReplayPreviewResult::Rejected;
+
+    let preview_outcome = preview_session.process_replay(&preview_fixture);
+    let preview_snapshot = preview_session
+        .snapshot()
+        .expect("preview snapshot expected");
+
+    assert_eq!(preview_outcome, SessionOutcome::Processed);
+    assert_eq!(preview_session.metrics().submitted(), 0);
+    assert_eq!(preview_session.metrics().rejected_total(), 1);
+    assert_eq!(preview_session.metrics().reject_count("preview_rejected"), 1);
+    assert_eq!(preview_snapshot.runtime.last_submit_status, "preview_rejected");
+
+    let mut submit_session = RuntimeSession::new(ActivityMode::Replay, gate);
+    let mut submit_fixture = ReplayFixture::success_buy_follow();
+    submit_fixture.submit = rust_copytrader::replay::fixture::ReplaySubmitResult::Rejected;
+
+    let submit_outcome = submit_session.process_replay(&submit_fixture);
+    let submit_snapshot = submit_session.snapshot().expect("submit snapshot expected");
+
+    assert_eq!(submit_outcome, SessionOutcome::Processed);
+    assert_eq!(submit_session.metrics().submitted(), 0);
+    assert_eq!(submit_session.metrics().rejected_total(), 1);
+    assert_eq!(submit_session.metrics().reject_count("submit_rejected"), 1);
+    assert_eq!(submit_snapshot.runtime.last_submit_status, "submit_rejected");
 }
