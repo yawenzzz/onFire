@@ -8,3 +8,4 @@ pub mod persistence;
 pub mod pipeline;
 
 pub mod replay;
+pub mod telemetry;
