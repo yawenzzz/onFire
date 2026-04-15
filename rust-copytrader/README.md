@@ -12,7 +12,7 @@ Its current focus is to lock the non-negotiable execution contracts before live 
 
 ### Bootstrap and live-mode gating
 - `src/config.rs` models `ActivityMode` plus the live-mode unlock checklist.
-- `src/app.rs` converts the gate state into a concrete bootstrap decision.
+- `src/app.rs` now provides both the bootstrap decision and a `RuntimeSession` that ties together bootstrap state, orchestrator results, telemetry, and snapshot generation.
 - `src/adapters/activity.rs` keeps `live_listen`, `shadow_poll`, and `replay` explicit so unsupported live listening cannot activate implicitly.
 
 ### Hot-path contracts already encoded
@@ -34,6 +34,7 @@ The current integration tests are intentionally contract-first:
 
 - `tests/activity_adapter.rs` — live-mode feasibility gate and normalized activity payloads
 - `tests/bootstrap_mode.rs` — bootstrap decisions across blocked, shadow, and unlocked live modes
+- `tests/runtime_session.rs` — end-to-end session updates from replay processing into snapshots and telemetry
 - `tests/hot_path_budget.rs` — hard latency budget, freshness checks, trace timing, JSONL durability
 - `tests/reconciliation_and_market_ws.rs` — stale snapshot rejection, no-net-change handling, fresh/stale quote validation
 - `tests/verification_state.rs` — separation between submit failure, verification pending, and terminal verification outcomes
@@ -53,10 +54,10 @@ cargo fmt --check
 
 This scaffold does **not** yet provide a complete live trading pipeline. The following remain to be wired by the implementation lanes before the PRD can be considered complete:
 
-1. richer domain state/contracts and a real orchestrator for the full ordered path
-2. replay fixture schemas plus a deterministic replay harness
-3. preview/order gateway wiring with remaining-budget enforcement before submit
-4. verification adapter + persistence/observability around post-submit correlation
+1. auth/router wiring for the real preview + submit path
+2. market-state caches / leader-state caches and session-level persistence rotation
+3. external metrics export and richer operator-facing snapshot/report surfaces
+4. integration of real activity, positions, market-ws, and verification adapters against live or replayed transports
 
 ## Review notes
 
