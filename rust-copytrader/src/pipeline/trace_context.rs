@@ -5,7 +5,6 @@ pub enum Stage {
     ActivityObserved,
     PositionsReconciled,
     MarketQuoted,
-    PreTradeValidated,
     OrderSubmitted,
     VerificationObserved,
 }

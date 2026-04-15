@@ -1,44 +1,23 @@
 use crate::adapters::positions::PositionSnapshot;
 use crate::domain::events::ActivityEvent;
+use crate::execution::state_machine::VerificationOutcome;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct PositionFixtures {
-    pub previous: PositionSnapshot,
-    pub current: PositionSnapshot,
-}
-
-impl PositionFixtures {
-    pub fn new(
-        previous: (&str, &str, i64, u64, u64),
-        current: (&str, &str, i64, u64, u64),
-    ) -> Self {
-        Self {
-            previous: PositionSnapshot::new(
-                previous.0, previous.1, previous.2, previous.3, previous.4,
-            ),
-            current: PositionSnapshot::new(current.0, current.1, current.2, current.3, current.4),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MarketFixture {
+pub struct ReplayQuoteFrame {
     pub asset_id: String,
     pub best_bid: f64,
     pub best_ask: f64,
     pub quote_age_ms: u64,
     pub observed_at_ms: u64,
-    pub market_open: bool,
 }
 
-impl MarketFixture {
+impl ReplayQuoteFrame {
     pub fn new(
         asset_id: impl Into<String>,
         best_bid: f64,
         best_ask: f64,
         quote_age_ms: u64,
         observed_at_ms: u64,
-        market_open: bool,
     ) -> Self {
         Self {
             asset_id: asset_id.into(),
@@ -46,60 +25,123 @@ impl MarketFixture {
             best_ask,
             quote_age_ms,
             observed_at_ms,
-            market_open,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SubmitFixture {
-    Accepted {
-        order_id: String,
-        submitted_at_ms: u64,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayPreviewResult {
+    Accepted,
     Rejected,
 }
 
-impl SubmitFixture {
-    pub fn accepted(order_id: impl Into<String>, submitted_at_ms: u64) -> Self {
-        Self::Accepted {
-            order_id: order_id.into(),
-            submitted_at_ms,
-        }
-    }
-
-    pub const fn rejected() -> Self {
-        Self::Rejected
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplaySubmitResult {
+    Accepted,
+    Rejected,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VerificationFixture {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayVerificationFrame {
     Verified { verified_at_ms: u64 },
     Mismatch { observed_at_ms: u64 },
     Timeout { observed_at_ms: u64 },
 }
 
-impl VerificationFixture {
-    pub const fn verified(verified_at_ms: u64) -> Self {
-        Self::Verified { verified_at_ms }
+impl ReplayVerificationFrame {
+    pub const fn observed_at_ms(&self) -> u64 {
+        match self {
+            Self::Verified { verified_at_ms } => *verified_at_ms,
+            Self::Mismatch { observed_at_ms } | Self::Timeout { observed_at_ms } => *observed_at_ms,
+        }
     }
+}
 
-    pub const fn mismatch(observed_at_ms: u64) -> Self {
-        Self::Mismatch { observed_at_ms }
-    }
-
-    pub const fn timeout(observed_at_ms: u64) -> Self {
-        Self::Timeout { observed_at_ms }
+impl From<ReplayVerificationFrame> for VerificationOutcome {
+    fn from(value: ReplayVerificationFrame) -> Self {
+        match value {
+            ReplayVerificationFrame::Verified { verified_at_ms } => {
+                VerificationOutcome::Verified { verified_at_ms }
+            }
+            ReplayVerificationFrame::Mismatch { observed_at_ms } => {
+                VerificationOutcome::Mismatch { observed_at_ms }
+            }
+            ReplayVerificationFrame::Timeout { observed_at_ms } => {
+                VerificationOutcome::Timeout { observed_at_ms }
+            }
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReplayFixture {
+    pub scenario_name: String,
+    pub leader_id: String,
+    pub correlation_id: String,
     pub activity: ActivityEvent,
-    pub positions: PositionFixtures,
-    pub market: MarketFixture,
-    pub preview_ok: bool,
-    pub submit: SubmitFixture,
-    pub verification: Option<VerificationFixture>,
+    pub previous_position: PositionSnapshot,
+    pub current_position: PositionSnapshot,
+    pub positions_reconciled_at_ms: u64,
+    pub quote: ReplayQuoteFrame,
+    pub preview: ReplayPreviewResult,
+    pub submit: ReplaySubmitResult,
+    pub submit_ack_at_ms: u64,
+    pub verification: ReplayVerificationFrame,
+}
+
+impl ReplayFixture {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        scenario_name: impl Into<String>,
+        leader_id: impl Into<String>,
+        correlation_id: impl Into<String>,
+        activity: ActivityEvent,
+        previous_position: PositionSnapshot,
+        current_position: PositionSnapshot,
+        positions_reconciled_at_ms: u64,
+        quote: ReplayQuoteFrame,
+        preview: ReplayPreviewResult,
+        submit: ReplaySubmitResult,
+        submit_ack_at_ms: u64,
+        verification: ReplayVerificationFrame,
+    ) -> Self {
+        Self {
+            scenario_name: scenario_name.into(),
+            leader_id: leader_id.into(),
+            correlation_id: correlation_id.into(),
+            activity,
+            previous_position,
+            current_position,
+            positions_reconciled_at_ms,
+            quote,
+            preview,
+            submit,
+            submit_ack_at_ms,
+            verification,
+        }
+    }
+
+    pub fn success_buy_follow() -> Self {
+        Self::new(
+            "success_buy_follow",
+            "leader-1",
+            "corr-success",
+            ActivityEvent::new("leader-1", "0xtx-success", "BUY", "asset-9", 4, 1_000),
+            PositionSnapshot::new("leader-1", "asset-9", 10, 995, 5),
+            PositionSnapshot::new("leader-1", "asset-9", 14, 1_020, 5),
+            1_020,
+            ReplayQuoteFrame::new("asset-9", 0.48, 0.52, 6, 1_028),
+            ReplayPreviewResult::Accepted,
+            ReplaySubmitResult::Accepted,
+            1_060,
+            ReplayVerificationFrame::Verified {
+                verified_at_ms: 1_082,
+            },
+        )
+    }
+
+    pub fn submit_elapsed_ms(&self) -> u64 {
+        self.submit_ack_at_ms
+            .saturating_sub(self.activity.observed_at_ms)
+    }
 }
