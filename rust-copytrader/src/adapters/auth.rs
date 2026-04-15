@@ -7,6 +7,15 @@ pub struct AuthRuntimeState {
     funder_present: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct L2AuthHeaders {
+    pub poly_address: String,
+    pub poly_api_key: String,
+    pub poly_passphrase: String,
+    pub poly_signature: String,
+    pub poly_timestamp: String,
+}
+
 impl AuthRuntimeState {
     pub const fn new(
         creds_present: bool,
@@ -47,6 +56,40 @@ impl AuthRuntimeState {
             "account-auth-ready"
         } else {
             "account-ready"
+        }
+    }
+}
+
+impl L2AuthHeaders {
+    pub fn new(
+        poly_address: impl Into<String>,
+        poly_api_key: impl Into<String>,
+        poly_passphrase: impl Into<String>,
+        poly_signature: impl Into<String>,
+        poly_timestamp: impl Into<String>,
+    ) -> Self {
+        Self {
+            poly_address: poly_address.into(),
+            poly_api_key: poly_api_key.into(),
+            poly_passphrase: poly_passphrase.into(),
+            poly_signature: poly_signature.into(),
+            poly_timestamp: poly_timestamp.into(),
+        }
+    }
+
+    pub fn missing_header(&self) -> Option<&'static str> {
+        if self.poly_address.is_empty() {
+            Some("POLY_ADDRESS")
+        } else if self.poly_api_key.is_empty() {
+            Some("POLY_API_KEY")
+        } else if self.poly_passphrase.is_empty() {
+            Some("POLY_PASSPHRASE")
+        } else if self.poly_signature.is_empty() {
+            Some("POLY_SIGNATURE")
+        } else if self.poly_timestamp.is_empty() {
+            Some("POLY_TIMESTAMP")
+        } else {
+            None
         }
     }
 }
