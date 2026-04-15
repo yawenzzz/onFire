@@ -1,11 +1,13 @@
-use crate::adapters::market_ws::MarketQuoteGate;
+use crate::adapters::market_ws::{MarketQuoteGate, QuoteRejection};
 use crate::adapters::order_api::{OrderIntent, OrderSide};
 use crate::adapters::positions::{PositionsOutcome, PositionsReconciler};
 use crate::domain::budget::{LatencyBudget, StageBudget};
 use crate::execution::pre_trade_gate::{PreTradeGate, PreTradeInput};
-use crate::execution::state_machine::{OrderLifecycle, SubmitFailure, VerificationOutcome};
+use crate::execution::state_machine::{OrderLifecycle, SubmitFailure};
 use crate::pipeline::trace_context::{Stage, TraceContext};
-use crate::replay::fixture::{ReplayFixture, SubmitFixture, VerificationFixture};
+use crate::replay::fixture::{
+    ReplayFixture, ReplayPreviewResult, ReplaySubmitResult, ReplayVerificationFrame,
+};
 
 #[derive(Debug, Clone)]
 pub struct HotPathOrchestrator {
@@ -91,7 +93,7 @@ impl HotPathOrchestrator {
 
         let delta = match self
             .positions_reconciler
-            .reconcile(&fixture.positions.previous, &fixture.positions.current)
+            .reconcile(&fixture.previous_position, &fixture.current_position)
         {
             PositionsOutcome::Rejected(reason) => return PipelineOutcome::rejected(trace, reason),
             PositionsOutcome::NoNetChange => {
@@ -102,19 +104,17 @@ impl HotPathOrchestrator {
         trace.mark(Stage::PositionsReconciled, delta.observed_at_ms);
 
         let quote = match self.quote_gate.validate(
-            fixture.market.asset_id.clone(),
-            fixture.market.best_bid,
-            fixture.market.best_ask,
-            fixture.market.quote_age_ms,
-            fixture.market.observed_at_ms,
+            fixture.quote.asset_id.clone(),
+            fixture.quote.best_bid,
+            fixture.quote.best_ask,
+            fixture.quote.quote_age_ms,
+            fixture.quote.observed_at_ms,
         ) {
             Ok(quote) => quote,
             Err(error) => {
                 let reason = match error {
-                    crate::adapters::market_ws::QuoteRejection::Stale => "quote_stale",
-                    crate::adapters::market_ws::QuoteRejection::InvalidSpread => {
-                        "quote_invalid_spread"
-                    }
+                    QuoteRejection::Stale => "quote_stale",
+                    QuoteRejection::InvalidSpread => "quote_invalid_spread",
                 };
                 return PipelineOutcome::rejected(trace, reason);
             }
@@ -144,13 +144,14 @@ impl HotPathOrchestrator {
             .total_budget
             .remaining_ms(elapsed_ms)
             .unwrap_or_default();
+        let preview_ok = fixture.preview == ReplayPreviewResult::Accepted;
         let order_intent = match self.pre_trade_gate.evaluate(PreTradeInput {
             asset_id: delta.asset_id.clone(),
             side: order_side,
             size: delta.delta_size.unsigned_abs(),
             limit_price,
-            market_open: fixture.market.market_open,
-            preview_ok: fixture.preview_ok,
+            market_open: fixture.quote.market_open,
+            preview_ok,
             remaining_budget_ms,
         }) {
             Ok(intent) => intent,
@@ -159,7 +160,7 @@ impl HotPathOrchestrator {
         trace.mark(Stage::PreTradeValidated, quote.observed_at_ms);
 
         let base_lifecycle = OrderLifecycle::new(trace.correlation_id().to_string());
-        if !fixture.preview_ok {
+        if fixture.preview == ReplayPreviewResult::Rejected {
             return PipelineOutcome::with_lifecycle(
                 trace,
                 base_lifecycle.mark_submit_failed(SubmitFailure::PreviewRejected),
@@ -167,50 +168,38 @@ impl HotPathOrchestrator {
             );
         }
 
-        match &fixture.submit {
-            SubmitFixture::Rejected => PipelineOutcome::with_lifecycle(
+        if fixture.submit == ReplaySubmitResult::Rejected {
+            return PipelineOutcome::with_lifecycle(
                 trace,
                 base_lifecycle.mark_submit_failed(SubmitFailure::SubmitRejected),
                 Some(order_intent),
-            ),
-            SubmitFixture::Accepted {
-                order_id: _,
-                submitted_at_ms,
-            } => {
-                if submitted_at_ms.saturating_sub(fixture.activity.observed_at_ms)
-                    > self.total_budget.hard_limit_ms()
-                {
-                    return PipelineOutcome::rejected(trace, "latency_budget_exhausted");
-                }
-
-                trace.mark(Stage::OrderSubmitted, *submitted_at_ms);
-                let lifecycle = base_lifecycle.mark_submitted(*submitted_at_ms);
-                match fixture.verification.clone() {
-                    Some(verification) => {
-                        let (observed_at_ms, outcome) = match verification {
-                            VerificationFixture::Verified { verified_at_ms } => (
-                                verified_at_ms,
-                                VerificationOutcome::Verified { verified_at_ms },
-                            ),
-                            VerificationFixture::Mismatch { observed_at_ms } => (
-                                observed_at_ms,
-                                VerificationOutcome::Mismatch { observed_at_ms },
-                            ),
-                            VerificationFixture::Timeout { observed_at_ms } => (
-                                observed_at_ms,
-                                VerificationOutcome::Timeout { observed_at_ms },
-                            ),
-                        };
-                        trace.mark(Stage::VerificationObserved, observed_at_ms);
-                        PipelineOutcome::with_lifecycle(
-                            trace,
-                            lifecycle.apply_verification(outcome),
-                            Some(order_intent),
-                        )
-                    }
-                    None => PipelineOutcome::with_lifecycle(trace, lifecycle, Some(order_intent)),
-                }
-            }
+            );
         }
+
+        if fixture
+            .submit_ack_at_ms
+            .saturating_sub(fixture.activity.observed_at_ms)
+            > self.total_budget.hard_limit_ms()
+        {
+            return PipelineOutcome::rejected(trace, "latency_budget_exhausted");
+        }
+
+        trace.mark(Stage::OrderSubmitted, fixture.submit_ack_at_ms);
+        let lifecycle = base_lifecycle.mark_submitted(fixture.submit_ack_at_ms);
+        let verification = fixture.verification;
+        trace.mark(Stage::VerificationObserved, verification.observed_at_ms());
+        let lifecycle = lifecycle.apply_verification(match verification {
+            ReplayVerificationFrame::Verified { verified_at_ms } => {
+                crate::execution::state_machine::VerificationOutcome::Verified { verified_at_ms }
+            }
+            ReplayVerificationFrame::Mismatch { observed_at_ms } => {
+                crate::execution::state_machine::VerificationOutcome::Mismatch { observed_at_ms }
+            }
+            ReplayVerificationFrame::Timeout { observed_at_ms } => {
+                crate::execution::state_machine::VerificationOutcome::Timeout { observed_at_ms }
+            }
+        });
+
+        PipelineOutcome::with_lifecycle(trace, lifecycle, Some(order_intent))
     }
 }

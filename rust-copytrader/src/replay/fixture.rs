@@ -9,6 +9,7 @@ pub struct ReplayQuoteFrame {
     pub best_ask: f64,
     pub quote_age_ms: u64,
     pub observed_at_ms: u64,
+    pub market_open: bool,
 }
 
 impl ReplayQuoteFrame {
@@ -25,6 +26,7 @@ impl ReplayQuoteFrame {
             best_ask,
             quote_age_ms,
             observed_at_ms,
+            market_open: true,
         }
     }
 }
