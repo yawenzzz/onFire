@@ -25,7 +25,7 @@ fn sample_unsigned_order() -> UnsignedOrderPayload {
 fn pipeline_rejects_material_that_is_not_submit_ready() {
     let material = AuthMaterial::new("0xpoly-address", "api-key", "passphrase", "", 0, None);
     let mut signer = StubSigner::success("0xorder-sig", "999");
-    let mut runner = StubRunner::success("{\"ok\":true}");
+    let mut runner = StubRunner::success("{\"ok\":true}\n__HTTP_STATUS__:200");
     let pipeline = SubmitPipeline::new("https://clob.polymarket.com", "curl");
 
     let err = pipeline
@@ -214,7 +214,7 @@ fn pipeline_uses_funder_as_order_maker_for_proxy_wallet_flow() {
         Some("0xfunder-address".into()),
     );
     let mut signer = StubSigner::success("0xorder-sig", "999");
-    let mut runner = StubRunner::success("{\"ok\":true}");
+    let mut runner = StubRunner::success("{\"ok\":true}\n__HTTP_STATUS__:200");
     let pipeline = SubmitPipeline::new("https://clob.polymarket.com", "curl");
 
     pipeline
