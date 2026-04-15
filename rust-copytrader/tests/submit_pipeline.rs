@@ -204,20 +204,20 @@ fn pipeline_surfaces_runner_failure_after_request_construction() {
 }
 
 #[test]
-fn pipeline_rejects_http_status_fail_closed_after_request_construction() {
+fn pipeline_uses_funder_as_order_maker_for_proxy_wallet_flow() {
     let material = AuthMaterial::new(
         "0xpoly-address",
         "api-key",
         "passphrase",
         "private-key",
-        0,
-        None,
+        2,
+        Some("0xfunder-address".into()),
     );
     let mut signer = StubSigner::success("0xorder-sig", "999");
-    let mut runner = StubRunner::success("{\"error\":\"not ready\"}\n__HTTP_STATUS__:503");
+    let mut runner = StubRunner::success("{\"ok\":true}");
     let pipeline = SubmitPipeline::new("https://clob.polymarket.com", "curl");
 
-    let err = pipeline
+    pipeline
         .execute(
             PreparedSubmitRequest {
                 auth_material: material,
@@ -232,16 +232,27 @@ fn pipeline_rejects_http_status_fail_closed_after_request_construction() {
             &mut signer,
             &mut runner,
         )
-        .unwrap_err();
+        .expect("successful output");
 
-    assert_eq!(
-        err,
-        SubmitPipelineError::Command(HttpSubmitCommandError::HttpStatus {
-            status_code: 503,
-            body: "{\"error\":\"not ready\"}".into(),
-        })
+    let command = runner.last_command.expect("command captured");
+    assert!(
+        command
+            .args
+            .iter()
+            .any(|arg| arg.contains("\"maker\":\"0xfunder-address\""))
     );
-    assert_eq!(runner.calls, 1);
+    assert!(
+        command
+            .args
+            .iter()
+            .any(|arg| arg.contains("\"signer\":\"0xpoly-address\""))
+    );
+    assert!(
+        command
+            .args
+            .iter()
+            .any(|arg| arg.contains("POLY_ADDRESS: 0xpoly-address"))
+    );
 }
 
 struct StubSigner {

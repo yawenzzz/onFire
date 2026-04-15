@@ -83,6 +83,16 @@ impl AuthMaterial {
             Ok(())
         }
     }
+
+    fn maker_address(&self) -> &str {
+        if self.signature_type == 0 {
+            &self.poly_address
+        } else {
+            self.funder
+                .as_deref()
+                .expect("validated proxy signatures require funder")
+        }
+    }
 }
 
 pub fn prepare_signed_order<S: OrderSigner>(
@@ -97,7 +107,7 @@ pub fn prepare_signed_order<S: OrderSigner>(
     let signed = signer.sign_order(&unsigned, material)?;
     Ok(SignedOrderEnvelope::new(
         SignedOrderPayload {
-            maker: material.poly_address.clone(),
+            maker: material.maker_address().to_string(),
             signer: material.poly_address.clone(),
             taker: unsigned.taker,
             token_id: unsigned.token_id,

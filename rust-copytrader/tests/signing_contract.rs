@@ -100,6 +100,44 @@ fn prepare_signed_order_surfaces_signer_failure() {
 }
 
 #[test]
+fn prepare_signed_order_uses_funder_as_maker_for_proxy_signatures() {
+    let material = AuthMaterial::new(
+        "0xpoly-address",
+        "api-key",
+        "passphrase",
+        "private-key",
+        2,
+        Some("0xfunder-address".into()),
+    );
+    let unsigned = UnsignedOrderPayload {
+        taker: "0x0000000000000000000000000000000000000000".into(),
+        token_id: "12345".into(),
+        maker_amount: "1000000".into(),
+        taker_amount: "2000000".into(),
+        side: "BUY".into(),
+        expiration: "1735689600".into(),
+        nonce: "7".into(),
+        fee_rate_bps: "30".into(),
+    };
+    let mut signer = StubSigner::success("0xsig", "999");
+
+    let envelope = prepare_signed_order(
+        &material,
+        unsigned,
+        "owner-uuid",
+        OrderType::Gtc,
+        false,
+        &mut signer,
+    )
+    .expect("signed order envelope");
+
+    assert_eq!(envelope.order.maker, "0xfunder-address");
+    assert_eq!(envelope.order.signer, "0xpoly-address");
+    assert_eq!(envelope.order.signature_type, 2);
+    assert_eq!(signer.calls, 1);
+}
+
+#[test]
 fn l2_auth_headers_can_be_derived_from_auth_material() {
     let material = AuthMaterial::new(
         "0xpoly-address",
