@@ -1,7 +1,7 @@
 use crate::adapters::auth::{AuthRuntimeState, L2AuthHeaders};
 use crate::adapters::http_submit::{
-    CommandRunner, HttpSubmitCommandError, HttpSubmitExecutor, HttpSubmitResponse,
-    HttpSubmitRequestBuilder, HttpSubmitRequestError, OrderBatchRequest, OrderType,
+    CommandRunner, HttpSubmitCommandError, HttpSubmitExecutor, HttpSubmitRequestBuilder,
+    HttpSubmitRequestError, HttpSubmitResponse, OrderBatchRequest, OrderType,
 };
 use crate::adapters::signing::{
     AuthMaterial, AuthMaterialError, OrderSigner, SigningError, UnsignedOrderPayload,
