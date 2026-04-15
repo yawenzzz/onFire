@@ -55,4 +55,8 @@ impl RuntimeMetrics {
     pub fn reject_count(&self, reason: &str) -> u64 {
         self.reject_counts.get(reason).copied().unwrap_or(0)
     }
+
+    pub const fn reject_counts(&self) -> &BTreeMap<String, u64> {
+        &self.reject_counts
+    }
 }

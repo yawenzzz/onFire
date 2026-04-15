@@ -43,4 +43,8 @@ impl LatencyReport {
     pub const fn total_elapsed_max_ms(&self) -> u64 {
         self.total_elapsed_max_ms
     }
+
+    pub const fn latest_stage_deltas(&self) -> &BTreeMap<Stage, u64> {
+        &self.latest_stage_deltas
+    }
 }
