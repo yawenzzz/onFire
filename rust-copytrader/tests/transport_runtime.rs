@@ -1,6 +1,6 @@
 use rust_copytrader::adapters::transport::{
-    select_transport_boundary, ActivityTransport, MarketTransport, PositionsTransport,
-    VerificationTransport,
+    ActivityTransport, MarketTransport, PositionsTransport, VerificationTransport,
+    select_transport_boundary,
 };
 use rust_copytrader::config::{ActivityMode, LiveModeGate};
 use rust_copytrader::replay::fixture::ReplayFixture;
@@ -32,7 +32,10 @@ fn transport_selector_preserves_replay_parity_and_live_gate() {
 
     assert_eq!(replay.transport_name(), "replay");
     assert_eq!(shadow.transport_name(), "shadow_poll");
-    assert_eq!(replay.read_activity().transaction_hash, shadow.read_activity().transaction_hash);
+    assert_eq!(
+        replay.read_activity().transaction_hash,
+        shadow.read_activity().transaction_hash
+    );
     assert_eq!(
         replay.read_positions().current.current_size,
         shadow.read_positions().current.current_size

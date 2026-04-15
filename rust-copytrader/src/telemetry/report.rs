@@ -83,9 +83,18 @@ impl OperatorReport {
                 .map(|(stage, value)| (stage_label(*stage), *value)),
         );
         let artifact_paths = render_optional_path_map([
-            ("latest_snapshot_path", self.artifacts.latest_snapshot_path.as_ref()),
-            ("snapshot_archive_path", self.artifacts.snapshot_archive_path.as_ref()),
-            ("activity_log_path", self.artifacts.activity_log_path.as_ref()),
+            (
+                "latest_snapshot_path",
+                self.artifacts.latest_snapshot_path.as_ref(),
+            ),
+            (
+                "snapshot_archive_path",
+                self.artifacts.snapshot_archive_path.as_ref(),
+            ),
+            (
+                "activity_log_path",
+                self.artifacts.activity_log_path.as_ref(),
+            ),
             ("order_log_path", self.artifacts.order_log_path.as_ref()),
             (
                 "verification_log_path",
@@ -137,7 +146,9 @@ fn render_string_u64_map<'a>(entries: impl IntoIterator<Item = (&'a str, u64)>) 
     format!("{{{}}}", fields.join(","))
 }
 
-fn render_optional_path_map<'a>(entries: impl IntoIterator<Item = (&'a str, Option<&'a PathBuf>)>) -> String {
+fn render_optional_path_map<'a>(
+    entries: impl IntoIterator<Item = (&'a str, Option<&'a PathBuf>)>,
+) -> String {
     let fields = entries
         .into_iter()
         .map(|(key, value)| match value {

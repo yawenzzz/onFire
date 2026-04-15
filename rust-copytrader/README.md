@@ -16,14 +16,15 @@ It locks the non-negotiable execution posture before any real venue I/O is added
 - `src/adapters/order_api.rs` defines the submit-facing order contract currently shared by replay/orchestrator flows.
 
 ### Lane 2: snapshots + telemetry in the runtime session
-- `src/app.rs` provides `RuntimeSession`, which ties bootstrap state, orchestrator results, runtime metrics, latency accounting, and latest snapshot generation together.
+- `src/app.rs` provides `RuntimeSession` plus `RuntimeSessionRecorder`, tying bootstrap state, orchestrator results, runtime metrics, latency accounting, snapshot persistence, rotating local logs, and operator report generation together.
 - `src/pipeline/trace_context.rs` records ordered stage timestamps so latency reporting stays aligned with the mandated execution sequence.
-- `src/persistence/snapshots.rs` defines a stable local JSON snapshot shape and deterministic session-root path helper for operator/runtime evidence.
-- `src/persistence/jsonl.rs` provides the append-only file primitive already used by capture-oriented tests, but it is not yet wired into `RuntimeSession`.
-- `src/telemetry/metrics.rs` and `src/telemetry/latency.rs` accumulate submit/reject/timeout counters plus per-stage timing deltas in memory for the current process.
+- `src/persistence/snapshots.rs` defines a stable local JSON snapshot shape plus retained session snapshot archives for operator/runtime evidence.
+- `src/persistence/jsonl.rs` rotates append-only activity/order/verification logs under the local session root without introducing a database.
+- `src/telemetry/metrics.rs`, `src/telemetry/latency.rs`, and `src/telemetry/report.rs` accumulate submit/reject/timeout counters, per-stage timing deltas, and operator-facing JSON/text report surfaces.
 
 ### Lane 3: transport boundaries for future live adapters
 - `src/adapters/activity.rs` keeps `live_listen`, `shadow_poll`, and `replay` mode selection explicit and fail-closed.
+- `src/adapters/transport.rs` now selects replay/shadow/live transport skeletons behind the same live-mode gate while preserving replay parity across activity, positions, market quote, and verification frames.
 - `src/adapters/positions.rs`, `src/adapters/market_ws.rs`, and `src/adapters/verification.rs` define the current boundary contracts for positions reconciliation, market quote validation, and post-submit verification correlation.
 - `src/replay/harness.rs` preserves replay parity against the same stage ordering and budget posture the eventual live transports must respect.
 
@@ -33,8 +34,8 @@ The scaffold is intentionally contract-first. Key coverage includes:
 
 - `tests/activity_adapter.rs` / `tests/bootstrap_mode.rs` — live-mode feasibility gate and blocked/shadow/replay decisions
 - `tests/pre_trade_gate.rs` / `tests/orchestrator.rs` — preview+submit contract skeletons, pre-submit fail-closed checks, and lifecycle outcomes
-- `tests/runtime_session.rs` / `tests/snapshots.rs` / `tests/telemetry_latency.rs` — runtime session evidence, stable snapshot shape, and stage-latency accounting
-- `tests/e2e_replay.rs` / `tests/perf_budget.rs` — replay parity, fixed stage ordering, and hard budget rejection behavior
+- `tests/runtime_session.rs` / `tests/session_persistence.rs` / `tests/snapshots.rs` / `tests/telemetry_latency.rs` — runtime session evidence, rotating local persistence, stable snapshot shape, and stage-latency accounting
+- `tests/e2e_replay.rs` / `tests/perf_budget.rs` / `tests/transport_runtime.rs` — replay parity, fixed stage ordering, hard budget rejection behavior, and transport-mode/live-gate selection
 - `tests/reconciliation_and_market_ws.rs` / `tests/verification_adapter.rs` / `tests/verification_state.rs` — stale data rejection, verification correlation, timeout handling, and state-machine separation
 
 Run the crate verification with:
@@ -51,10 +52,8 @@ cargo fmt --check
 This crate is still a scaffold, not a production trading runtime. Remaining work includes:
 
 1. concrete HTTP/router/auth implementations behind the preview + submit contract
-2. session-level file writing/rotation that persists `RuntimeSession` snapshots beyond in-memory accumulation
-3. external metrics export and richer operator-facing reporting surfaces
-4. concrete live/replay transport integrations that feed the adapter boundaries without breaking replay parity
-5. a real CLI/runtime entrypoint; `src/main.rs` is still a bootstrap stub rather than an operator-facing command surface
+2. external metrics export beyond the new local JSON/text operator reports
+3. concrete network-backed live/replay transport integrations that feed the adapter boundaries without breaking replay parity
 
 ## Review notes
 

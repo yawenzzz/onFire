@@ -21,7 +21,9 @@ fn runtime_session_recorder_persists_reports_and_rotates_session_artifacts() {
     let mut recorder = RuntimeSessionRecorder::new(&root, "session-7", 1, 1);
 
     session.process_replay(&ReplayFixture::success_buy_follow());
-    let first = recorder.persist(&session).expect("first persist should work");
+    let first = recorder
+        .persist(&session)
+        .expect("first persist should work");
 
     assert!(first.latest_snapshot_path.exists());
     assert!(first.snapshot_archive_path.exists());
@@ -58,7 +60,9 @@ fn runtime_session_recorder_persists_reports_and_rotates_session_artifacts() {
     assert!(report.contains("\"verification_observed\":22"));
 
     session.process_replay(&ReplayFixture::success_buy_follow());
-    let second = recorder.persist(&session).expect("second persist should work");
+    let second = recorder
+        .persist(&session)
+        .expect("second persist should work");
 
     assert!(
         second
@@ -80,7 +84,10 @@ fn runtime_session_recorder_persists_reports_and_rotates_session_artifacts() {
     let archive_count = fs::read_dir(&archive_dir)
         .expect("snapshot archive dir should exist")
         .count();
-    assert_eq!(archive_count, 1, "snapshot retention should prune old archives");
+    assert_eq!(
+        archive_count, 1,
+        "snapshot retention should prune old archives"
+    );
 
     fs::remove_dir_all(root).expect("temp artifacts should be removed");
 }

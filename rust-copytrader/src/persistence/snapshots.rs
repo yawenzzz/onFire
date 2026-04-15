@@ -105,7 +105,11 @@ pub struct SessionSnapshotWriter {
 }
 
 impl SessionSnapshotWriter {
-    pub fn new(root: impl Into<PathBuf>, session_id: impl Into<String>, max_archives: usize) -> Self {
+    pub fn new(
+        root: impl Into<PathBuf>,
+        session_id: impl Into<String>,
+        max_archives: usize,
+    ) -> Self {
         Self {
             root: root.into(),
             session_id: session_id.into(),
@@ -117,7 +121,8 @@ impl SessionSnapshotWriter {
 
     pub fn persist(&mut self, snapshot: &SnapshotBundle) -> io::Result<SnapshotWriteResult> {
         let latest_path = session_snapshot_path(&self.root, &self.session_id);
-        let archive_path = session_snapshot_archive_path(&self.root, &self.session_id, self.next_sequence);
+        let archive_path =
+            session_snapshot_archive_path(&self.root, &self.session_id, self.next_sequence);
         let payload = snapshot.render_json();
 
         write_file(&latest_path, &payload)?;

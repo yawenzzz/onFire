@@ -127,7 +127,9 @@ impl RuntimeSessionRecorder {
             .ok_or_else(|| io::Error::other("runtime session has no snapshot to persist"))?;
 
         let snapshot_result = self.snapshot_writer.persist(snapshot)?;
-        let activity_log_path = self.activity_log_writer.append(&activity_record(snapshot))?;
+        let activity_log_path = self
+            .activity_log_writer
+            .append(&activity_record(snapshot))?;
         let order_log_path = self.order_log_writer.append(&order_record(snapshot))?;
         let verification_log_path = self
             .verification_log_writer

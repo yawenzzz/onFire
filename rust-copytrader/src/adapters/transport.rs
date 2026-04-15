@@ -97,16 +97,14 @@ pub fn select_transport_boundary<'a>(
         ActivityMode::ShadowPoll => Ok(SelectedTransportBoundary::ShadowPoll(
             ShadowPollTransportBoundary::new(fixture),
         )),
-        ActivityMode::LiveListen => gate
-            .blocked_reason()
-            .map_or_else(
-                || {
-                    Ok(SelectedTransportBoundary::LiveListen(
-                        LiveListenTransportBoundary::new(fixture),
-                    ))
-                },
-                Err,
-            ),
+        ActivityMode::LiveListen => gate.blocked_reason().map_or_else(
+            || {
+                Ok(SelectedTransportBoundary::LiveListen(
+                    LiveListenTransportBoundary::new(fixture),
+                ))
+            },
+            Err,
+        ),
     }
 }
 
@@ -246,16 +244,20 @@ impl VerificationTransport for SelectedTransportBoundary<'_> {
 
 fn verification_frame(fixture: &ReplayFixture, correlation_id: &str) -> VerificationFrame {
     let event = match fixture.verification {
-        ReplayVerificationFrame::Verified { verified_at_ms } => Some(VerificationChannelEvent::new(
-            correlation_id.to_string(),
-            VerificationChannelKind::OrderMatched,
-            verified_at_ms,
-        )),
-        ReplayVerificationFrame::Mismatch { observed_at_ms } => Some(VerificationChannelEvent::new(
-            correlation_id.to_string(),
-            VerificationChannelKind::OrderMismatch,
-            observed_at_ms,
-        )),
+        ReplayVerificationFrame::Verified { verified_at_ms } => {
+            Some(VerificationChannelEvent::new(
+                correlation_id.to_string(),
+                VerificationChannelKind::OrderMatched,
+                verified_at_ms,
+            ))
+        }
+        ReplayVerificationFrame::Mismatch { observed_at_ms } => {
+            Some(VerificationChannelEvent::new(
+                correlation_id.to_string(),
+                VerificationChannelKind::OrderMismatch,
+                observed_at_ms,
+            ))
+        }
         ReplayVerificationFrame::Timeout { .. } => None,
     };
 
