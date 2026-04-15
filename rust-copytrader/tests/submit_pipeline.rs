@@ -66,7 +66,7 @@ fn pipeline_executes_end_to_end_and_preserves_request_shape() {
         None,
     );
     let mut signer = StubSigner::success("0xorder-sig", "999");
-    let mut runner = StubRunner::success("{\"ok\":true}");
+    let mut runner = StubRunner::success("{\"ok\":true}\n__HTTP_STATUS__:200");
     let pipeline = SubmitPipeline::new("https://clob.polymarket.com", "curl");
 
     let output = pipeline
@@ -86,7 +86,8 @@ fn pipeline_executes_end_to_end_and_preserves_request_shape() {
         )
         .expect("successful output");
 
-    assert_eq!(output.stdout, "{\"ok\":true}");
+    assert_eq!(output.status_code, 200);
+    assert_eq!(output.body, "{\"ok\":true}");
     assert_eq!(signer.calls, 1);
     assert_eq!(runner.calls, 1);
 
@@ -134,7 +135,7 @@ fn pipeline_surfaces_signer_failure_before_running_command() {
         None,
     );
     let mut signer = StubSigner::failure("unable_to_sign");
-    let mut runner = StubRunner::success("{\"ok\":true}");
+    let mut runner = StubRunner::success("{\"ok\":true}\n__HTTP_STATUS__:200");
     let pipeline = SubmitPipeline::new("https://clob.polymarket.com", "curl");
 
     let err = pipeline
@@ -197,6 +198,47 @@ fn pipeline_surfaces_runner_failure_after_request_construction() {
         SubmitPipelineError::Command(HttpSubmitCommandError::NonZeroExit {
             code: 28,
             stderr: "operation timed out".into(),
+        })
+    );
+    assert_eq!(runner.calls, 1);
+}
+
+#[test]
+fn pipeline_rejects_http_status_fail_closed_after_request_construction() {
+    let material = AuthMaterial::new(
+        "0xpoly-address",
+        "api-key",
+        "passphrase",
+        "private-key",
+        0,
+        None,
+    );
+    let mut signer = StubSigner::success("0xorder-sig", "999");
+    let mut runner = StubRunner::success("{\"error\":\"not ready\"}\n__HTTP_STATUS__:503");
+    let pipeline = SubmitPipeline::new("https://clob.polymarket.com", "curl");
+
+    let err = pipeline
+        .execute(
+            PreparedSubmitRequest {
+                auth_material: material,
+                unsigned_order: sample_unsigned_order(),
+                owner: "owner-uuid".into(),
+                order_type: OrderType::Gtc,
+                defer_exec: false,
+                sdk_available: true,
+                header_signature: "0xheader-sig".into(),
+                header_timestamp: "1712345678".into(),
+            },
+            &mut signer,
+            &mut runner,
+        )
+        .unwrap_err();
+
+    assert_eq!(
+        err,
+        SubmitPipelineError::Command(HttpSubmitCommandError::HttpStatus {
+            status_code: 503,
+            body: "{\"error\":\"not ready\"}".into(),
         })
     );
     assert_eq!(runner.calls, 1);

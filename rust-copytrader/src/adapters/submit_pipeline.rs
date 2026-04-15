@@ -1,6 +1,6 @@
 use crate::adapters::auth::{AuthRuntimeState, L2AuthHeaders};
 use crate::adapters::http_submit::{
-    CommandOutput, CommandRunner, HttpSubmitCommandError, HttpSubmitExecutor,
+    CommandRunner, HttpSubmitCommandError, HttpSubmitExecutor, HttpSubmitResponse,
     HttpSubmitRequestBuilder, HttpSubmitRequestError, OrderBatchRequest, OrderType,
 };
 use crate::adapters::signing::{
@@ -47,7 +47,7 @@ impl SubmitPipeline {
         request: PreparedSubmitRequest,
         signer: &mut S,
         runner: &mut R,
-    ) -> Result<CommandOutput, SubmitPipelineError> {
+    ) -> Result<HttpSubmitResponse, SubmitPipelineError> {
         request
             .auth_material
             .validate()

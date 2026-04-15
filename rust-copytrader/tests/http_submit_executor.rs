@@ -81,20 +81,61 @@ fn curl_command_contains_method_url_headers_and_body() {
             .iter()
             .any(|arg| arg.contains("\"owner\":\"owner-uuid\""))
     );
+    assert!(
+        command
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--max-time", "0.200"])
+    );
+    assert!(
+        command
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--write-out", "\n__HTTP_STATUS__:%{http_code}"])
+    );
 }
 
 #[test]
-fn executor_returns_stdout_on_success() {
+fn executor_returns_parsed_http_body_and_status_on_success() {
     let spec = sample_request_spec();
     let executor = HttpSubmitExecutor::new("curl");
-    let mut runner = StubRunner::success("{\"ok\":true}");
+    let mut runner = StubRunner::success("{\"ok\":true}\n__HTTP_STATUS__:201");
 
     let result = executor
         .execute(&mut runner, &spec)
         .expect("execution result");
 
-    assert_eq!(result.stdout, "{\"ok\":true}");
+    assert_eq!(result.status_code, 201);
+    assert_eq!(result.body, "{\"ok\":true}");
     assert_eq!(runner.calls, 1);
+}
+
+#[test]
+fn executor_rejects_non_success_http_status_even_when_command_exits_zero() {
+    let spec = sample_request_spec();
+    let executor = HttpSubmitExecutor::new("curl");
+    let mut runner = StubRunner::success("{\"error\":\"blocked\"}\n__HTTP_STATUS__:401");
+
+    let err = executor.execute(&mut runner, &spec).unwrap_err();
+
+    assert_eq!(
+        err,
+        HttpSubmitCommandError::HttpStatus {
+            status_code: 401,
+            body: "{\"error\":\"blocked\"}".into(),
+        }
+    );
+}
+
+#[test]
+fn executor_rejects_success_output_without_http_status_marker() {
+    let spec = sample_request_spec();
+    let executor = HttpSubmitExecutor::new("curl");
+    let mut runner = StubRunner::success("{\"ok\":true}");
+
+    let err = executor.execute(&mut runner, &spec).unwrap_err();
+
+    assert_eq!(err, HttpSubmitCommandError::MissingStatusMarker);
 }
 
 #[test]

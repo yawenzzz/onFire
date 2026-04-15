@@ -2,6 +2,9 @@ use crate::adapters::auth::{AuthRuntimeState, L2AuthHeaders};
 use std::collections::BTreeMap;
 use std::process::Command;
 
+const HTTP_STATUS_MARKER: &str = "\n__HTTP_STATUS__:";
+const DEFAULT_MAX_TIME_MS: u64 = 200;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpMethod {
     Post,
@@ -159,9 +162,19 @@ pub struct CommandOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpSubmitResponse {
+    pub status_code: u16,
+    pub body: String,
+    pub stderr: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HttpSubmitCommandError {
     Io(String),
     NonZeroExit { code: i32, stderr: String },
+    MissingStatusMarker,
+    InvalidStatusCode(String),
+    HttpStatus { status_code: u16, body: String },
 }
 
 pub trait CommandRunner {
@@ -198,13 +211,20 @@ impl CommandRunner for StdCommandRunner {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpSubmitExecutor {
     curl_program: String,
+    max_time_ms: u64,
 }
 
 impl HttpSubmitExecutor {
     pub fn new(program: impl Into<String>) -> Self {
         Self {
             curl_program: program.into(),
+            max_time_ms: DEFAULT_MAX_TIME_MS,
         }
+    }
+
+    pub fn with_max_time_ms(mut self, max_time_ms: u64) -> Self {
+        self.max_time_ms = max_time_ms.max(1);
+        self
     }
 
     pub fn build_command(&self, spec: &HttpRequestSpec) -> CurlCommandSpec {
@@ -212,6 +232,8 @@ impl HttpSubmitExecutor {
             "-sS".to_string(),
             "-X".to_string(),
             method_label(spec.method).to_string(),
+            "--max-time".to_string(),
+            format_seconds(self.max_time_ms),
         ];
         for (name, value) in &spec.headers {
             args.push("-H".to_string());
@@ -219,6 +241,8 @@ impl HttpSubmitExecutor {
         }
         args.push("--data-binary".to_string());
         args.push(spec.body.clone());
+        args.push("--write-out".to_string());
+        args.push(format!("{HTTP_STATUS_MARKER}%{{http_code}}"));
         args.push(spec.url.clone());
         CurlCommandSpec {
             program: self.curl_program.clone(),
@@ -230,14 +254,40 @@ impl HttpSubmitExecutor {
         &self,
         runner: &mut R,
         spec: &HttpRequestSpec,
-    ) -> Result<CommandOutput, HttpSubmitCommandError> {
-        runner.run(&self.build_command(spec))
+    ) -> Result<HttpSubmitResponse, HttpSubmitCommandError> {
+        let output = runner.run(&self.build_command(spec))?;
+        parse_http_response(output)
     }
 }
 
 fn method_label(method: HttpMethod) -> &'static str {
     match method {
         HttpMethod::Post => "POST",
+    }
+}
+
+fn format_seconds(timeout_ms: u64) -> String {
+    format!("{}.{:03}", timeout_ms / 1_000, timeout_ms % 1_000)
+}
+
+fn parse_http_response(output: CommandOutput) -> Result<HttpSubmitResponse, HttpSubmitCommandError> {
+    let (body, status) = output
+        .stdout
+        .rsplit_once(HTTP_STATUS_MARKER)
+        .ok_or(HttpSubmitCommandError::MissingStatusMarker)?;
+    let status_code = status
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| HttpSubmitCommandError::InvalidStatusCode(status.trim().to_string()))?;
+    let body = body.to_string();
+    if (200..300).contains(&status_code) {
+        Ok(HttpSubmitResponse {
+            status_code,
+            body,
+            stderr: output.stderr,
+        })
+    } else {
+        Err(HttpSubmitCommandError::HttpStatus { status_code, body })
     }
 }
 
