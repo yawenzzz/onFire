@@ -6,7 +6,7 @@ It locks the non-negotiable execution posture before any real venue I/O is added
 - fixed hot-path order: `activity -> positions -> market websocket -> submit -> verification`
 - fail-closed latency posture with a hard reject above 200ms to submit
 - explicit live-mode gate while third-party leader activity listening remains unverified
-- single-node, local-file-only persistence via append-only JSONL/session snapshot paths
+- single-node, local-file-only runtime evidence with JSONL append helpers and session snapshot path helpers (not yet full session-owned persistence)
 
 ## Current implementation status
 
@@ -18,8 +18,9 @@ It locks the non-negotiable execution posture before any real venue I/O is added
 ### Lane 2: snapshots + telemetry in the runtime session
 - `src/app.rs` provides `RuntimeSession`, which ties bootstrap state, orchestrator results, runtime metrics, latency accounting, and latest snapshot generation together.
 - `src/pipeline/trace_context.rs` records ordered stage timestamps so latency reporting stays aligned with the mandated execution sequence.
-- `src/persistence/snapshots.rs` defines a stable local JSON snapshot shape for operator/runtime evidence.
-- `src/telemetry/metrics.rs` and `src/telemetry/latency.rs` accumulate submit/reject/timeout counters plus per-stage timing deltas.
+- `src/persistence/snapshots.rs` defines a stable local JSON snapshot shape and deterministic session-root path helper for operator/runtime evidence.
+- `src/persistence/jsonl.rs` provides the append-only file primitive already used by capture-oriented tests, but it is not yet wired into `RuntimeSession`.
+- `src/telemetry/metrics.rs` and `src/telemetry/latency.rs` accumulate submit/reject/timeout counters plus per-stage timing deltas in memory for the current process.
 
 ### Lane 3: transport boundaries for future live adapters
 - `src/adapters/activity.rs` keeps `live_listen`, `shadow_poll`, and `replay` mode selection explicit and fail-closed.
@@ -53,6 +54,7 @@ This crate is still a scaffold, not a production trading runtime. Remaining work
 2. session-level file writing/rotation that persists `RuntimeSession` snapshots beyond in-memory accumulation
 3. external metrics export and richer operator-facing reporting surfaces
 4. concrete live/replay transport integrations that feed the adapter boundaries without breaking replay parity
+5. a real CLI/runtime entrypoint; `src/main.rs` is still a bootstrap stub rather than an operator-facing command surface
 
 ## Review notes
 
@@ -62,5 +64,6 @@ The current implementation is small, readable, and strongly fail-closed. The mai
 - hot-path budget enforcement is encoded before submit, not merely documented
 - submit failure and post-submit verification failure remain separate states
 - replay coverage already protects the fixed activity -> positions -> market websocket -> submit -> verification sequence
+- current runtime evidence is still process-local (`RuntimeSession::snapshot`, `RuntimeMetrics`, `LatencyReport`) until file/report wiring lands
 
 Future lanes should extend these existing boundaries rather than bypass them.
