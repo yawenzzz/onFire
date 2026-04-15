@@ -27,12 +27,16 @@ fn runtime_metrics_track_rejects_submits_and_timeouts() {
     let mut metrics = RuntimeMetrics::default();
     metrics.record_submit();
     metrics.record_submit();
+    metrics.record_verified();
+    metrics.record_verification_mismatch();
     metrics.record_reject("quote_stale");
     metrics.record_reject("quote_stale");
     metrics.record_reject("positions_no_net_change");
     metrics.record_verification_timeout();
 
     assert_eq!(metrics.submitted(), 2);
+    assert_eq!(metrics.verified_total(), 1);
+    assert_eq!(metrics.verification_mismatches(), 1);
     assert_eq!(metrics.rejected_total(), 3);
     assert_eq!(metrics.reject_count("quote_stale"), 2);
     assert_eq!(metrics.reject_count("positions_no_net_change"), 1);
