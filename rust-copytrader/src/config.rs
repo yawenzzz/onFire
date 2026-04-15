@@ -5,6 +5,71 @@ pub enum ActivityMode {
     Replay,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportAdapterKind {
+    LiveListen,
+    ShadowPoll,
+    Replay,
+}
+
+impl TransportAdapterKind {
+    pub const fn activity_mode(self) -> ActivityMode {
+        match self {
+            Self::LiveListen => ActivityMode::LiveListen,
+            Self::ShadowPoll => ActivityMode::ShadowPoll,
+            Self::Replay => ActivityMode::Replay,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransportBoundaryConfig {
+    pub activity: TransportAdapterKind,
+    pub positions: TransportAdapterKind,
+    pub market: TransportAdapterKind,
+    pub verification: TransportAdapterKind,
+}
+
+impl TransportBoundaryConfig {
+    pub const fn new(
+        activity: TransportAdapterKind,
+        positions: TransportAdapterKind,
+        market: TransportAdapterKind,
+        verification: TransportAdapterKind,
+    ) -> Self {
+        Self {
+            activity,
+            positions,
+            market,
+            verification,
+        }
+    }
+
+    pub const fn for_mode(mode: ActivityMode) -> Self {
+        let kind = match mode {
+            ActivityMode::LiveListen => TransportAdapterKind::LiveListen,
+            ActivityMode::ShadowPoll => TransportAdapterKind::ShadowPoll,
+            ActivityMode::Replay => TransportAdapterKind::Replay,
+        };
+
+        Self::new(kind, kind, kind, kind)
+    }
+
+    pub fn requested_mode(&self) -> Result<ActivityMode, String> {
+        if self.positions != self.activity {
+            return Err("positions_transport_mode_mismatch".to_string());
+        }
+        if self.market != self.activity {
+            return Err("market_transport_mode_mismatch".to_string());
+        }
+        if self.verification != self.activity {
+            return Err("verification_transport_mode_mismatch".to_string());
+        }
+
+        Ok(self.activity.activity_mode())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveModeGate {
     mode: ActivityMode,

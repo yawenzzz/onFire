@@ -2,7 +2,9 @@ use rust_copytrader::adapters::transport::{
     ActivityTransport, MarketTransport, PositionsTransport, VerificationTransport,
     select_transport_boundary,
 };
-use rust_copytrader::config::{ActivityMode, LiveModeGate};
+use rust_copytrader::config::{
+    ActivityMode, LiveModeGate, TransportAdapterKind, TransportBoundaryConfig,
+};
 use rust_copytrader::replay::fixture::ReplayFixture;
 
 #[test]
@@ -10,7 +12,7 @@ fn transport_selector_preserves_replay_parity_and_live_gate() {
     let fixture = ReplayFixture::success_buy_follow();
 
     let blocked = select_transport_boundary(
-        ActivityMode::LiveListen,
+        TransportBoundaryConfig::for_mode(ActivityMode::LiveListen),
         LiveModeGate::for_mode(ActivityMode::LiveListen),
         &fixture,
     )
@@ -18,13 +20,13 @@ fn transport_selector_preserves_replay_parity_and_live_gate() {
     assert_eq!(blocked, "activity_source_unverified");
 
     let replay = select_transport_boundary(
-        ActivityMode::Replay,
+        TransportBoundaryConfig::for_mode(ActivityMode::Replay),
         LiveModeGate::for_mode(ActivityMode::Replay),
         &fixture,
     )
     .expect("replay should be selectable");
     let shadow = select_transport_boundary(
-        ActivityMode::ShadowPoll,
+        TransportBoundaryConfig::for_mode(ActivityMode::ShadowPoll),
         LiveModeGate::for_mode(ActivityMode::ShadowPoll),
         &fixture,
     )
@@ -56,11 +58,35 @@ fn transport_selector_preserves_replay_parity_and_live_gate() {
     unlocked_gate.positions_under_budget = true;
     unlocked_gate.execution_surface_ready = true;
 
-    let live = select_transport_boundary(ActivityMode::LiveListen, unlocked_gate, &fixture)
-        .expect("unlocked live listen should be selectable");
+    let live = select_transport_boundary(
+        TransportBoundaryConfig::for_mode(ActivityMode::LiveListen),
+        unlocked_gate,
+        &fixture,
+    )
+    .expect("unlocked live listen should be selectable");
     assert_eq!(live.transport_name(), "live_listen");
     assert_eq!(live.read_activity().transaction_hash, "0xtx-success");
     assert_eq!(live.read_positions().reconciled_at_ms, 1_020);
     assert_eq!(live.read_market_quote().observed_at_ms, 1_028);
     assert_eq!(live.read_verification("corr-success").observed_at_ms, 1_082);
+}
+
+#[test]
+fn transport_selector_rejects_mixed_boundary_modes_to_preserve_stage_parity() {
+    let fixture = ReplayFixture::success_buy_follow();
+    let mixed = TransportBoundaryConfig::new(
+        TransportAdapterKind::Replay,
+        TransportAdapterKind::ShadowPoll,
+        TransportAdapterKind::Replay,
+        TransportAdapterKind::Replay,
+    );
+
+    let error = select_transport_boundary(
+        mixed,
+        LiveModeGate::for_mode(ActivityMode::Replay),
+        &fixture,
+    )
+    .expect_err("mixed boundary modes should fail closed");
+
+    assert_eq!(error, "positions_transport_mode_mismatch");
 }

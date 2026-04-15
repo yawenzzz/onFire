@@ -1,6 +1,6 @@
 use crate::adapters::positions::PositionSnapshot;
 use crate::adapters::verification::{VerificationChannelEvent, VerificationChannelKind};
-use crate::config::{ActivityMode, LiveModeGate};
+use crate::config::{ActivityMode, LiveModeGate, TransportBoundaryConfig};
 use crate::domain::events::ActivityEvent;
 use crate::replay::fixture::{ReplayFixture, ReplayVerificationFrame};
 
@@ -86,11 +86,11 @@ pub enum SelectedTransportBoundary<'a> {
 }
 
 pub fn select_transport_boundary<'a>(
-    requested_mode: ActivityMode,
+    config: TransportBoundaryConfig,
     gate: LiveModeGate,
     fixture: &'a ReplayFixture,
 ) -> Result<SelectedTransportBoundary<'a>, String> {
-    match requested_mode {
+    match config.requested_mode()? {
         ActivityMode::Replay => Ok(SelectedTransportBoundary::Replay(
             ReplayTransportBoundary::new(fixture),
         )),
