@@ -21,6 +21,14 @@ fn bootstrap_allows_shadow_poll_without_live_unlock() {
 }
 
 #[test]
+fn bootstrap_allows_replay_without_live_unlock() {
+    let gate = LiveModeGate::for_mode(ActivityMode::Replay);
+    let decision = RuntimeBootstrap::new(ActivityMode::Replay, gate).decide();
+
+    assert_eq!(decision, BootstrapDecision::Replay);
+}
+
+#[test]
 fn bootstrap_allows_live_mode_once_all_gates_are_green() {
     let mut gate = LiveModeGate::for_mode(ActivityMode::LiveListen);
     gate.activity_source_verified = true;

@@ -49,11 +49,33 @@ fn positions_reconciler_rejects_when_no_net_change_exists() {
 }
 
 #[test]
+fn positions_reconciler_rejects_subject_mismatch() {
+    let reconciler = PositionsReconciler::new(45);
+    let previous = PositionSnapshot::new("leader-1", "asset-9", 10, 1_000, 2);
+    let current = PositionSnapshot::new("leader-2", "asset-9", 12, 1_025, 3);
+
+    let outcome = reconciler.reconcile(&previous, &current);
+
+    assert_eq!(
+        outcome,
+        PositionsOutcome::Rejected("positions_subject_mismatch".into())
+    );
+}
+
+#[test]
 fn market_quote_gate_rejects_stale_quotes() {
     let gate = MarketQuoteGate::new(10);
     let rejected = gate.validate("asset-9", 0.48, 0.52, 15, 1_050);
 
     assert_eq!(rejected, Err(QuoteRejection::Stale));
+}
+
+#[test]
+fn market_quote_gate_rejects_invalid_spread() {
+    let gate = MarketQuoteGate::new(10);
+    let rejected = gate.validate("asset-9", 0.53, 0.52, 5, 1_050);
+
+    assert_eq!(rejected, Err(QuoteRejection::InvalidSpread));
 }
 
 #[test]

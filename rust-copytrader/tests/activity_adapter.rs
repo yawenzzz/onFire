@@ -24,6 +24,15 @@ fn shadow_poll_mode_remains_available_when_live_mode_is_blocked() {
 }
 
 #[test]
+fn replay_mode_remains_available_without_live_unlock_requirements() {
+    let gate = LiveModeGate::for_mode(ActivityMode::Replay);
+    let selector = ActivitySourceSelector::new(ActivityMode::Replay, gate);
+
+    assert_eq!(selector.resolve_mode(), ActivityAdapterMode::Replay);
+    assert_eq!(selector.blocked_reason(), None);
+}
+
+#[test]
 fn normalized_activity_event_exposes_proxy_wallet_and_transaction() {
     let event = ActivityEvent::new("leader-1", "0xtx", "BUY", "asset-9", 42, 1_234_567);
 

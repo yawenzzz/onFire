@@ -15,6 +15,16 @@ fn rejects_when_stage_would_breach_hard_budget() {
 }
 
 #[test]
+fn remaining_budget_is_monotonic_and_inclusive_at_the_hard_limit() {
+    let budget = LatencyBudget::new(200);
+
+    assert_eq!(budget.remaining_ms(0), Some(200));
+    assert_eq!(budget.remaining_ms(80), Some(120));
+    assert_eq!(budget.remaining_ms(200), Some(0));
+    assert_eq!(budget.remaining_ms(201), None);
+}
+
+#[test]
 fn freshness_gate_rejects_stale_quotes() {
     let gate = FreshnessGate::new(10);
 
@@ -38,6 +48,15 @@ fn trace_context_records_stage_order_and_elapsed_budget() {
 }
 
 #[test]
+fn trace_context_preserves_leader_and_correlation_identifiers() {
+    let ctx = TraceContext::new("leader-77", "corr-99", 5_000);
+
+    assert_eq!(ctx.leader_id(), "leader-77");
+    assert_eq!(ctx.correlation_id(), "corr-99");
+    assert_eq!(ctx.total_elapsed_ms(), 0);
+}
+
+#[test]
 fn live_listen_mode_stays_blocked_without_verified_activity_source() {
     let mut gate = LiveModeGate::for_mode(ActivityMode::LiveListen);
     gate.execution_surface_ready = true;
@@ -52,6 +71,13 @@ fn live_listen_mode_stays_blocked_without_verified_activity_source() {
     gate.activity_source_verified = true;
     gate.activity_source_under_budget = true;
     gate.activity_capability_detected = true;
+    gate.execution_surface_ready = false;
+    assert_eq!(
+        gate.blocked_reason().as_deref(),
+        Some("execution_surface_not_ready")
+    );
+
+    gate.execution_surface_ready = true;
     assert!(gate.unlocked());
 }
 
