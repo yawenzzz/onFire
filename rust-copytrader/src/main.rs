@@ -331,6 +331,15 @@ fn render_operator_demo_report(root: &Path) -> Result<String, RootEnvLoadError> 
             sanitize_for_filename(&discovery_wallet)
         ))
     ));
+    lines.push(format!(
+        "leader_selection_hint=cd rust-copytrader && cargo run --bin select_copy_leader -- --leaderboard {} --output {}",
+        shell_path_for_report("../.omx/discovery/leaderboard-overall-day-pnl.json"),
+        shell_path_for_report("../.omx/discovery/selected-leader.env")
+    ));
+    lines.push(
+        "leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a"
+            .to_string(),
+    );
     lines.push(
         "note=public discovery commands are read-only and may still fail due to remote access controls"
             .to_string(),
@@ -404,6 +413,9 @@ fn discovery_wallet_hint(root: &Path) -> String {
     env::var("COPYTRADER_DISCOVERY_WALLET")
         .ok()
         .or_else(|| {
+            discovery_wallet_from_env_file(&root.join(".omx/discovery/selected-leader.env"))
+        })
+        .or_else(|| {
             AuthMaterial::from_root(root)
                 .ok()
                 .map(|material| material.poly_address)
@@ -411,6 +423,24 @@ fn discovery_wallet_hint(root: &Path) -> String {
         .or_else(|| env::var("POLY_ADDRESS").ok())
         .or_else(|| env::var("SIGNER_ADDRESS").ok())
         .unwrap_or_else(|| "0x56687bf447db6ffa42ffe2204a05edaa20f55839".to_string())
+}
+
+fn discovery_wallet_from_env_file(path: &Path) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    content
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .find_map(|(key, value)| match key.trim() {
+            "COPYTRADER_DISCOVERY_WALLET" | "COPYTRADER_LEADER_WALLET" => {
+                let value = value.trim();
+                if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                }
+            }
+            _ => None,
+        })
 }
 
 fn default_leaderboard_preview_url() -> String {
@@ -915,6 +945,8 @@ mod tests {
         assert!(report.contains("activity_preview_curl=curl --silent --show-error --fail-with-body -A Mozilla/5.0 -H 'Accept: application/json' https://data-api.polymarket.com/activity?user=0xpoly-address&limit=20&offset=0&sortBy=TIMESTAMP&sortDirection=DESC&type=TRADE"));
         assert!(report.contains("leaderboard_capture_hint=cd rust-copytrader && cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20 --output ../.omx/discovery/leaderboard-overall-day-pnl.json"));
         assert!(report.contains("activity_capture_hint=cd rust-copytrader && cargo run --bin fetch_user_activity -- --user 0xpoly-address --type TRADE --limit 20 --output ../.omx/discovery/activity-0xpoly-address-trade.json"));
+        assert!(report.contains("leader_selection_hint=cd rust-copytrader && cargo run --bin select_copy_leader -- --leaderboard ../.omx/discovery/leaderboard-overall-day-pnl.json --output ../.omx/discovery/selected-leader.env"));
+        assert!(report.contains("leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a"));
         assert!(report.contains("note=public discovery commands are read-only"));
         let report_path = report
             .lines()
@@ -929,6 +961,23 @@ mod tests {
         assert!(persisted.contains("mode=operator-demo"));
         assert!(persisted.contains("leaderboard_hint="));
         assert_eq!(persisted, latest);
+
+        fs::remove_dir_all(root).expect("temp root removed");
+    }
+
+    #[test]
+    fn operator_demo_prefers_selected_leader_env_file_when_present() {
+        let root = unique_temp_root("operator-demo-selected-leader");
+        fs::create_dir_all(root.join(".omx/discovery")).expect("discovery dir created");
+        fs::write(
+            root.join(".omx/discovery/selected-leader.env"),
+            "COPYTRADER_DISCOVERY_WALLET=0xselected-wallet\n",
+        )
+        .expect("selected leader env written");
+
+        let wallet = super::discovery_wallet_hint(&root);
+
+        assert_eq!(wallet, "0xselected-wallet");
 
         fs::remove_dir_all(root).expect("temp root removed");
     }

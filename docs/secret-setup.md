@@ -123,6 +123,8 @@ cargo run -- --operator-demo --root ..
 - `activity_preview_curl=...`
 - `leaderboard_capture_hint=... --output ../.omx/discovery/leaderboard-overall-day-pnl.json`
 - `activity_capture_hint=... --output ../.omx/discovery/activity-<wallet>-trade.json`
+- `leader_selection_hint=... --leaderboard ../.omx/discovery/leaderboard-overall-day-pnl.json --output ../.omx/discovery/selected-leader.env`
+- `leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a`
 
 `--output` 会自动创建父目录，所以 `.omx/discovery/` 不需要手工先建。
 

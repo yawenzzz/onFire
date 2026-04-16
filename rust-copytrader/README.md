@@ -189,6 +189,8 @@ cargo run -- --operator-demo --root ..
 - `activity_preview_curl=...`
 - `leaderboard_capture_hint=... --output ../.omx/discovery/leaderboard-overall-day-pnl.json`
 - `activity_capture_hint=... --output ../.omx/discovery/activity-<wallet>-trade.json`
+- `leader_selection_hint=... --leaderboard ../.omx/discovery/leaderboard-overall-day-pnl.json --output ../.omx/discovery/selected-leader.env`
+- `leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a`
 
 如果你已经设置了 `COPYTRADER_DISCOVERY_WALLET`，operator demo 会优先用它；否则会回退到 `POLY_ADDRESS` / `SIGNER_ADDRESS`。
 
@@ -216,6 +218,15 @@ cargo run --bin fetch_user_activity -- --user 0x56687bf447db6ffa42ffe2204a05edaa
 ```
 
 `--output` 会自动创建父目录，所以 `.omx/discovery/` 不需要你手动先 `mkdir -p`。
+
+如果你想把 leaderboard 产物直接转成后续 operator 会读取的 leader 选择 env，也可以：
+
+```bash
+cargo run --bin select_copy_leader -- --leaderboard ../.omx/discovery/leaderboard-overall-day-pnl.json --output ../.omx/discovery/selected-leader.env
+set -a && source ../.omx/discovery/selected-leader.env && set +a
+```
+
+后续再跑 `--operator-demo` 时，会优先读取 `.omx/discovery/selected-leader.env` 里的 `COPYTRADER_DISCOVERY_WALLET`。
 
 如果网络环境有问题，或者你想先看它到底会打什么请求：
 
