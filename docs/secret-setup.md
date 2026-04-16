@@ -116,6 +116,11 @@ cargo run -- --operator-demo --root ..
 它还会把完整 demo 文本落到：
 - `.omx/operator-demo/operator-demo-*.txt`
 - `.omx/operator-demo/latest.txt`
+并补充 discovery preview：
+- `leaderboard_preview_url=...`
+- `leaderboard_preview_curl=...`
+- `activity_preview_url=...`
+- `activity_preview_curl=...`
 
 它仍然是 **fail-closed** 的：
 - helper / runtime smoke 都只做本地验证

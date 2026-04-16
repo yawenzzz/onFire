@@ -295,12 +295,29 @@ fn render_operator_demo_report(root: &Path) -> Result<String, RootEnvLoadError> 
             .lines()
             .map(ToString::to_string),
     );
+    let discovery_wallet = discovery_wallet_hint(root);
     lines.push(
         "leaderboard_hint=cd rust-copytrader && cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20".to_string(),
     );
     lines.push(format!(
         "activity_hint=cd rust-copytrader && cargo run --bin fetch_user_activity -- --user {} --type TRADE --limit 20",
-        discovery_wallet_hint()
+        discovery_wallet
+    ));
+    lines.push(format!(
+        "leaderboard_preview_url={}",
+        default_leaderboard_preview_url()
+    ));
+    lines.push(format!(
+        "leaderboard_preview_curl={}",
+        default_leaderboard_preview_curl()
+    ));
+    lines.push(format!(
+        "activity_preview_url={}",
+        default_activity_preview_url(&discovery_wallet)
+    ));
+    lines.push(format!(
+        "activity_preview_curl={}",
+        default_activity_preview_curl(&discovery_wallet)
     ));
     lines.push(
         "note=public discovery commands are read-only and may still fail due to remote access controls"
@@ -371,9 +388,55 @@ fn format_session_outcome(outcome: &SessionOutcome) -> String {
     }
 }
 
-fn discovery_wallet_hint() -> String {
+fn discovery_wallet_hint(root: &Path) -> String {
     env::var("COPYTRADER_DISCOVERY_WALLET")
-        .unwrap_or_else(|_| "0x56687bf447db6ffa42ffe2204a05edaa20f55839".to_string())
+        .ok()
+        .or_else(|| {
+            AuthMaterial::from_root(root)
+                .ok()
+                .map(|material| material.poly_address)
+        })
+        .or_else(|| env::var("POLY_ADDRESS").ok())
+        .or_else(|| env::var("SIGNER_ADDRESS").ok())
+        .unwrap_or_else(|| "0x56687bf447db6ffa42ffe2204a05edaa20f55839".to_string())
+}
+
+fn default_leaderboard_preview_url() -> String {
+    "https://data-api.polymarket.com/v1/leaderboard?category=OVERALL&timePeriod=DAY&orderBy=PNL&limit=20&offset=0".to_string()
+}
+
+fn default_leaderboard_preview_curl() -> String {
+    format!(
+        "curl --silent --show-error --fail-with-body -A Mozilla/5.0 -H 'Accept: application/json' {}",
+        default_leaderboard_preview_url()
+    )
+}
+
+fn default_activity_preview_url(user: &str) -> String {
+    format!(
+        "https://data-api.polymarket.com/activity?user={}&limit=20&offset=0&sortBy=TIMESTAMP&sortDirection=DESC&type=TRADE",
+        encode_url_component(user)
+    )
+}
+
+fn default_activity_preview_curl(user: &str) -> String {
+    format!(
+        "curl --silent --show-error --fail-with-body -A Mozilla/5.0 -H 'Accept: application/json' {}",
+        default_activity_preview_url(user)
+    )
+}
+
+fn encode_url_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 fn format_bootstrap_decision(decision: &BootstrapDecision) -> String {
@@ -816,7 +879,11 @@ mod tests {
         assert!(report.contains("mode=operator-demo"));
         assert!(report.contains("mode=runtime-smoke"));
         assert!(report.contains("leaderboard_hint="));
-        assert!(report.contains("activity_hint="));
+        assert!(report.contains("activity_hint=cd rust-copytrader && cargo run --bin fetch_user_activity -- --user 0xpoly-address --type TRADE --limit 20"));
+        assert!(report.contains("leaderboard_preview_url=https://data-api.polymarket.com/v1/leaderboard?category=OVERALL&timePeriod=DAY&orderBy=PNL&limit=20&offset=0"));
+        assert!(report.contains("leaderboard_preview_curl=curl --silent --show-error --fail-with-body -A Mozilla/5.0 -H 'Accept: application/json' https://data-api.polymarket.com/v1/leaderboard?category=OVERALL&timePeriod=DAY&orderBy=PNL&limit=20&offset=0"));
+        assert!(report.contains("activity_preview_url=https://data-api.polymarket.com/activity?user=0xpoly-address&limit=20&offset=0&sortBy=TIMESTAMP&sortDirection=DESC&type=TRADE"));
+        assert!(report.contains("activity_preview_curl=curl --silent --show-error --fail-with-body -A Mozilla/5.0 -H 'Accept: application/json' https://data-api.polymarket.com/activity?user=0xpoly-address&limit=20&offset=0&sortBy=TIMESTAMP&sortDirection=DESC&type=TRADE"));
         assert!(report.contains("note=public discovery commands are read-only"));
         let report_path = report
             .lines()

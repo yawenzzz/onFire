@@ -182,6 +182,13 @@ cargo run -- --operator-demo --root ..
 另外它现在还会把完整 demo 输出落到：
 - `.omx/operator-demo/operator-demo-*.txt`
 - `.omx/operator-demo/latest.txt`
+并额外给出：
+- `leaderboard_preview_url=...`
+- `leaderboard_preview_curl=...`
+- `activity_preview_url=...`
+- `activity_preview_curl=...`
+
+如果你已经设置了 `COPYTRADER_DISCOVERY_WALLET`，operator demo 会优先用它；否则会回退到 `POLY_ADDRESS` / `SIGNER_ADDRESS`。
 
 如果你更喜欢从 repo root 直接跑这条 operator flow，也可以执行：
 
