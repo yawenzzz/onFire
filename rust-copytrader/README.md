@@ -292,6 +292,19 @@ cargo run --bin run_copytrader_guarded_cycle -- --root ..
 - 用这条真实 activity 生成一轮 guarded replay runtime
 - 把结果落到 `.omx/guarded-cycle/`
 
+如果你想把这条链再往前推进成一个连续的自动轮询 + guarded cycle loop，也有一个 Rust 入口：
+
+```bash
+cargo run --bin run_copytrader_auto_guarded_loop -- --root .. --proxy http://127.0.0.1:7897 --watch-poll-count 1 --loop-count 1
+```
+
+它会按顺序串：
+- `discover_copy_leader`
+- `watch_copy_leader_activity`
+- `run_copytrader_guarded_cycle`
+
+并把每轮结果落到 `.omx/auto-guarded/auto-guarded-*.txt`
+
 如果默认的 Polymarket discovery host 在你当前环境里不可达，也可以显式覆盖：
 
 ```bash

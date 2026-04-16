@@ -199,6 +199,16 @@ cargo run --bin run_copytrader_guarded_cycle -- --root ..
 
 然后跑一轮 guarded replay runtime，并把 artifact 落到 `.omx/guarded-cycle/`。
 
+如果你想把这三步连续串起来，也可以：
+
+```bash
+cd rust-copytrader
+cargo run --bin run_copytrader_auto_guarded_loop -- --root .. --proxy http://127.0.0.1:7897 --watch-poll-count 1 --loop-count 1
+```
+
+它会把每轮完整结果落到：
+- `.omx/auto-guarded/auto-guarded-*.txt`
+
 如果默认 `data-api.polymarket.com` / `activity` host 在你当前环境里连不通，也可以先覆盖：
 
 ```bash
