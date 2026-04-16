@@ -284,11 +284,13 @@ impl RuntimeSession {
         gate: LiveModeGate,
         root: impl AsRef<Path>,
     ) -> Result<Self, RootEnvLoadError> {
-        Ok(Self::with_execution_config(
-            requested_mode,
-            gate,
-            ExecutionAdapterConfig::from_root(root)?,
-        ))
+        Ok(Self {
+            bootstrap: RuntimeBootstrap::from_root(requested_mode, gate, root)?,
+            orchestrator: HotPathOrchestrator::default(),
+            metrics: RuntimeMetrics::default(),
+            latency: LatencyReport::default(),
+            latest_snapshot: None,
+        })
     }
 
     pub fn process_replay(&mut self, fixture: &ReplayFixture) -> SessionOutcome {
@@ -296,6 +298,15 @@ impl RuntimeSession {
     }
 
     pub fn process_fixture(&mut self, fixture: &ReplayFixture) -> SessionOutcome {
+        let effective_fixture = if self.bootstrap.requested_mode == ActivityMode::Replay {
+            self.bootstrap
+                .selected_leader()
+                .map(|leader| fixture.clone().with_leader_wallet(leader.wallet.clone()))
+                .unwrap_or_else(|| fixture.clone())
+        } else {
+            fixture.clone()
+        };
+        let fixture = &effective_fixture;
         let decision = self.bootstrap.decide();
         let blocked_snapshot = LeaderStateSnapshot {
             leader_id: fixture.activity.proxy_wallet.clone(),

@@ -73,6 +73,38 @@ fn replay_session_accumulates_submit_metrics_and_snapshot_after_success() {
 }
 
 #[test]
+fn replay_session_from_root_uses_selected_leader_as_runtime_subject() {
+    let root = unique_temp_root("replay-session-selected-leader");
+    fs::create_dir_all(root.join(".omx/discovery")).expect("discovery dir created");
+    fs::write(
+        root.join(".omx/discovery/selected-leader.env"),
+        "COPYTRADER_DISCOVERY_WALLET=0xselected-leader\n",
+    )
+    .expect("selected leader env written");
+
+    let gate = LiveModeGate::for_mode(ActivityMode::Replay);
+    let mut session =
+        RuntimeSession::from_root(ActivityMode::Replay, gate, &root).expect("session from root");
+    let fixture = ReplayFixture::success_buy_follow();
+
+    let outcome = session.process_replay(&fixture);
+    let snapshot = session.snapshot().expect("snapshot expected");
+
+    assert_eq!(outcome, SessionOutcome::Processed);
+    assert_eq!(snapshot.leader.leader_id, "0xselected-leader");
+    assert_eq!(
+        snapshot.runtime.selected_leader_wallet.as_deref(),
+        Some("0xselected-leader")
+    );
+    assert_eq!(
+        snapshot.runtime.selected_leader_source.as_deref(),
+        Some("file:.omx/discovery/selected-leader.env")
+    );
+
+    fs::remove_dir_all(root).expect("temp root removed");
+}
+
+#[test]
 fn replay_session_tracks_reject_reason_and_preserves_latest_leader_snapshot() {
     let gate = LiveModeGate::for_mode(ActivityMode::Replay);
     let mut session = RuntimeSession::new(ActivityMode::Replay, gate);
