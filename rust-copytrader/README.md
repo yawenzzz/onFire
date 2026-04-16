@@ -280,6 +280,18 @@ cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1
 - 把新增交易写到 `.omx/live-activity/<wallet>/activity-events.jsonl`
 - 持久化已见 transaction hashes，避免重复处理
 
+如果你想把“真实 leader activity -> 受控 runtime 一次处理”继续往前推，现在还有一个 replay-backed 受控入口：
+
+```bash
+cargo run --bin run_copytrader_guarded_cycle -- --root ..
+```
+
+它会：
+- 读取 `.omx/discovery/selected-leader.env`
+- 读取 `.omx/live-activity/<wallet>/latest-activity.json`
+- 用这条真实 activity 生成一轮 guarded replay runtime
+- 把结果落到 `.omx/guarded-cycle/`
+
 如果默认的 Polymarket discovery host 在你当前环境里不可达，也可以显式覆盖：
 
 ```bash

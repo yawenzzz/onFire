@@ -19,6 +19,7 @@ class SecretSetupDocTests(unittest.TestCase):
         self.assertIn('discover_copy_leader', text)
         self.assertIn('run_copytrader_operator_flow', text)
         self.assertIn('watch_copy_leader_activity', text)
+        self.assertIn('run_copytrader_guarded_cycle', text)
         self.assertIn('POLYMARKET_LEADERBOARD_BASE_URL', text)
         self.assertIn('POLYMARKET_ACTIVITY_BASE_URL', text)
         self.assertIn('POLYMARKET_CURL_PROXY', text)

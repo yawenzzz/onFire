@@ -186,6 +186,19 @@ cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1
 - `.omx/live-activity/<wallet>/latest-activity.json`
 - `.omx/live-activity/<wallet>/activity-events.jsonl`
 
+如果你想把这条真实 activity 再推进到受控 runtime 一次处理，也可以：
+
+```bash
+cd rust-copytrader
+cargo run --bin run_copytrader_guarded_cycle -- --root ..
+```
+
+它会读取：
+- `.omx/discovery/selected-leader.env`
+- `.omx/live-activity/<wallet>/latest-activity.json`
+
+然后跑一轮 guarded replay runtime，并把 artifact 落到 `.omx/guarded-cycle/`。
+
 如果默认 `data-api.polymarket.com` / `activity` host 在你当前环境里连不通，也可以先覆盖：
 
 ```bash
