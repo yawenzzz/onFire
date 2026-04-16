@@ -45,11 +45,25 @@ impl OperatorReport {
             .blocked_reason
             .as_deref()
             .unwrap_or("none");
+        let selected_leader_wallet = self
+            .snapshot
+            .runtime
+            .selected_leader_wallet
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_source = self
+            .snapshot
+            .runtime
+            .selected_leader_source
+            .as_deref()
+            .unwrap_or("none");
         format!(
             concat!(
                 "mode={} ",
                 "live_mode_unlocked={} ",
                 "blocked_reason={} ",
+                "selected_leader_wallet={} ",
+                "selected_leader_source={} ",
                 "last_submit_status={} ",
                 "submitted={} ",
                 "verified_total={} ",
@@ -60,6 +74,8 @@ impl OperatorReport {
             self.snapshot.runtime.mode,
             self.snapshot.runtime.live_mode_unlocked,
             blocked_reason,
+            selected_leader_wallet,
+            selected_leader_source,
             self.snapshot.runtime.last_submit_status,
             self.metrics.submitted(),
             self.metrics.verified_total(),

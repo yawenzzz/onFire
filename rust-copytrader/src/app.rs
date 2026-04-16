@@ -556,11 +556,15 @@ fn activity_record(snapshot: &SnapshotBundle) -> String {
         concat!(
             "{{",
             "\"leader_id\":\"{}\",",
+            "\"selected_leader_wallet\":{},",
+            "\"selected_leader_source\":{},",
             "\"last_activity_at_ms\":{},",
             "\"last_transaction_hash\":\"{}\"",
             "}}"
         ),
         escape_json(&snapshot.leader.leader_id),
+        opt_json(snapshot.runtime.selected_leader_wallet.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_source.as_deref()),
         snapshot.leader.last_activity_at_ms,
         escape_json(&snapshot.leader.last_transaction_hash),
     )
@@ -570,6 +574,8 @@ fn order_record(snapshot: &SnapshotBundle) -> String {
     format!(
         concat!(
             "{{",
+            "\"selected_leader_wallet\":{},",
+            "\"selected_leader_source\":{},",
             "\"last_submit_status\":\"{}\",",
             "\"last_correlation_id\":{},",
             "\"last_reject_reason\":{},",
@@ -577,6 +583,8 @@ fn order_record(snapshot: &SnapshotBundle) -> String {
             "\"last_total_elapsed_ms\":{}",
             "}}"
         ),
+        opt_json(snapshot.runtime.selected_leader_wallet.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_source.as_deref()),
         escape_json(&snapshot.runtime.last_submit_status),
         opt_json(snapshot.runtime.last_correlation_id.as_deref()),
         opt_json(snapshot.runtime.last_reject_reason.as_deref()),
@@ -589,11 +597,15 @@ fn verification_record(snapshot: &SnapshotBundle) -> String {
     format!(
         concat!(
             "{{",
+            "\"selected_leader_wallet\":{},",
+            "\"selected_leader_source\":{},",
             "\"verification_pending\":{},",
             "\"last_submit_status\":\"{}\",",
             "\"last_correlation_id\":{}",
             "}}"
         ),
+        opt_json(snapshot.runtime.selected_leader_wallet.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_source.as_deref()),
         snapshot.runtime.verification_pending,
         escape_json(&snapshot.runtime.last_submit_status),
         opt_json(snapshot.runtime.last_correlation_id.as_deref()),
