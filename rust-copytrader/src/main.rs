@@ -404,7 +404,7 @@ fn render_operator_demo_report(root: &Path) -> Result<String, RootEnvLoadError> 
             .to_string(),
     );
     lines.push(
-        "run_copytrader_operator_flow_hint=cd rust-copytrader && cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery"
+        "run_copytrader_operator_flow_hint=cd rust-copytrader && cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery --live-submit-gate"
             .to_string(),
     );
     lines.push(
@@ -416,7 +416,7 @@ fn render_operator_demo_report(root: &Path) -> Result<String, RootEnvLoadError> 
             .to_string(),
     );
     lines.push(
-        "run_copytrader_auto_guarded_loop_hint=cd rust-copytrader && cargo run --bin run_copytrader_auto_guarded_loop -- --root .. --proxy http://127.0.0.1:7897 --watch-poll-count 1 --loop-count 1"
+        "run_copytrader_auto_guarded_loop_hint=cd rust-copytrader && cargo run --bin run_copytrader_auto_guarded_loop -- --root .. --proxy http://127.0.0.1:7897 --watch-poll-count 1 --loop-count 1 --live-submit-gate"
             .to_string(),
     );
     lines.push(
@@ -1276,10 +1276,10 @@ mod tests {
         assert!(report.contains("leader_selection_hint=cd rust-copytrader && cargo run --bin select_copy_leader -- --leaderboard ../.omx/discovery/leaderboard-overall-day-pnl.json --output ../.omx/discovery/selected-leader.env"));
         assert!(report.contains("activity_selection_hint=cd rust-copytrader && cargo run --bin select_copy_leader -- --activity ../.omx/discovery/activity-0xpoly-address-trade.json --output ../.omx/discovery/selected-leader.env"));
         assert!(report.contains("discover_copy_leader_hint=cd rust-copytrader && cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery"));
-        assert!(report.contains("run_copytrader_operator_flow_hint=cd rust-copytrader && cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery"));
+        assert!(report.contains("run_copytrader_operator_flow_hint=cd rust-copytrader && cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery --live-submit-gate"));
         assert!(report.contains("watch_copy_leader_activity_hint=cd rust-copytrader && cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1:7897 --poll-count 1"));
         assert!(report.contains("run_copytrader_guarded_cycle_hint=cd rust-copytrader && cargo run --bin run_copytrader_guarded_cycle -- --root .."));
-        assert!(report.contains("run_copytrader_auto_guarded_loop_hint=cd rust-copytrader && cargo run --bin run_copytrader_auto_guarded_loop -- --root .. --proxy http://127.0.0.1:7897 --watch-poll-count 1 --loop-count 1"));
+        assert!(report.contains("run_copytrader_auto_guarded_loop_hint=cd rust-copytrader && cargo run --bin run_copytrader_auto_guarded_loop -- --root .. --proxy http://127.0.0.1:7897 --watch-poll-count 1 --loop-count 1 --live-submit-gate"));
         assert!(report.contains("run_copytrader_live_submit_gate_hint=cd rust-copytrader && cargo run --bin run_copytrader_live_submit_gate -- --root .. --activity-source-verified --activity-under-budget --activity-capability-detected --positions-under-budget"));
         assert!(report.contains("leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a"));
         assert!(report.contains("note=public discovery commands are read-only"));
