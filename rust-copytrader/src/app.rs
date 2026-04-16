@@ -33,6 +33,13 @@ pub enum BootstrapDecision {
 pub struct SelectedLeaderContext {
     pub wallet: String,
     pub source: String,
+    pub rank: Option<String>,
+    pub pnl: Option<String>,
+    pub username: Option<String>,
+    pub latest_activity_timestamp: Option<String>,
+    pub latest_activity_side: Option<String>,
+    pub latest_activity_slug: Option<String>,
+    pub latest_activity_tx: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -322,6 +329,34 @@ impl RuntimeSession {
             .bootstrap
             .selected_leader()
             .map(|leader| leader.source.clone());
+        let selected_leader_rank = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.rank.clone());
+        let selected_leader_pnl = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.pnl.clone());
+        let selected_leader_username = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.username.clone());
+        let selected_leader_latest_activity_timestamp = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.latest_activity_timestamp.clone());
+        let selected_leader_latest_activity_side = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.latest_activity_side.clone());
+        let selected_leader_latest_activity_slug = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.latest_activity_slug.clone());
+        let selected_leader_latest_activity_tx = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.latest_activity_tx.clone());
 
         if let BootstrapDecision::Blocked(ref reason) = decision {
             self.latest_snapshot = Some(SnapshotBundle {
@@ -332,6 +367,16 @@ impl RuntimeSession {
                     blocked_reason: Some(reason.clone()),
                     selected_leader_wallet: selected_leader_wallet.clone(),
                     selected_leader_source: selected_leader_source.clone(),
+                    selected_leader_rank: selected_leader_rank.clone(),
+                    selected_leader_pnl: selected_leader_pnl.clone(),
+                    selected_leader_username: selected_leader_username.clone(),
+                    selected_leader_latest_activity_timestamp:
+                        selected_leader_latest_activity_timestamp.clone(),
+                    selected_leader_latest_activity_side: selected_leader_latest_activity_side
+                        .clone(),
+                    selected_leader_latest_activity_slug: selected_leader_latest_activity_slug
+                        .clone(),
+                    selected_leader_latest_activity_tx: selected_leader_latest_activity_tx.clone(),
                     verification_pending: 0,
                     last_submit_status: format!("blocked:{reason}"),
                     last_correlation_id: None,
@@ -358,6 +403,17 @@ impl RuntimeSession {
                         blocked_reason: Some(reason.clone()),
                         selected_leader_wallet: selected_leader_wallet.clone(),
                         selected_leader_source: selected_leader_source.clone(),
+                        selected_leader_rank: selected_leader_rank.clone(),
+                        selected_leader_pnl: selected_leader_pnl.clone(),
+                        selected_leader_username: selected_leader_username.clone(),
+                        selected_leader_latest_activity_timestamp:
+                            selected_leader_latest_activity_timestamp.clone(),
+                        selected_leader_latest_activity_side: selected_leader_latest_activity_side
+                            .clone(),
+                        selected_leader_latest_activity_slug: selected_leader_latest_activity_slug
+                            .clone(),
+                        selected_leader_latest_activity_tx: selected_leader_latest_activity_tx
+                            .clone(),
                         verification_pending: 0,
                         last_submit_status: format!("blocked:{reason}"),
                         last_correlation_id: None,
@@ -435,6 +491,13 @@ impl RuntimeSession {
             blocked_reason: None,
             selected_leader_wallet,
             selected_leader_source,
+            selected_leader_rank,
+            selected_leader_pnl,
+            selected_leader_username,
+            selected_leader_latest_activity_timestamp,
+            selected_leader_latest_activity_side,
+            selected_leader_latest_activity_slug,
+            selected_leader_latest_activity_tx,
             verification_pending,
             last_submit_status,
             last_correlation_id: Some(if rejected_reason.is_some() {
@@ -486,6 +549,13 @@ fn selected_leader_context_from_root(
         return Ok(Some(SelectedLeaderContext {
             wallet,
             source: "env:COPYTRADER_DISCOVERY_WALLET".to_string(),
+            rank: None,
+            pnl: None,
+            username: None,
+            latest_activity_timestamp: None,
+            latest_activity_side: None,
+            latest_activity_slug: None,
+            latest_activity_tx: None,
         }));
     }
 
@@ -506,6 +576,25 @@ fn selected_leader_context_from_root(
                     return Ok(Some(SelectedLeaderContext {
                         wallet: value.to_string(),
                         source: "file:.omx/discovery/selected-leader.env".to_string(),
+                        rank: env_file_value(&content, &["COPYTRADER_SELECTED_RANK"]),
+                        pnl: env_file_value(&content, &["COPYTRADER_SELECTED_PNL"]),
+                        username: env_file_value(&content, &["COPYTRADER_SELECTED_USERNAME"]),
+                        latest_activity_timestamp: env_file_value(
+                            &content,
+                            &["COPYTRADER_LATEST_ACTIVITY_TIMESTAMP"],
+                        ),
+                        latest_activity_side: env_file_value(
+                            &content,
+                            &["COPYTRADER_LATEST_ACTIVITY_SIDE"],
+                        ),
+                        latest_activity_slug: env_file_value(
+                            &content,
+                            &["COPYTRADER_LATEST_ACTIVITY_SLUG"],
+                        ),
+                        latest_activity_tx: env_file_value(
+                            &content,
+                            &["COPYTRADER_LATEST_ACTIVITY_TX"],
+                        ),
                     }));
                 }
             }
@@ -532,11 +621,44 @@ fn selected_leader_context_from_root(
             return Ok(Some(SelectedLeaderContext {
                 wallet: value.to_string(),
                 source: source.to_string(),
+                rank: env_map_value(env_map, &["COPYTRADER_SELECTED_RANK"]),
+                pnl: env_map_value(env_map, &["COPYTRADER_SELECTED_PNL"]),
+                username: env_map_value(env_map, &["COPYTRADER_SELECTED_USERNAME"]),
+                latest_activity_timestamp: env_map_value(
+                    env_map,
+                    &["COPYTRADER_LATEST_ACTIVITY_TIMESTAMP"],
+                ),
+                latest_activity_side: env_map_value(env_map, &["COPYTRADER_LATEST_ACTIVITY_SIDE"]),
+                latest_activity_slug: env_map_value(env_map, &["COPYTRADER_LATEST_ACTIVITY_SLUG"]),
+                latest_activity_tx: env_map_value(env_map, &["COPYTRADER_LATEST_ACTIVITY_TX"]),
             }));
         }
     }
 
     Ok(None)
+}
+
+fn env_map_value(env_map: &BTreeMap<String, String>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| env_map.get(*key))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn env_file_value(content: &str, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        content
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .find_map(|(candidate, value)| {
+                if candidate.trim() == *key {
+                    let value = value.trim();
+                    (!value.is_empty()).then(|| value.to_string())
+                } else {
+                    None
+                }
+            })
+    })
 }
 
 fn stage_label(stage: crate::pipeline::trace_context::Stage) -> String {

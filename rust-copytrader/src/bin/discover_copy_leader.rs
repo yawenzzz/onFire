@@ -65,6 +65,17 @@ struct DiscoveryArtifacts {
     latest_activity_tx: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LeaderSummary {
+    selected_rank: Option<String>,
+    selected_pnl: Option<String>,
+    selected_username: Option<String>,
+    latest_activity_timestamp: Option<String>,
+    latest_activity_side: Option<String>,
+    latest_activity_slug: Option<String>,
+    latest_activity_tx: Option<String>,
+}
+
 fn main() -> ExitCode {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -255,22 +266,7 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
     };
 
     let selected_leader_env_path = discovery_dir.join("selected-leader.env");
-    write_output_file(
-        &selected_leader_env_path,
-        render_selected_leader_env(&selected_wallet, &leaderboard_path, options.index).as_bytes(),
-    )
-    .map_err(|error| {
-        format!(
-            "failed to write {}: {error}",
-            selected_leader_env_path.display()
-        )
-    })?;
-
-    Ok(DiscoveryArtifacts {
-        selected_wallet,
-        leaderboard_path,
-        activity_path,
-        selected_leader_env_path,
+    let summary = LeaderSummary {
         selected_rank: leaderboard_summary
             .as_deref()
             .and_then(|object| extract_field_value(object, "rank")),
@@ -292,6 +288,31 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
         latest_activity_tx: activity_summary
             .as_deref()
             .and_then(|object| extract_field_value(object, "transactionHash")),
+    };
+    write_output_file(
+        &selected_leader_env_path,
+        render_selected_leader_env(&selected_wallet, &leaderboard_path, options.index, &summary)
+            .as_bytes(),
+    )
+    .map_err(|error| {
+        format!(
+            "failed to write {}: {error}",
+            selected_leader_env_path.display()
+        )
+    })?;
+
+    Ok(DiscoveryArtifacts {
+        selected_wallet,
+        leaderboard_path,
+        activity_path,
+        selected_leader_env_path,
+        selected_rank: summary.selected_rank,
+        selected_pnl: summary.selected_pnl,
+        selected_username: summary.selected_username,
+        latest_activity_timestamp: summary.latest_activity_timestamp,
+        latest_activity_side: summary.latest_activity_side,
+        latest_activity_slug: summary.latest_activity_slug,
+        latest_activity_tx: summary.latest_activity_tx,
     })
 }
 
@@ -471,8 +492,13 @@ fn extract_field_value(object: &str, field: &str) -> Option<String> {
     }
 }
 
-fn render_selected_leader_env(wallet: &str, leaderboard_path: &Path, index: usize) -> String {
-    [
+fn render_selected_leader_env(
+    wallet: &str,
+    leaderboard_path: &Path,
+    index: usize,
+    summary: &LeaderSummary,
+) -> String {
+    let mut lines = vec![
         format!("COPYTRADER_DISCOVERY_WALLET={wallet}"),
         format!("COPYTRADER_LEADER_WALLET={wallet}"),
         format!(
@@ -480,9 +506,29 @@ fn render_selected_leader_env(wallet: &str, leaderboard_path: &Path, index: usiz
             leaderboard_path.display(),
             index
         ),
-    ]
-    .join("\n")
-        + "\n"
+    ];
+    if let Some(value) = &summary.selected_rank {
+        lines.push(format!("COPYTRADER_SELECTED_RANK={value}"));
+    }
+    if let Some(value) = &summary.selected_pnl {
+        lines.push(format!("COPYTRADER_SELECTED_PNL={value}"));
+    }
+    if let Some(value) = &summary.selected_username {
+        lines.push(format!("COPYTRADER_SELECTED_USERNAME={value}"));
+    }
+    if let Some(value) = &summary.latest_activity_timestamp {
+        lines.push(format!("COPYTRADER_LATEST_ACTIVITY_TIMESTAMP={value}"));
+    }
+    if let Some(value) = &summary.latest_activity_side {
+        lines.push(format!("COPYTRADER_LATEST_ACTIVITY_SIDE={value}"));
+    }
+    if let Some(value) = &summary.latest_activity_slug {
+        lines.push(format!("COPYTRADER_LATEST_ACTIVITY_SLUG={value}"));
+    }
+    if let Some(value) = &summary.latest_activity_tx {
+        lines.push(format!("COPYTRADER_LATEST_ACTIVITY_TX={value}"));
+    }
+    lines.join("\n") + "\n"
 }
 
 fn looks_like_wallet(value: &str) -> bool {
@@ -527,8 +573,8 @@ fn encode_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        LEADERBOARD_BASE_URL, Options, build_activity_url, build_leaderboard_url, execute,
-        extract_field_value, extract_object_containing, extract_wallet_from_json,
+        LEADERBOARD_BASE_URL, LeaderSummary, Options, build_activity_url, build_leaderboard_url,
+        execute, extract_field_value, extract_object_containing, extract_wallet_from_json,
         first_json_object, parse_args, render_selected_leader_env, seconds_from_ms,
         write_output_file,
     };
@@ -717,9 +763,26 @@ mod tests {
 
     #[test]
     fn render_selected_leader_env_includes_source_path() {
-        let rendered = render_selected_leader_env("0xleader1", Path::new("/tmp/out.json"), 3);
+        let rendered = render_selected_leader_env(
+            "0xleader1",
+            Path::new("/tmp/out.json"),
+            3,
+            &LeaderSummary {
+                selected_rank: Some("3".into()),
+                selected_pnl: Some("123.45".into()),
+                selected_username: Some("alpha".into()),
+                latest_activity_timestamp: Some("1776303488".into()),
+                latest_activity_side: Some("BUY".into()),
+                latest_activity_slug: Some("market-slug".into()),
+                latest_activity_tx: Some("0xfeed".into()),
+            },
+        );
         assert!(rendered.contains("COPYTRADER_DISCOVERY_WALLET=0xleader1"));
         assert!(rendered.contains("COPYTRADER_SELECTED_FROM=leaderboard:/tmp/out.json#3"));
+        assert!(rendered.contains("COPYTRADER_SELECTED_RANK=3"));
+        assert!(rendered.contains("COPYTRADER_SELECTED_PNL=123.45"));
+        assert!(rendered.contains("COPYTRADER_SELECTED_USERNAME=alpha"));
+        assert!(rendered.contains("COPYTRADER_LATEST_ACTIVITY_SIDE=BUY"));
     }
 
     #[test]

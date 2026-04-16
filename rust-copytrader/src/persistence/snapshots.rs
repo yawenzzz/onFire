@@ -18,6 +18,13 @@ pub struct RuntimeSnapshot {
     pub blocked_reason: Option<String>,
     pub selected_leader_wallet: Option<String>,
     pub selected_leader_source: Option<String>,
+    pub selected_leader_rank: Option<String>,
+    pub selected_leader_pnl: Option<String>,
+    pub selected_leader_username: Option<String>,
+    pub selected_leader_latest_activity_timestamp: Option<String>,
+    pub selected_leader_latest_activity_side: Option<String>,
+    pub selected_leader_latest_activity_slug: Option<String>,
+    pub selected_leader_latest_activity_tx: Option<String>,
     pub verification_pending: u64,
     pub last_submit_status: String,
     pub last_correlation_id: Option<String>,
@@ -37,6 +44,17 @@ impl SnapshotBundle {
         let blocked_reason = opt_json(&self.runtime.blocked_reason);
         let selected_leader_wallet = opt_json(&self.runtime.selected_leader_wallet);
         let selected_leader_source = opt_json(&self.runtime.selected_leader_source);
+        let selected_leader_rank = opt_json(&self.runtime.selected_leader_rank);
+        let selected_leader_pnl = opt_json(&self.runtime.selected_leader_pnl);
+        let selected_leader_username = opt_json(&self.runtime.selected_leader_username);
+        let selected_leader_latest_activity_timestamp =
+            opt_json(&self.runtime.selected_leader_latest_activity_timestamp);
+        let selected_leader_latest_activity_side =
+            opt_json(&self.runtime.selected_leader_latest_activity_side);
+        let selected_leader_latest_activity_slug =
+            opt_json(&self.runtime.selected_leader_latest_activity_slug);
+        let selected_leader_latest_activity_tx =
+            opt_json(&self.runtime.selected_leader_latest_activity_tx);
         let last_correlation_id = opt_json(&self.runtime.last_correlation_id);
         let last_reject_reason = opt_json(&self.runtime.last_reject_reason);
         let last_stage = opt_json(&self.runtime.last_stage);
@@ -55,6 +73,13 @@ impl SnapshotBundle {
                 "\"blocked_reason\":{},",
                 "\"selected_leader_wallet\":{},",
                 "\"selected_leader_source\":{},",
+                "\"selected_leader_rank\":{},",
+                "\"selected_leader_pnl\":{},",
+                "\"selected_leader_username\":{},",
+                "\"selected_leader_latest_activity_timestamp\":{},",
+                "\"selected_leader_latest_activity_side\":{},",
+                "\"selected_leader_latest_activity_slug\":{},",
+                "\"selected_leader_latest_activity_tx\":{},",
                 "\"verification_pending\":{},",
                 "\"last_submit_status\":\"{}\",",
                 "\"last_correlation_id\":{},",
@@ -73,6 +98,13 @@ impl SnapshotBundle {
             blocked_reason,
             selected_leader_wallet,
             selected_leader_source,
+            selected_leader_rank,
+            selected_leader_pnl,
+            selected_leader_username,
+            selected_leader_latest_activity_timestamp,
+            selected_leader_latest_activity_side,
+            selected_leader_latest_activity_slug,
+            selected_leader_latest_activity_tx,
             self.runtime.verification_pending,
             escape_json(&self.runtime.last_submit_status),
             last_correlation_id,

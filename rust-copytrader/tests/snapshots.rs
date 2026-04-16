@@ -27,6 +27,13 @@ fn snapshot_bundle_renders_stable_json_shape() {
             blocked_reason: Some("activity_source_unverified".into()),
             selected_leader_wallet: Some("0xleader-wallet".into()),
             selected_leader_source: Some("file:.omx/discovery/selected-leader.env".into()),
+            selected_leader_rank: Some("1".into()),
+            selected_leader_pnl: Some("123.45".into()),
+            selected_leader_username: Some("alpha".into()),
+            selected_leader_latest_activity_timestamp: Some("1776303488".into()),
+            selected_leader_latest_activity_side: Some("BUY".into()),
+            selected_leader_latest_activity_slug: Some("market-slug".into()),
+            selected_leader_latest_activity_tx: Some("0xfeed".into()),
             verification_pending: 2,
             last_submit_status: "submitted_unverified".into(),
             last_correlation_id: Some("corr-7".into()),
@@ -46,6 +53,10 @@ fn snapshot_bundle_renders_stable_json_shape() {
     assert!(
         json.contains("\"selected_leader_source\":\"file:.omx/discovery/selected-leader.env\"")
     );
+    assert!(json.contains("\"selected_leader_rank\":\"1\""));
+    assert!(json.contains("\"selected_leader_pnl\":\"123.45\""));
+    assert!(json.contains("\"selected_leader_username\":\"alpha\""));
+    assert!(json.contains("\"selected_leader_latest_activity_side\":\"BUY\""));
     assert!(json.contains("\"verification_pending\":2"));
     assert!(json.contains("\"last_correlation_id\":\"corr-7\""));
     assert!(json.contains("\"last_reject_reason\":\"quote_stale\""));
@@ -68,6 +79,13 @@ fn snapshot_bundle_renders_nulls_and_escaped_strings_for_operator_reports() {
             blocked_reason: None,
             selected_leader_wallet: None,
             selected_leader_source: None,
+            selected_leader_rank: None,
+            selected_leader_pnl: None,
+            selected_leader_username: None,
+            selected_leader_latest_activity_timestamp: None,
+            selected_leader_latest_activity_side: None,
+            selected_leader_latest_activity_slug: None,
+            selected_leader_latest_activity_tx: None,
             verification_pending: 0,
             last_submit_status: "rejected:\\\"quote_stale".into(),
             last_correlation_id: None,
@@ -85,6 +103,8 @@ fn snapshot_bundle_renders_nulls_and_escaped_strings_for_operator_reports() {
     assert!(json.contains("\"blocked_reason\":null"));
     assert!(json.contains("\"selected_leader_wallet\":null"));
     assert!(json.contains("\"selected_leader_source\":null"));
+    assert!(json.contains("\"selected_leader_rank\":null"));
+    assert!(json.contains("\"selected_leader_pnl\":null"));
     assert!(json.contains("\"last_submit_status\":\"rejected:\\\\\\\"quote_stale\""));
     assert!(json.contains("\"last_correlation_id\":null"));
     assert!(json.contains("\"last_reject_reason\":null"));

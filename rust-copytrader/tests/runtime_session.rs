@@ -78,7 +78,16 @@ fn replay_session_from_root_uses_selected_leader_as_runtime_subject() {
     fs::create_dir_all(root.join(".omx/discovery")).expect("discovery dir created");
     fs::write(
         root.join(".omx/discovery/selected-leader.env"),
-        "COPYTRADER_DISCOVERY_WALLET=0xselected-leader\n",
+        concat!(
+            "COPYTRADER_DISCOVERY_WALLET=0xselected-leader\n",
+            "COPYTRADER_SELECTED_RANK=1\n",
+            "COPYTRADER_SELECTED_PNL=123.45\n",
+            "COPYTRADER_SELECTED_USERNAME=alpha\n",
+            "COPYTRADER_LATEST_ACTIVITY_TIMESTAMP=1776303488\n",
+            "COPYTRADER_LATEST_ACTIVITY_SIDE=BUY\n",
+            "COPYTRADER_LATEST_ACTIVITY_SLUG=market-slug\n",
+            "COPYTRADER_LATEST_ACTIVITY_TX=0xfeed\n",
+        ),
     )
     .expect("selected leader env written");
 
@@ -99,6 +108,22 @@ fn replay_session_from_root_uses_selected_leader_as_runtime_subject() {
     assert_eq!(
         snapshot.runtime.selected_leader_source.as_deref(),
         Some("file:.omx/discovery/selected-leader.env")
+    );
+    assert_eq!(snapshot.runtime.selected_leader_rank.as_deref(), Some("1"));
+    assert_eq!(
+        snapshot.runtime.selected_leader_pnl.as_deref(),
+        Some("123.45")
+    );
+    assert_eq!(
+        snapshot.runtime.selected_leader_username.as_deref(),
+        Some("alpha")
+    );
+    assert_eq!(
+        snapshot
+            .runtime
+            .selected_leader_latest_activity_side
+            .as_deref(),
+        Some("BUY")
     );
 
     fs::remove_dir_all(root).expect("temp root removed");
