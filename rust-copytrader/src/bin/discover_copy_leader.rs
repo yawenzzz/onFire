@@ -9,6 +9,8 @@ const ACTIVITY_BASE_URL: &str = "https://data-api.polymarket.com/activity";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Options {
+    leaderboard_base_url: String,
+    activity_base_url: String,
     category: String,
     time_period: String,
     order_by: String,
@@ -26,6 +28,10 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            leaderboard_base_url: env::var("POLYMARKET_LEADERBOARD_BASE_URL")
+                .unwrap_or_else(|_| LEADERBOARD_BASE_URL.to_string()),
+            activity_base_url: env::var("POLYMARKET_ACTIVITY_BASE_URL")
+                .unwrap_or_else(|_| ACTIVITY_BASE_URL.to_string()),
             category: "OVERALL".to_string(),
             time_period: "DAY".to_string(),
             order_by: "PNL".to_string(),
@@ -88,7 +94,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: discover_copy_leader [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--discovery-dir <path>] [--curl-bin <path>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--skip-activity]"
+        "usage: discover_copy_leader [--leaderboard-base-url <url>] [--activity-base-url <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--discovery-dir <path>] [--curl-bin <path>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--skip-activity]"
     );
 }
 
@@ -97,6 +103,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            "--leaderboard-base-url" => options.leaderboard_base_url = next_value(&mut iter, arg)?,
+            "--activity-base-url" => options.activity_base_url = next_value(&mut iter, arg)?,
             "--category" => options.category = next_value(&mut iter, arg)?,
             "--time-period" => options.time_period = next_value(&mut iter, arg)?,
             "--order-by" => options.order_by = next_value(&mut iter, arg)?,
@@ -182,8 +190,12 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
     let activity_path = if options.skip_activity {
         None
     } else {
-        let activity_url =
-            build_activity_url(&selected_wallet, &options.activity_type, options.limit);
+        let activity_url = build_activity_url(
+            &options.activity_base_url,
+            &selected_wallet,
+            &options.activity_type,
+            options.limit,
+        );
         let path = discovery_dir.join(format!(
             "activity-{}-{}.json",
             sanitize_for_filename(&selected_wallet),
@@ -228,7 +240,8 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
 
 fn build_leaderboard_url(options: &Options) -> String {
     format!(
-        "{LEADERBOARD_BASE_URL}?category={}&timePeriod={}&orderBy={}&limit={}&offset={}",
+        "{}?category={}&timePeriod={}&orderBy={}&limit={}&offset={}",
+        options.leaderboard_base_url.trim_end_matches('/'),
         encode_component(&options.category),
         encode_component(&options.time_period),
         encode_component(&options.order_by),
@@ -237,9 +250,10 @@ fn build_leaderboard_url(options: &Options) -> String {
     )
 }
 
-fn build_activity_url(wallet: &str, activity_type: &str, limit: usize) -> String {
+fn build_activity_url(base_url: &str, wallet: &str, activity_type: &str, limit: usize) -> String {
     format!(
-        "{ACTIVITY_BASE_URL}?user={}&limit={}&offset=0&sortBy=TIMESTAMP&sortDirection=DESC&type={}",
+        "{}?user={}&limit={}&offset=0&sortBy=TIMESTAMP&sortDirection=DESC&type={}",
+        base_url.trim_end_matches('/'),
         encode_component(wallet),
         limit,
         encode_component(activity_type)
@@ -380,8 +394,9 @@ fn encode_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Options, build_activity_url, build_leaderboard_url, execute, extract_wallet_from_json,
-        parse_args, render_selected_leader_env, seconds_from_ms, write_output_file,
+        LEADERBOARD_BASE_URL, Options, build_activity_url, build_leaderboard_url, execute,
+        extract_wallet_from_json, parse_args, render_selected_leader_env, seconds_from_ms,
+        write_output_file,
     };
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -399,6 +414,10 @@ mod tests {
     #[test]
     fn parse_args_accepts_discovery_flags() {
         let options = parse_args(&[
+            "--leaderboard-base-url".into(),
+            "https://example.com/leaderboard".into(),
+            "--activity-base-url".into(),
+            "https://example.com/activity".into(),
             "--category".into(),
             "OVERALL".into(),
             "--time-period".into(),
@@ -415,6 +434,11 @@ mod tests {
         ])
         .expect("parse");
 
+        assert_eq!(
+            options.leaderboard_base_url,
+            "https://example.com/leaderboard"
+        );
+        assert_eq!(options.activity_base_url, "https://example.com/activity");
         assert_eq!(options.category, "OVERALL");
         assert_eq!(options.time_period, "WEEK");
         assert_eq!(options.order_by, "VOL");
@@ -428,11 +452,14 @@ mod tests {
     fn build_urls_follow_expected_shape() {
         let options = Options::default();
         let leaderboard_url = build_leaderboard_url(&options);
-        let activity_url = build_activity_url("0xleader", "TRADE", 5);
+        let activity_url =
+            build_activity_url("https://example.com/activity", "0xleader", "TRADE", 5);
 
+        assert!(leaderboard_url.starts_with(LEADERBOARD_BASE_URL));
         assert!(leaderboard_url.contains("category=OVERALL"));
         assert!(leaderboard_url.contains("timePeriod=DAY"));
         assert!(leaderboard_url.contains("orderBy=PNL"));
+        assert!(activity_url.starts_with("https://example.com/activity"));
         assert!(activity_url.contains("user=0xleader"));
         assert!(activity_url.contains("type=TRADE"));
         assert!(activity_url.contains("limit=5"));

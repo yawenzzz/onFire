@@ -168,6 +168,15 @@ cd rust-copytrader
 cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
 ```
 
+如果默认 `data-api.polymarket.com` / `activity` host 在你当前环境里连不通，也可以先覆盖：
+
+```bash
+export POLYMARKET_LEADERBOARD_BASE_URL=https://your-proxy.example/leaderboard
+export POLYMARKET_ACTIVITY_BASE_URL=https://your-proxy.example/activity
+cd rust-copytrader
+cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
+```
+
 它仍然是 **fail-closed** 的：
 - helper / runtime smoke 都只做本地验证
 - 仍然不会解锁 live mode

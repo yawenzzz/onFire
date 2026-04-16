@@ -261,6 +261,14 @@ set -a && source ../.omx/discovery/selected-leader.env && set +a
 cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
 ```
 
+如果默认的 Polymarket discovery host 在你当前环境里不可达，也可以显式覆盖：
+
+```bash
+POLYMARKET_LEADERBOARD_BASE_URL=https://your-proxy.example/leaderboard \
+POLYMARKET_ACTIVITY_BASE_URL=https://your-proxy.example/activity \
+cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
+```
+
 如果网络环境有问题，或者你想先看它到底会打什么请求：
 
 ```bash

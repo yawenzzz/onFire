@@ -9,6 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 struct Options {
     root: String,
     discovery_dir: String,
+    leaderboard_base_url: Option<String>,
+    activity_base_url: Option<String>,
     category: String,
     time_period: String,
     order_by: String,
@@ -29,6 +31,8 @@ impl Default for Options {
         Self {
             root: "..".to_string(),
             discovery_dir: "../.omx/discovery".to_string(),
+            leaderboard_base_url: None,
+            activity_base_url: None,
             category: "OVERALL".to_string(),
             time_period: "DAY".to_string(),
             order_by: "PNL".to_string(),
@@ -81,7 +85,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--skip-activity] [--skip-discovery] [--discover-bin <path>] [--operator-bin <path>]"
+        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--skip-activity] [--skip-discovery] [--discover-bin <path>] [--operator-bin <path>]"
     );
 }
 
@@ -92,6 +96,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         match arg.as_str() {
             "--root" => options.root = next_value(&mut iter, arg)?,
             "--discovery-dir" => options.discovery_dir = next_value(&mut iter, arg)?,
+            "--leaderboard-base-url" => {
+                options.leaderboard_base_url = Some(next_value(&mut iter, arg)?)
+            }
+            "--activity-base-url" => options.activity_base_url = Some(next_value(&mut iter, arg)?),
             "--category" => options.category = next_value(&mut iter, arg)?,
             "--time-period" => options.time_period = next_value(&mut iter, arg)?,
             "--order-by" => options.order_by = next_value(&mut iter, arg)?,
@@ -254,6 +262,14 @@ fn build_discover_args(options: &Options) -> Vec<String> {
         "--max-time-ms".to_string(),
         options.max_time_ms.to_string(),
     ];
+    if let Some(base_url) = &options.leaderboard_base_url {
+        args.push("--leaderboard-base-url".to_string());
+        args.push(base_url.clone());
+    }
+    if let Some(base_url) = &options.activity_base_url {
+        args.push("--activity-base-url".to_string());
+        args.push(base_url.clone());
+    }
     if options.skip_activity {
         args.push("--skip-activity".to_string());
     }
@@ -340,6 +356,10 @@ mod tests {
             "..".into(),
             "--discovery-dir".into(),
             "../.omx/discovery".into(),
+            "--leaderboard-base-url".into(),
+            "https://example.com/leaderboard".into(),
+            "--activity-base-url".into(),
+            "https://example.com/activity".into(),
             "--skip-activity".into(),
             "--skip-discovery".into(),
         ])
@@ -347,6 +367,14 @@ mod tests {
 
         assert_eq!(options.root, "..");
         assert_eq!(options.discovery_dir, "../.omx/discovery");
+        assert_eq!(
+            options.leaderboard_base_url.as_deref(),
+            Some("https://example.com/leaderboard")
+        );
+        assert_eq!(
+            options.activity_base_url.as_deref(),
+            Some("https://example.com/activity")
+        );
         assert!(options.skip_activity);
         assert!(options.skip_discovery);
     }
