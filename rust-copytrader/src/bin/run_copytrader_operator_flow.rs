@@ -23,6 +23,8 @@ struct Options {
     watch_poll_interval_ms: u64,
     connect_timeout_ms: u64,
     max_time_ms: u64,
+    retry_count: usize,
+    retry_delay_ms: u64,
     skip_activity: bool,
     skip_discovery: bool,
     discover_bin: Option<String>,
@@ -49,6 +51,8 @@ impl Default for Options {
             watch_poll_interval_ms: 5_000,
             connect_timeout_ms: 5_000,
             max_time_ms: 12_000,
+            retry_count: 1,
+            retry_delay_ms: 500,
             skip_activity: false,
             skip_discovery: false,
             discover_bin: None,
@@ -93,7 +97,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--watch-poll-count <n>] [--watch-poll-interval-ms <n>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--skip-activity] [--skip-discovery] [--discover-bin <path>] [--watch-bin <path>] [--operator-bin <path>]"
+        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--watch-poll-count <n>] [--watch-poll-interval-ms <n>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--skip-activity] [--skip-discovery] [--discover-bin <path>] [--watch-bin <path>] [--operator-bin <path>]"
     );
 }
 
@@ -130,6 +134,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             "--max-time-ms" => {
                 options.max_time_ms = parse_u64(&next_value(&mut iter, arg)?, "max-time-ms")?
+            }
+            "--retry-count" => {
+                options.retry_count = parse_usize(&next_value(&mut iter, arg)?, "retry-count")?
+            }
+            "--retry-delay-ms" => {
+                options.retry_delay_ms = parse_u64(&next_value(&mut iter, arg)?, "retry-delay-ms")?
             }
             "--skip-activity" => options.skip_activity = true,
             "--skip-discovery" => options.skip_discovery = true,
@@ -338,6 +348,10 @@ fn build_discover_args(options: &Options) -> Vec<String> {
         options.connect_timeout_ms.to_string(),
         "--max-time-ms".to_string(),
         options.max_time_ms.to_string(),
+        "--retry-count".to_string(),
+        options.retry_count.to_string(),
+        "--retry-delay-ms".to_string(),
+        options.retry_delay_ms.to_string(),
     ];
     if let Some(base_url) = &options.leaderboard_base_url {
         args.push("--leaderboard-base-url".to_string());
@@ -371,6 +385,10 @@ fn build_watch_args(options: &Options) -> Vec<String> {
         options.connect_timeout_ms.to_string(),
         "--max-time-ms".to_string(),
         options.max_time_ms.to_string(),
+        "--retry-count".to_string(),
+        options.retry_count.to_string(),
+        "--retry-delay-ms".to_string(),
+        options.retry_delay_ms.to_string(),
     ];
     if let Some(base_url) = &options.activity_base_url {
         args.push("--base-url".to_string());
@@ -476,6 +494,10 @@ mod tests {
             "10".into(),
             "--proxy".into(),
             "http://127.0.0.1:7897".into(),
+            "--retry-count".into(),
+            "2".into(),
+            "--retry-delay-ms".into(),
+            "25".into(),
             "--skip-activity".into(),
             "--skip-discovery".into(),
         ])
@@ -494,6 +516,8 @@ mod tests {
         assert_eq!(options.watch_poll_count, 2);
         assert_eq!(options.watch_poll_interval_ms, 10);
         assert_eq!(options.proxy.as_deref(), Some("http://127.0.0.1:7897"));
+        assert_eq!(options.retry_count, 2);
+        assert_eq!(options.retry_delay_ms, 25);
         assert!(options.skip_activity);
         assert!(options.skip_discovery);
     }
@@ -518,6 +542,8 @@ mod tests {
         assert!(args.contains(&"2".to_string()));
         assert!(args.contains(&"--connect-timeout-ms".to_string()));
         assert!(args.contains(&"5000".to_string()));
+        assert!(args.contains(&"--retry-count".to_string()));
+        assert!(args.contains(&"1".to_string()));
         assert!(!args.contains(&"--proxy".to_string()));
     }
 
@@ -532,6 +558,10 @@ mod tests {
             "https://example.com/activity".into(),
             "--proxy".into(),
             "http://127.0.0.1:7897".into(),
+            "--retry-count".into(),
+            "2".into(),
+            "--retry-delay-ms".into(),
+            "25".into(),
         ])
         .expect("parse");
 
@@ -544,6 +574,8 @@ mod tests {
         assert!(args.contains(&"--base-url".to_string()));
         assert!(args.contains(&"https://example.com/activity".to_string()));
         assert!(args.contains(&"--proxy".to_string()));
+        assert!(args.contains(&"--retry-count".to_string()));
+        assert!(args.contains(&"2".to_string()));
     }
 
     #[test]

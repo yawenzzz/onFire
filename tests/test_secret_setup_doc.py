@@ -22,6 +22,7 @@ class SecretSetupDocTests(unittest.TestCase):
         self.assertIn('POLYMARKET_LEADERBOARD_BASE_URL', text)
         self.assertIn('POLYMARKET_ACTIVITY_BASE_URL', text)
         self.assertIn('POLYMARKET_CURL_PROXY', text)
+        self.assertIn('--retry-count 3 --retry-delay-ms 1000', text)
         self.assertIn('selected-leader.env', text)
         self.assertIn('COPYTRADER_LEADER_WALLET', text)
         self.assertIn('--operator-demo', text)

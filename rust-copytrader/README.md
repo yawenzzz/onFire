@@ -295,6 +295,13 @@ POLYMARKET_CURL_PROXY=http://127.0.0.1:7897 \
 cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
 ```
 
+如果代理链路偶发超时/SSL 抖动，也可以直接提高重试：
+
+```bash
+POLYMARKET_CURL_PROXY=http://127.0.0.1:7897 \
+cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery --retry-count 3 --retry-delay-ms 1000
+```
+
 如果网络环境有问题，或者你想先看它到底会打什么请求：
 
 ```bash

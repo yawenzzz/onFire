@@ -203,6 +203,14 @@ cd rust-copytrader
 cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
 ```
 
+如果代理偶发超时或者 `SSL_ERROR_SYSCALL`，也可以直接给 discovery / watcher 提高重试次数：
+
+```bash
+export POLYMARKET_CURL_PROXY=http://127.0.0.1:7897
+cd rust-copytrader
+cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery --retry-count 3 --retry-delay-ms 1000
+```
+
 它仍然是 **fail-closed** 的：
 - helper / runtime smoke 都只做本地验证
 - 仍然不会解锁 live mode

@@ -22,6 +22,8 @@ struct Options {
     proxy: Option<String>,
     connect_timeout_ms: u64,
     max_time_ms: u64,
+    retry_count: usize,
+    retry_delay_ms: u64,
 }
 
 impl Default for Options {
@@ -39,6 +41,8 @@ impl Default for Options {
             proxy: env::var("POLYMARKET_CURL_PROXY").ok(),
             connect_timeout_ms: 8_000,
             max_time_ms: 20_000,
+            retry_count: 1,
+            retry_delay_ms: 500,
         }
     }
 }
@@ -83,7 +87,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: watch_copy_leader_activity [--root <path>] [--user <wallet>] [--base-url <url>] [--limit <n>] [--poll-count <n>] [--poll-interval-ms <n>] [--activity-type <value>] [--curl-bin <path>] [--proxy <url>] [--connect-timeout-ms <n>] [--max-time-ms <n>]"
+        "usage: watch_copy_leader_activity [--root <path>] [--user <wallet>] [--base-url <url>] [--limit <n>] [--poll-count <n>] [--poll-interval-ms <n>] [--activity-type <value>] [--curl-bin <path>] [--proxy <url>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>]"
     );
 }
 
@@ -112,6 +116,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             "--max-time-ms" => {
                 options.max_time_ms = parse_u64(&next_value(&mut iter, arg)?, "max-time-ms")?
+            }
+            "--retry-count" => {
+                options.retry_count = parse_usize(&next_value(&mut iter, arg)?, "retry-count")?
+            }
+            "--retry-delay-ms" => {
+                options.retry_delay_ms = parse_u64(&next_value(&mut iter, arg)?, "retry-delay-ms")?
             }
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -172,7 +182,7 @@ fn watch_activity(options: &Options) -> Result<Vec<String>, String> {
 
     for poll_index in 0..options.poll_count.max(1) {
         let url = build_activity_url(options, &user);
-        let output = run_request(
+        let output = run_request_with_retry(
             &options.curl_bin,
             &build_curl_args(
                 &url,
@@ -180,6 +190,8 @@ fn watch_activity(options: &Options) -> Result<Vec<String>, String> {
                 options.connect_timeout_ms,
                 options.max_time_ms,
             ),
+            options.retry_count,
+            options.retry_delay_ms,
         )?;
         fs::write(&latest_path, &output.stdout)
             .map_err(|error| format!("failed to write {}: {error}", latest_path.display()))?;
@@ -337,6 +349,31 @@ fn run_request(curl_bin: &str, args: &[String]) -> Result<Output, String> {
     }
 }
 
+fn run_request_with_retry(
+    curl_bin: &str,
+    args: &[String],
+    retry_count: usize,
+    retry_delay_ms: u64,
+) -> Result<Output, String> {
+    let mut attempts = 0;
+    loop {
+        match run_request(curl_bin, args) {
+            Ok(output) => return Ok(output),
+            Err(error) => {
+                if attempts >= retry_count || !is_retryable_transport_error(&error) {
+                    return Err(error);
+                }
+                attempts += 1;
+                thread::sleep(Duration::from_millis(retry_delay_ms));
+            }
+        }
+    }
+}
+
+fn is_retryable_transport_error(error: &str) -> bool {
+    error.contains("curl exited with 28") || error.contains("curl exited with 35")
+}
+
 fn extract_event_summaries(content: &str) -> Vec<EventSummary> {
     let mut summaries = Vec::new();
     let mut rest = content;
@@ -484,12 +521,18 @@ mod tests {
             "10".into(),
             "--proxy".into(),
             "http://127.0.0.1:7897".into(),
+            "--retry-count".into(),
+            "2".into(),
+            "--retry-delay-ms".into(),
+            "15".into(),
         ])
         .expect("parse");
 
         assert_eq!(options.poll_count, 2);
         assert_eq!(options.poll_interval_ms, 10);
         assert_eq!(options.proxy.as_deref(), Some("http://127.0.0.1:7897"));
+        assert_eq!(options.retry_count, 2);
+        assert_eq!(options.retry_delay_ms, 15);
     }
 
     #[test]
@@ -577,6 +620,19 @@ mod tests {
         assert!(seen.contains("0xdef"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn retryable_transport_errors_cover_timeout_and_ssl_failures() {
+        assert!(super::is_retryable_transport_error(
+            "curl exited with 28: curl: (28) timeout"
+        ));
+        assert!(super::is_retryable_transport_error(
+            "curl exited with 35: curl: (35) SSL_ERROR_SYSCALL"
+        ));
+        assert!(!super::is_retryable_transport_error(
+            "curl exited with 22: HTTP 404"
+        ));
     }
 
     #[test]

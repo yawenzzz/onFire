@@ -3,6 +3,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Output};
+use std::thread;
+use std::time::Duration;
 
 const LEADERBOARD_BASE_URL: &str = "https://data-api.polymarket.com/v1/leaderboard";
 const ACTIVITY_BASE_URL: &str = "https://data-api.polymarket.com/activity";
@@ -23,6 +25,8 @@ struct Options {
     proxy: Option<String>,
     connect_timeout_ms: u64,
     max_time_ms: u64,
+    retry_count: usize,
+    retry_delay_ms: u64,
     skip_activity: bool,
 }
 
@@ -45,6 +49,8 @@ impl Default for Options {
             proxy: env::var("POLYMARKET_CURL_PROXY").ok(),
             connect_timeout_ms: 1_500,
             max_time_ms: 8_000,
+            retry_count: 1,
+            retry_delay_ms: 500,
             skip_activity: false,
         }
     }
@@ -135,7 +141,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: discover_copy_leader [--leaderboard-base-url <url>] [--activity-base-url <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--discovery-dir <path>] [--curl-bin <path>] [--proxy <url>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--skip-activity]"
+        "usage: discover_copy_leader [--leaderboard-base-url <url>] [--activity-base-url <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--discovery-dir <path>] [--curl-bin <path>] [--proxy <url>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--skip-activity]"
     );
 }
 
@@ -162,6 +168,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             "--max-time-ms" => {
                 options.max_time_ms = parse_u64(&next_value(&mut iter, arg)?, "max-time-ms")?
+            }
+            "--retry-count" => {
+                options.retry_count = parse_usize(&next_value(&mut iter, arg)?, "retry-count")?
+            }
+            "--retry-delay-ms" => {
+                options.retry_delay_ms = parse_u64(&next_value(&mut iter, arg)?, "retry-delay-ms")?
             }
             "--skip-activity" => options.skip_activity = true,
             other => return Err(format!("unknown argument: {other}")),
@@ -203,7 +215,7 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
         sanitize_for_filename(&options.time_period),
         sanitize_for_filename(&options.order_by)
     ));
-    let leaderboard_output = run_request(
+    let leaderboard_output = run_request_with_retry(
         &options.curl_bin,
         &build_curl_args(
             &leaderboard_url,
@@ -211,6 +223,8 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
             options.connect_timeout_ms,
             options.max_time_ms,
         ),
+        options.retry_count,
+        options.retry_delay_ms,
     )?;
     write_output_file(&leaderboard_path, &leaderboard_output.stdout).map_err(|error| {
         format!(
@@ -245,7 +259,7 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
             sanitize_for_filename(&selected_wallet),
             sanitize_for_filename(&options.activity_type.to_lowercase())
         ));
-        let activity_output = run_request(
+        let activity_output = run_request_with_retry(
             &options.curl_bin,
             &build_curl_args(
                 &activity_url,
@@ -253,6 +267,8 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
                 options.connect_timeout_ms,
                 options.max_time_ms,
             ),
+            options.retry_count,
+            options.retry_delay_ms,
         )?;
         write_output_file(&path, &activity_output.stdout).map_err(|error| {
             format!(
@@ -390,6 +406,31 @@ fn run_request(curl_bin: &str, args: &[String]) -> Result<Output, String> {
             }
         ))
     }
+}
+
+fn run_request_with_retry(
+    curl_bin: &str,
+    args: &[String],
+    retry_count: usize,
+    retry_delay_ms: u64,
+) -> Result<Output, String> {
+    let mut attempts = 0;
+    loop {
+        match run_request(curl_bin, args) {
+            Ok(output) => return Ok(output),
+            Err(error) => {
+                if attempts >= retry_count || !is_retryable_transport_error(&error) {
+                    return Err(error);
+                }
+                attempts += 1;
+                thread::sleep(Duration::from_millis(retry_delay_ms));
+            }
+        }
+    }
+}
+
+fn is_retryable_transport_error(error: &str) -> bool {
+    error.contains("curl exited with 28") || error.contains("curl exited with 35")
 }
 
 fn extract_wallet_from_json(content: &str, index: usize) -> Option<String> {
@@ -612,6 +653,10 @@ mod tests {
             "/tmp/discovery".into(),
             "--proxy".into(),
             "http://127.0.0.1:7897".into(),
+            "--retry-count".into(),
+            "2".into(),
+            "--retry-delay-ms".into(),
+            "10".into(),
             "--skip-activity".into(),
         ])
         .expect("parse");
@@ -628,6 +673,8 @@ mod tests {
         assert_eq!(options.activity_type, "TRADE");
         assert_eq!(options.discovery_dir, "/tmp/discovery");
         assert_eq!(options.proxy.as_deref(), Some("http://127.0.0.1:7897"));
+        assert_eq!(options.retry_count, 2);
+        assert_eq!(options.retry_delay_ms, 10);
         assert!(options.skip_activity);
     }
 
@@ -718,6 +765,19 @@ mod tests {
         assert!(env.contains("COPYTRADER_SELECTED_FROM=leaderboard:"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn retryable_transport_errors_cover_timeout_and_ssl_failures() {
+        assert!(super::is_retryable_transport_error(
+            "curl exited with 28: curl: (28) timeout"
+        ));
+        assert!(super::is_retryable_transport_error(
+            "curl exited with 35: curl: (35) SSL_ERROR_SYSCALL"
+        ));
+        assert!(!super::is_retryable_transport_error(
+            "curl exited with 22: HTTP 404"
+        ));
     }
 
     #[test]
