@@ -235,6 +235,13 @@ set -a && source ../.omx/discovery/selected-leader.env && set +a
 
 后续再跑 `--operator-demo` 时，会优先读取 `.omx/discovery/selected-leader.env` 里的 `COPYTRADER_DISCOVERY_WALLET`。
 
+如果你不是从 leaderboard 选，而是想直接把某个 trader 的 activity 产物转成 leader env，也可以：
+
+```bash
+cargo run --bin select_copy_leader -- --activity ../.omx/discovery/activity-0x56687bf447db6ffa42ffe2204a05edaa20f55839-trade.json --output ../.omx/discovery/selected-leader.env
+set -a && source ../.omx/discovery/selected-leader.env && set +a
+```
+
 如果网络环境有问题，或者你想先看它到底会打什么请求：
 
 ```bash

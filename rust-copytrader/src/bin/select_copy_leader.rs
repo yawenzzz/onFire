@@ -8,6 +8,7 @@ use std::process::ExitCode;
 struct Options {
     wallet: Option<String>,
     leaderboard: Option<String>,
+    activity: Option<String>,
     index: usize,
     output: Option<String>,
     print_wallet: bool,
@@ -63,7 +64,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: select_copy_leader [--wallet <wallet> | --leaderboard <path>] [--index <n>] [--output <path>] [--print-wallet]"
+        "usage: select_copy_leader [--wallet <wallet> | --leaderboard <path> | --activity <path>] [--index <n>] [--output <path>] [--print-wallet]"
     );
 }
 
@@ -74,6 +75,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         match arg.as_str() {
             "--wallet" => options.wallet = Some(next_value(&mut iter, arg)?),
             "--leaderboard" => options.leaderboard = Some(next_value(&mut iter, arg)?),
+            "--activity" => options.activity = Some(next_value(&mut iter, arg)?),
             "--index" => options.index = parse_usize(&next_value(&mut iter, arg)?, "index")?,
             "--output" => options.output = Some(next_value(&mut iter, arg)?),
             "--print-wallet" => options.print_wallet = true,
@@ -81,11 +83,14 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         }
     }
 
-    if options.wallet.is_none() && options.leaderboard.is_none() {
-        return Err("missing required --wallet or --leaderboard".to_string());
+    let source_count = usize::from(options.wallet.is_some())
+        + usize::from(options.leaderboard.is_some())
+        + usize::from(options.activity.is_some());
+    if source_count == 0 {
+        return Err("missing required --wallet, --leaderboard, or --activity".to_string());
     }
-    if options.wallet.is_some() && options.leaderboard.is_some() {
-        return Err("use exactly one of --wallet or --leaderboard".to_string());
+    if source_count > 1 {
+        return Err("use exactly one of --wallet, --leaderboard, or --activity".to_string());
     }
 
     Ok(options)
@@ -111,21 +116,32 @@ fn resolve_wallet(options: &Options) -> Result<String, String> {
         return Ok(wallet.trim().to_string());
     }
 
-    let leaderboard_path = options
-        .leaderboard
+    if let Some(leaderboard_path) = &options.leaderboard {
+        let content = fs::read_to_string(leaderboard_path)
+            .map_err(|error| format!("failed to read {leaderboard_path}: {error}"))?;
+        return extract_wallet_from_json(&content, options.index).ok_or_else(|| {
+            format!(
+                "failed to extract wallet at index {} from {}",
+                options.index, leaderboard_path
+            )
+        });
+    }
+
+    let activity_path = options
+        .activity
         .as_ref()
-        .ok_or_else(|| "missing leaderboard path".to_string())?;
-    let content = fs::read_to_string(leaderboard_path)
-        .map_err(|error| format!("failed to read {leaderboard_path}: {error}"))?;
-    extract_wallet_from_leaderboard(&content, options.index).ok_or_else(|| {
+        .ok_or_else(|| "missing activity path".to_string())?;
+    let content = fs::read_to_string(activity_path)
+        .map_err(|error| format!("failed to read {activity_path}: {error}"))?;
+    extract_wallet_from_json(&content, options.index).ok_or_else(|| {
         format!(
             "failed to extract wallet at index {} from {}",
-            options.index, leaderboard_path
+            options.index, activity_path
         )
     })
 }
 
-fn extract_wallet_from_leaderboard(content: &str, index: usize) -> Option<String> {
+fn extract_wallet_from_json(content: &str, index: usize) -> Option<String> {
     let fields = ["proxyWallet", "wallet", "address", "user"];
     let mut wallets = Vec::new();
 
@@ -165,6 +181,8 @@ fn looks_like_wallet(value: &str) -> bool {
 fn render_env_output(wallet: &str, options: &Options) -> String {
     let source = if let Some(path) = &options.leaderboard {
         format!("leaderboard:{}#{}", path, options.index)
+    } else if let Some(path) = &options.activity {
+        format!("activity:{}#{}", path, options.index)
     } else {
         "wallet".to_string()
     };
@@ -190,8 +208,7 @@ fn write_output_file(path: &str, bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_wallet_from_leaderboard, parse_args, render_env_output, resolve_wallet,
-        write_output_file,
+        extract_wallet_from_json, parse_args, render_env_output, resolve_wallet, write_output_file,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -229,12 +246,29 @@ mod tests {
         ]"#;
 
         assert_eq!(
-            extract_wallet_from_leaderboard(json, 0).as_deref(),
+            extract_wallet_from_json(json, 0).as_deref(),
             Some("0xleader1")
         );
         assert_eq!(
-            extract_wallet_from_leaderboard(json, 1).as_deref(),
+            extract_wallet_from_json(json, 1).as_deref(),
             Some("0xleader2")
+        );
+    }
+
+    #[test]
+    fn extract_wallet_from_activity_prefers_proxy_wallet_fields() {
+        let json = r#"[
+          {"proxyWallet":"0xleader3","side":"BUY"},
+          {"user":"0xleader4","side":"SELL"}
+        ]"#;
+
+        assert_eq!(
+            extract_wallet_from_json(json, 0).as_deref(),
+            Some("0xleader3")
+        );
+        assert_eq!(
+            extract_wallet_from_json(json, 1).as_deref(),
+            Some("0xleader4")
         );
     }
 
@@ -263,6 +297,30 @@ mod tests {
     }
 
     #[test]
+    fn resolve_wallet_reads_activity_file() {
+        let root = unique_temp_dir("activity");
+        fs::create_dir_all(&root).expect("temp dir created");
+        let activity = root.join("activity.json");
+        fs::write(
+            &activity,
+            r#"[{"proxyWallet":"0xleader3"},{"proxyWallet":"0xleader4"}]"#,
+        )
+        .expect("activity written");
+
+        let options = parse_args(&[
+            "--activity".into(),
+            activity.display().to_string(),
+            "--index".into(),
+            "0".into(),
+        ])
+        .expect("parse");
+
+        assert_eq!(resolve_wallet(&options).expect("wallet"), "0xleader3");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
     fn render_env_output_contains_selected_wallet_and_source() {
         let options = parse_args(&["--wallet".into(), "0xleader1".into()]).expect("parse");
         let rendered = render_env_output("0xleader1", &options);
@@ -270,6 +328,20 @@ mod tests {
         assert!(rendered.contains("COPYTRADER_DISCOVERY_WALLET=0xleader1"));
         assert!(rendered.contains("COPYTRADER_LEADER_WALLET=0xleader1"));
         assert!(rendered.contains("COPYTRADER_SELECTED_FROM=wallet"));
+    }
+
+    #[test]
+    fn render_env_output_uses_activity_source_when_selected_from_activity() {
+        let options = parse_args(&[
+            "--activity".into(),
+            "/tmp/activity.json".into(),
+            "--index".into(),
+            "1".into(),
+        ])
+        .expect("parse");
+        let rendered = render_env_output("0xleader9", &options);
+
+        assert!(rendered.contains("COPYTRADER_SELECTED_FROM=activity:/tmp/activity.json#1"));
     }
 
     #[test]

@@ -145,6 +145,14 @@ set -a && source ../.omx/discovery/selected-leader.env && set +a
 - `COPYTRADER_LEADER_WALLET=...`
 - `COPYTRADER_SELECTED_FROM=...`
 
+如果你已经先抓了某个 trader 的 activity，也可以直接从 activity JSON 生成相同的 leader env：
+
+```bash
+cd rust-copytrader
+cargo run --bin select_copy_leader -- --activity ../.omx/discovery/activity-0x56687bf447db6ffa42ffe2204a05edaa20f55839-trade.json --output ../.omx/discovery/selected-leader.env
+set -a && source ../.omx/discovery/selected-leader.env && set +a
+```
+
 它仍然是 **fail-closed** 的：
 - helper / runtime smoke 都只做本地验证
 - 仍然不会解锁 live mode
