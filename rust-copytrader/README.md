@@ -183,6 +183,9 @@ cargo run -- --operator-demo --root ..
 - `.omx/operator-demo/operator-demo-*.txt`
 - `.omx/operator-demo/latest.txt`
 并额外给出：
+- `replay_submit_elapsed_ms=60`
+- `replay_verified_elapsed_ms=82`
+- `submit_hard_budget_ms=200`
 - `selected_leader_wallet=...`
 - `selected_leader_source=...`
 - `leaderboard_preview_url=...`

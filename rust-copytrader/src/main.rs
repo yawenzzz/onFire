@@ -10,6 +10,7 @@ use rust_copytrader::app::{
 use rust_copytrader::config::{
     ActivityMode, CommandAdapterConfig, LiveExecutionWiring, LiveModeGate, RootEnvLoadError,
 };
+use rust_copytrader::domain::budget::LatencyBudget;
 use rust_copytrader::replay::fixture::ReplayFixture;
 use std::env;
 use std::ffi::OsString;
@@ -244,12 +245,14 @@ fn render_runtime_smoke_report(root: &Path) -> Result<String, RootEnvLoadError> 
             .map(ToString::to_string),
     );
 
+    let fixture = ReplayFixture::success_buy_follow();
+    let submit_budget = LatencyBudget::new(200);
     let mut session = RuntimeSession::from_root(
         ActivityMode::Replay,
         LiveModeGate::for_mode(ActivityMode::Replay),
         root,
     )?;
-    let outcome = session.process_replay(&ReplayFixture::success_buy_follow());
+    let outcome = session.process_replay(&fixture);
     let smoke_root = root.join(".omx").join("runtime-smoke");
     let session_id = format!(
         "helper-smoke-{}",
@@ -269,6 +272,27 @@ fn render_runtime_smoke_report(root: &Path) -> Result<String, RootEnvLoadError> 
     lines.push(format!(
         "session_outcome={}",
         format_session_outcome(&outcome)
+    ));
+    lines.push(format!(
+        "replay_submit_elapsed_ms={}",
+        fixture.submit_elapsed_ms()
+    ));
+    lines.push(format!(
+        "replay_verified_elapsed_ms={}",
+        fixture
+            .verification
+            .observed_at_ms()
+            .saturating_sub(fixture.activity.observed_at_ms)
+    ));
+    lines.push(format!(
+        "submit_hard_budget_ms={}",
+        submit_budget.hard_limit_ms()
+    ));
+    lines.push(format!(
+        "submit_budget_headroom_ms={}",
+        submit_budget
+            .remaining_ms(fixture.submit_elapsed_ms())
+            .unwrap_or(0)
     ));
     if let Some(snapshot) = session.snapshot() {
         lines.push(format!("runtime_mode={}", snapshot.runtime.mode));
@@ -931,6 +955,10 @@ mod tests {
         assert!(report.contains("mode=runtime-smoke"));
         assert!(report.contains("helper_smoke=ok"));
         assert!(report.contains("session_outcome=processed"));
+        assert!(report.contains("replay_submit_elapsed_ms=60"));
+        assert!(report.contains("replay_verified_elapsed_ms=82"));
+        assert!(report.contains("submit_hard_budget_ms=200"));
+        assert!(report.contains("submit_budget_headroom_ms=140"));
         assert!(report.contains("runtime_mode=replay"));
         assert!(report.contains("last_submit_status=verified"));
         assert!(report.contains("latest_snapshot_path="));
