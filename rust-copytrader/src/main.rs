@@ -245,7 +245,9 @@ fn render_runtime_smoke_report(root: &Path) -> Result<String, RootEnvLoadError> 
             .map(ToString::to_string),
     );
 
-    let fixture = ReplayFixture::success_buy_follow();
+    let (selected_leader_wallet, selected_leader_source) = selected_leader_context(root);
+    let fixture =
+        ReplayFixture::success_buy_follow().with_leader_wallet(selected_leader_wallet.clone());
     let submit_budget = LatencyBudget::new(200);
     let mut session = RuntimeSession::from_root(
         ActivityMode::Replay,
@@ -273,6 +275,8 @@ fn render_runtime_smoke_report(root: &Path) -> Result<String, RootEnvLoadError> 
         "session_outcome={}",
         format_session_outcome(&outcome)
     ));
+    lines.push(format!("runtime_subject_wallet={selected_leader_wallet}"));
+    lines.push(format!("runtime_subject_source={selected_leader_source}"));
     lines.push(format!(
         "replay_submit_elapsed_ms={}",
         fixture.submit_elapsed_ms()
@@ -955,6 +959,8 @@ mod tests {
         assert!(report.contains("mode=runtime-smoke"));
         assert!(report.contains("helper_smoke=ok"));
         assert!(report.contains("session_outcome=processed"));
+        assert!(report.contains("runtime_subject_wallet=0xpoly-address"));
+        assert!(report.contains("runtime_subject_source=auth_material"));
         assert!(report.contains("replay_submit_elapsed_ms=60"));
         assert!(report.contains("replay_verified_elapsed_ms=82"));
         assert!(report.contains("submit_hard_budget_ms=200"));
@@ -964,6 +970,14 @@ mod tests {
         assert!(report.contains("latest_snapshot_path="));
         assert!(report.contains("report_path="));
         assert!(report.contains("summary_path="));
+
+        let latest_snapshot_path = report
+            .lines()
+            .find_map(|line| line.strip_prefix("latest_snapshot_path="))
+            .expect("latest snapshot path");
+        let latest_snapshot =
+            fs::read_to_string(latest_snapshot_path).expect("runtime snapshot should persist");
+        assert!(latest_snapshot.contains("\"leader_id\":\"0xpoly-address\""));
 
         fs::remove_dir_all(root).expect("temp root removed");
     }

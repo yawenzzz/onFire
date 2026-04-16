@@ -188,6 +188,8 @@ cargo run -- --operator-demo --root ..
 - `submit_hard_budget_ms=200`
 - `selected_leader_wallet=...`
 - `selected_leader_source=...`
+- `runtime_subject_wallet=...`
+- `runtime_subject_source=...`
 - `leaderboard_preview_url=...`
 - `leaderboard_preview_curl=...`
 - `activity_preview_url=...`

@@ -142,6 +142,15 @@ impl ReplayFixture {
         )
     }
 
+    pub fn with_leader_wallet(mut self, leader_wallet: impl Into<String>) -> Self {
+        let leader_wallet = leader_wallet.into();
+        self.leader_id = leader_wallet.clone();
+        self.activity.proxy_wallet = leader_wallet.clone();
+        self.previous_position.proxy_wallet = leader_wallet.clone();
+        self.current_position.proxy_wallet = leader_wallet;
+        self
+    }
+
     pub fn submit_elapsed_ms(&self) -> u64 {
         self.submit_ack_at_ms
             .saturating_sub(self.activity.observed_at_ms)

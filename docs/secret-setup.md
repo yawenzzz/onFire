@@ -90,6 +90,7 @@ It will:
 - execute the helper-driven command path
 - run a replay-backed runtime session
 - emit `session_outcome`, `runtime_mode`, and `last_submit_status`
+- emit `runtime_subject_wallet=...` / `runtime_subject_source=...` so the replay artifact shows which selected leader it is simulating
 - emit replay latency evidence like `replay_submit_elapsed_ms=60`, `replay_verified_elapsed_ms=82`, and `submit_hard_budget_ms=200`
 - print the generated snapshot/report artifact paths
 
