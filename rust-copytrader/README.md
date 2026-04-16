@@ -242,6 +242,19 @@ cargo run --bin select_copy_leader -- --activity ../.omx/discovery/activity-0x56
 set -a && source ../.omx/discovery/selected-leader.env && set +a
 ```
 
+如果你想把“抓 leaderboard -> 选 leader -> 抓这个 leader 的 activity -> 写 selected-leader.env”压成一个更真实的一步，也可以直接跑：
+
+```bash
+cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery
+set -a && source ../.omx/discovery/selected-leader.env && set +a
+```
+
+这个命令会：
+- 抓 leaderboard 到 `.omx/discovery/leaderboard-*.json`
+- 选出一个 leader wallet
+- 抓这个 wallet 的 activity 到 `.omx/discovery/activity-*.json`
+- 写 `.omx/discovery/selected-leader.env`
+
 如果网络环境有问题，或者你想先看它到底会打什么请求：
 
 ```bash

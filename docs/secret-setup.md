@@ -153,6 +153,14 @@ cargo run --bin select_copy_leader -- --activity ../.omx/discovery/activity-0x56
 set -a && source ../.omx/discovery/selected-leader.env && set +a
 ```
 
+如果你想一步跑完 leaderboard discovery + 选 leader + 抓 activity + 写 env，也可以：
+
+```bash
+cd rust-copytrader
+cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery
+set -a && source ../.omx/discovery/selected-leader.env && set +a
+```
+
 它仍然是 **fail-closed** 的：
 - helper / runtime smoke 都只做本地验证
 - 仍然不会解锁 live mode
