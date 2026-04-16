@@ -1,127 +1,197 @@
-# rust-copytrader scaffold
+# rust-copytrader 用户指南（说人话版）
 
-This crate is the Rust-side, contract-first scaffold for the copy-trading PRD.
-It locks the non-negotiable execution posture before any real venue I/O is added:
+这不是一个“概念验证玩具”，也不是一个已经默认会替你真下单的黑盒。
 
-- fixed hot-path order: `activity -> positions -> market websocket -> submit -> verification`
-- fail-closed latency posture with a hard reject above 200ms to submit
-- explicit live-mode gate while third-party leader activity listening remains unverified
-- single-node, local-file-only runtime evidence with JSONL append helpers and session snapshot path helpers (not yet full session-owned persistence)
+它现在是一条 **Rust-first 的跟单主路**，已经打通到：
 
-## Current implementation status
+1. **真实 discovery**（抓 Polymarket leaderboard / activity）
+2. **真实 leader selection**（选出要跟的 leader）
+3. **真实 activity watcher**（持续看这个 leader 的公开 activity）
+4. **guarded runtime cycle**（把这条 activity 喂进受控执行链）
+5. **live submit gate**（默认只做到 `preview_only`，不会偷偷真下单）
 
-### Lane 1: preview + submit contract skeletons
-- `src/pipeline/orchestrator.rs` wires the ordered hot path through reconciliation, quote checks, budget enforcement, preview gating, submit lifecycle, and verification outcome application.
-- `src/execution/pre_trade_gate.rs` enforces fail-closed market-open, price-shape, quantity, and remaining-budget checks before a submit-ready `OrderIntent` can exist.
-- `src/adapters/order_api.rs` defines the submit-facing order contract currently shared by replay/orchestrator flows.
-- `src/adapters/http_submit.rs` now builds authenticated `POST /orders` HTTP request specs with explicit L2 header requirements so the scaffold has a concrete REST submission contract even before live network execution is wired.
-- `src/adapters/http_submit.rs` also provides a curl-based execution command spec plus runner abstraction, so the scaffold can now test how a real authenticated submit would be executed without performing live network calls by default.
-- `src/adapters/signing.rs` now bridges auth material, signer output, and signed order envelopes so authenticated request headers and signed order payloads can be prepared from one explicit contract.
-- `src/adapters/submit_pipeline.rs` now composes auth material validation, order signing, L2 header provisioning, authenticated request building, and command-runner execution into one end-to-end submit pipeline contract without caller-threaded raw header signature/timestamp fields.
-- `src/config.rs` now adds explicit signing/submit adapter selections plus repo-local helper-oriented command-spec wiring so replay scaffolds and command-backed live execution surfaces can be selected without changing the fixed hot path.
+一句话：
 
-### Lane 2: snapshots + telemetry in the runtime session
-- `src/app.rs` provides `RuntimeSession` plus `RuntimeSessionRecorder`, tying bootstrap state, orchestrator results, runtime metrics, latency accounting, snapshot persistence, rotating local logs, and operator report generation together.
-- `src/app.rs` also exposes a config-driven runtime bootstrap/session path that only treats live execution as ready when command-backed signing and HTTP submit adapters are explicitly selected and wired, while surfacing the repo-local L2 helper bridge alongside the order-sign helper contract.
-- `src/main.rs` now exposes a read-only bootstrap report entrypoint so operators can point the crate at a repo root, confirm the repo-local helper contract that was loaded, and verify that live mode still stays blocked until the rest of the live gates turn green.
-- `src/pipeline/trace_context.rs` records ordered stage timestamps so latency reporting stays aligned with the mandated execution sequence.
-- `src/persistence/snapshots.rs` defines a stable local JSON snapshot shape plus retained session snapshot archives for operator/runtime evidence.
-- `src/persistence/jsonl.rs` rotates append-only activity/order/verification logs under the local session root without introducing a database.
-- `src/telemetry/metrics.rs`, `src/telemetry/latency.rs`, and `src/telemetry/report.rs` accumulate submit/reject/timeout counters, per-stage timing deltas, and operator-facing JSON/text report surfaces.
+> **现在已经可以真实抓榜、真实选 leader、真实盯 activity、真实生成 live submit preview。**  
+> **默认还是安全的，不会自动给你真下单。**
 
-### Lane 3: transport boundaries and config-driven live execution selection
-- `src/adapters/activity.rs` keeps `live_listen`, `shadow_poll`, and `replay` mode selection explicit and fail-closed.
-- `src/adapters/transport.rs` now resolves replay/shadow/live transport skeletons from a `TransportBoundaryConfig`, rejects mixed boundary modes fail-closed, and keeps the live-mode gate plus replay parity intact across activity, positions, market quote, and verification frames.
-- `src/adapters/positions.rs`, `src/adapters/market_ws.rs`, and `src/adapters/verification.rs` define the current boundary contracts for positions reconciliation, market quote validation, and post-submit verification correlation.
-- `ExecutionAdapterConfig` keeps replay defaults fail-closed for live mode while allowing an explicit `command signing + HTTP submit` selection, including repo-local helper args for `scripts/sign_order.py --json` plus the derived `scripts/sign_l2.py --json` bridge, to flow through `RuntimeBootstrap` / `RuntimeSession` when operators are ready to wire real auth material around the scaffold.
-- `src/replay/harness.rs` preserves replay parity against the same stage ordering and budget posture the eventual live transports must respect.
+---
 
-## 当前跟单策略（Current copy-trading posture）
+## 1. 现在到底能做什么，不能做什么
 
-这份 README 当前描述的不是“收益优化策略”，而是**真值优先、延迟受限、默认 fail-closed 的跟单执行策略**。它的目标是：在不破坏固定热路径的前提下，只对已经被证实的 leader 仓位变化做出可验证的跟随动作。
+### 已经能做的
+- 从 Polymarket 公开数据里抓 top trader
+- 自动选一个 leader，写入 `.omx/discovery/selected-leader.env`
+- 继续抓这个 leader 的 activity
+- 把 activity 落到 `.omx/live-activity/...`
+- 跑一轮 guarded runtime
+- 生成 **真实 submit preview**（签名、L2 header、payload 都会真生成）
+- 把整条 operator flow 落成报告
 
-### 1. 当前只接受哪种“可跟单”信号
-- **先看到 leader activity，再继续后续阶段**：热路径固定为 `activity -> positions -> market websocket -> submit -> verification`。
-- **activity 只是线索，不是最终真值**：系统不会因为看到 leader trade event 就直接下单，必须继续经过 `/positions` 对 leader 净仓位变化做确认。
-- **没有净仓位变化就不跟**：如果 reconciliation 后发现 leader 仓位没有真实变化，系统会 reject，而不是“猜测性”提交。
-- **quote 必须新鲜**：只有在 market quote freshness、price shape、market-open 等条件都满足时，才会进入 submit-ready intent。
+### 还没默认替你做的
+- **真实 live submit**（真钱 side effect）
+- **真实 verification 回执后的实盘 latency 证明**
 
-### 2. 当前策略会做什么决策
-- **本质上是 confirmed position delta follower**：
-  - 观察到 leader 事件；
-  - 用 `/positions` 验证该 leader 在对应市场/asset 上确实产生净变化；
-  - 结合最新 quote 构造一个满足预算和预检规则的跟单意图；
-  - 通过 preview / submit / verification 完成一次受控执行。
-- **当前不做自动策略优化**：
-  - 不做 leader 打分或自动 leader 轮换；
-  - 不做跨市场组合优化；
-  - 不做动态仓位管理优化；
-  - 不做为了命中率而绕过真值路径的推断式提交。
+所以当前状态很明确：
 
-### 3. 当前策略的硬边界
-- **200ms submit ceiling**：从 leader event ingress 到 submit acknowledgment 的热路径超过 200ms 时，系统应该 reject，而不是继续下单。
-- **默认 fail-closed**：任一关键前提不成立都会阻断执行，例如：
-  - live activity source 未验证；
-  - `/positions` 超时或数据陈旧；
-  - quote 陈旧或 spread/price 结构非法；
-  - auth/runtime 未 ready；
-  - preview 失败；
-  - mixed transport mode 破坏 replay/live parity。
-- **submit 和 verification 明确分离**：
-  - submit failure 是该次尝试的终态；
-  - 只有 accepted submit 才进入 verification-pending；
-  - verification mismatch / timeout 会进入显式 incident 路径。
+- **preview 路已经通了**
+- **真下单按钮还需要你显式按**
 
-### 3b. 当前 live submit / signing 选择的含义
-- **默认配置仍然不会解锁 live submit**：`ExecutionAdapterConfig::default()` 仍然选择 replay scaffolds（`replay_stub` signing + `replay` submit），因此即使其它 live gate 都为 green，runtime 仍会因 `execution_surface_not_ready` 而 fail-closed。
-- **显式 live 选择必须成对出现**：当前 runtime/session 只把 `command` signing + `http_command` submit 视为 live-ready 组合；单独切换其中一个不会偷偷放开 live mode，而且 runtime 只会暴露这组完整的 command wiring。
-- **这只是接线位，不是 live 解锁声明**：这些 config surface 的作用是把 lane 1/2 的 contract 接到 runtime bootstrap 上，方便后续真实 auth material / command runner 接入；它们本身不意味着已经可以安全实盘。
+---
 
-### 3c. 当前 Rust 侧 env/root 接线方式
-- **root 读取顺序与 brownfield Python 保持一致**：`AuthMaterial::from_root`、`ExecutionAdapterConfig::from_root`、`RuntimeBootstrap::from_root` / `RuntimeSession::from_root` 都会先读进程环境，再用 `<root>/.env`、`<root>/.env.local` 依次覆盖。
-- **auth material 变量名直接兼容 brownfield**：
-  - signer / address: `POLY_ADDRESS`（或 `SIGNER_ADDRESS`）
-  - api creds: `CLOB_API_KEY`、`CLOB_SECRET`、`CLOB_PASS_PHRASE`
-  - legacy aliases: `POLY_API_KEY`、`POLY_API_SECRET`、`POLY_PASSPHRASE`
-  - private key: `PRIVATE_KEY`（优先）或 `CLOB_PRIVATE_KEY`
-  - proxy metadata: `SIGNATURE_TYPE`、`FUNDER_ADDRESS`（或 `FUNDER`）
-- **submit command wiring 也从 root 读取并保持 fail-closed**：
-  - signing command: `RUST_COPYTRADER_SIGNING_PROGRAM`
-  - submit command: `RUST_COPYTRADER_SUBMIT_PROGRAM`
-  - base URL: `CLOB_BASE_URL` 或 `CLOB_HOST`
-  - optional time budgets: `RUST_COPYTRADER_SUBMIT_CONNECT_TIMEOUT_MS`、`RUST_COPYTRADER_SUBMIT_MAX_TIME_MS`
-- **root 加载后的 command wiring 会自动落到 repo-local helper contract**：
-  - order signing helper args: `scripts/sign_order.py --json`
-  - L2 header helper args: `scripts/sign_l2.py --json`
-  - 这些 helper args 只是 Rust scaffold 暴露给 brownfield/local command bridge 的 contract surface；它们不会单独解锁 live mode
-- **builder surface 不会偷偷放开 live mode**：`HttpSubmitter::from_live_execution_wiring` / `SubmitPipeline::from_live_execution_wiring` 会拒绝空 base URL 或空 command program；runtime 侧即使已经从 root 读到 wiring，也仍然要等 `LiveModeGate` 其余 gate 全绿才会进入 `LiveListen`。
+## 2. 先记住这四个安全级别
 
-示例 root（仍然只是 wiring，不代表 live 已解锁）：
+### Level 0：只看，不联网交易
+只做 discovery / report / replay smoke。
+
+### Level 1：真实公开数据 + 不下单
+会打 Polymarket data API，但不会生成 submit 请求。
+
+### Level 2：真实公开数据 + 真实 submit preview
+会真的生成：
+- signed order
+- L2 headers
+- submit payload
+
+但是结果是：
+- `live_submit_status=preview_only`
+
+### Level 3：真实 live submit
+只有你显式加：
+- `--allow-live-submit`
+
+才会真的尝试往 CLOB 发单。
+
+**默认不做。**
+
+---
+
+## 3. 目录结构：你会看到哪些产物
+
+所有运行证据基本都在 repo root 的 `.omx/` 下：
+
+- `.omx/discovery/`
+  - leaderboard 原始抓取
+  - activity 原始抓取
+  - `selected-leader.env`
+- `.omx/live-activity/<wallet>/`
+  - `latest-activity.json`
+  - `activity-events.jsonl`
+  - `seen-tx.txt`
+- `.omx/guarded-cycle/`
+  - guarded runtime session 证据
+- `.omx/live-submit/`
+  - live submit gate 报告
+- `.omx/operator-demo/`
+  - 一键 operator flow 的整合报告
+- `.omx/auto-guarded/`
+  - 自动循环 lane 的整合报告
+
+如果你只想知道“这次到底跑成什么样”，优先看：
+
+- `.omx/operator-demo/discover-and-demo-*.txt`
+- `.omx/auto-guarded/auto-guarded-*.txt`
+- `.omx/live-submit/live-submit-*.txt`
+
+---
+
+## 4. 运行前准备
+
+### 4.1 Rust / Python
+你至少需要：
+
+- Rust / Cargo
+- 一个可用 Python 3
+- 本地可用的：
+  - `py_clob_client`
+  - `py_order_utils`
+
+这个仓库当前环境默认优先用：
+- `$HOME/anaconda3/bin/python3`
+
+如果你想强制指定 Python：
 
 ```bash
-cat > .env.local <<'EOF'
+export PYTHON_BIN=$HOME/anaconda3/bin/python3
+```
+
+---
+
+### 4.2 代理
+如果你当前网络直连 Polymarket data API 不稳定，直接开代理：
+
+```bash
+export https_proxy=http://127.0.0.1:7897
+export http_proxy=http://127.0.0.1:7897
+export all_proxy=socks5://127.0.0.1:7897
+```
+
+但是要注意：
+
+- **discovery / watcher 这种联网命令**：推荐显式加 `--proxy http://127.0.0.1:7897`
+- **signing helper / L2 helper**：现在已经做了代理隔离，不会再被 SOCKS 配置误伤
+
+也就是说：
+
+> 网络命令走显式 `--proxy`，本地签名命令不要靠全局代理碰运气。
+
+---
+
+### 4.3 本地 auth / secret
+如果你要走到 preview gate，至少需要本地 auth material。
+
+常见变量：
+
+```bash
 POLY_ADDRESS=0x...
 CLOB_API_KEY=...
 CLOB_SECRET=...
 CLOB_PASS_PHRASE=...
 PRIVATE_KEY=...
 SIGNATURE_TYPE=0
-RUST_COPYTRADER_SIGNING_PROGRAM=python3
-RUST_COPYTRADER_SUBMIT_PROGRAM=curl
+FUNDER_ADDRESS=...
 CLOB_HOST=https://clob.polymarket.com
-RUST_COPYTRADER_SUBMIT_CONNECT_TIMEOUT_MS=75
-RUST_COPYTRADER_SUBMIT_MAX_TIME_MS=150
-EOF
 ```
 
-可以直接用新的 bootstrap report entrypoint 验证 Rust runtime 读到了哪些 helper wiring：
+放在 repo root：
+
+- `.env`
+- 或 `.env.local`
+
+当前 Rust 侧读取顺序是：
+1. 进程环境
+2. `<root>/.env`
+3. `<root>/.env.local`
+
+### 一个重要改动
+现在 **preview gate 已经不再强依赖你手工填 `POLY_ADDRESS`**。
+如果本地只有：
+- 私钥
+- CLOB creds
+
+但没有 `POLY_ADDRESS`，系统会尝试：
+- 通过 repo-local signing helper 反推出 signer address
+
+所以你少填一个地址，不会再直接卡死在 preview lane。
+
+---
+
+## 5. 最推荐的使用顺序（先安全，再逐步逼近真单）
+
+下面按“最稳妥”的顺序来。
+
+---
+
+## 6. 第一步：看当前 bootstrap / helper wiring 有没有读对
+
+### 6.1 只看 bootstrap report
 
 ```bash
-cd rust-copytrader
+cd ~/onFire/rust-copytrader
 cargo run -- --root ..
 ```
 
-当 root 中已经配置了 `RUST_COPYTRADER_SIGNING_PROGRAM` / `RUST_COPYTRADER_SUBMIT_PROGRAM` 等变量时，输出会明确展示：
+你会看到类似：
 
 ```text
 requested_mode=live_listen
@@ -129,185 +199,169 @@ decision=blocked:activity_source_unverified
 live_mode_unlocked=false
 signing_command=python3 scripts/sign_order.py --json
 l2_header_helper=python3 scripts/sign_l2.py --json
-submit_command=curl
+submit_command=python3 scripts/submit_helper.py --json --curl-bin curl
 ```
 
-这个 report 是只读的 bootstrap smoke check：它证明 repo-local helper contract 已经被 runtime/bootstrap 端正确加载，但它同样会明确显示 live mode 仍然是 blocked，直到 activity / budget / capability / positions 等 gate 全部变绿。
+这说明：
+- wiring 读到了
+- 但 live mode 还没放开
+- 这是正常的
 
-如果希望 Rust 侧不仅打印 wiring，还要**实际调用 repo-local helper scripts** 做一轮 smoke，可以直接运行：
+---
+
+### 6.2 真正跑 helper smoke
 
 ```bash
-cd rust-copytrader
+cd ~/onFire/rust-copytrader
 cargo run -- --smoke-helper --root ..
 ```
 
-这个模式会：
-- 从 root 读取 helper-driven execution wiring
-- 实际执行 `scripts/sign_order.py --json`
-- 实际执行 `scripts/sign_l2.py --json`
-- 生成最终的 `submit_preview_program` / `submit_preview_args`
-- 输出 `order_signature` / `order_salt` / `l2_signature` / `l2_timestamp`
-- 同时保留 `decision=blocked:...`，不会把 smoke mode 当成 live unlock
+如果成功，你会看到：
+- `helper_smoke=ok`
+- `order_signature=...`
+- `l2_signature=...`
+- `submit_preview_program=...`
 
-如果想从 repo root 直接把 helper-driven command path 跑一遍，而不只是看 bootstrap report，也可以执行：
+也就是说：
+- 本地签名 helper 能跑
+- L2 helper 能跑
+- submit preview 能构造出来
+
+你也可以直接用 root 脚本：
 
 ```bash
 bash scripts/run_rust_helper_smoke.sh
 ```
 
-这个 smoke 脚本会：
-- 调 `scripts/sign_order.py --json`
-- 调 `scripts/sign_l2.py --json`
-- 再调 `cargo run -- --smoke-helper --root ..`
+---
 
-它仍然是 **fail-closed** 的：
-- 缺少 `CLOB_*` / `PRIVATE_KEY` / `POLY_ADDRESS` 等关键环境变量会直接退出非零
-- helper 脚本失败会直接退出非零
-- 即使 helper wiring 已经加载成功，输出仍会明确显示 live mode 默认 blocked
+## 7. 第二步：真实抓榜 + 真实选 leader
 
-如果你想把当前可用的 operator-facing smoke 路径一次性看完，也可以直接运行：
+### 7.1 一把做完 discovery -> 选 leader
 
 ```bash
-cd rust-copytrader
-cargo run -- --operator-demo --root ..
+cd ~/onFire/rust-copytrader
+cargo run --bin discover_copy_leader -- \
+  --discovery-dir ../.omx/discovery \
+  --proxy http://127.0.0.1:7897 \
+  --connect-timeout-ms 8000 \
+  --max-time-ms 20000
 ```
 
-这个模式会串起来：
-- helper smoke
-- replay-backed runtime smoke
-- 最终 submit command preview
-- public discovery 命令提示
+成功后你会得到：
+- `.omx/discovery/leaderboard-*.json`
+- `.omx/discovery/activity-*.json`
+- `.omx/discovery/selected-leader.env`
 
-它依然是只读/本地验证，不会替你触发真实网络 submit。
-另外它现在还会把完整 demo 输出落到：
-- `.omx/operator-demo/operator-demo-*.txt`
-- `.omx/operator-demo/latest.txt`
-并额外给出：
-- `replay_submit_elapsed_ms=60`
-- `replay_verified_elapsed_ms=82`
-- `submit_hard_budget_ms=200`
-- `selected_leader_wallet=...`
-- `selected_leader_source=...`
-- `runtime_subject_wallet=...`
-- `runtime_subject_source=...`
-- `leaderboard_preview_url=...`
-- `leaderboard_preview_curl=...`
-- `activity_preview_url=...`
-- `activity_preview_curl=...`
-- `leaderboard_capture_hint=... --output ../.omx/discovery/leaderboard-overall-day-pnl.json`
-- `activity_capture_hint=... --output ../.omx/discovery/activity-<wallet>-trade.json`
-- `leader_selection_hint=... --leaderboard ../.omx/discovery/leaderboard-overall-day-pnl.json --output ../.omx/discovery/selected-leader.env`
-- `leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a`
+stdout 里会有类似：
 
-如果你已经设置了 `COPYTRADER_DISCOVERY_WALLET`，operator demo 会优先用它；否则会回退到 `POLY_ADDRESS` / `SIGNER_ADDRESS`。
-
-如果你更喜欢从 repo root 直接跑这条 operator flow，也可以执行：
-
-```bash
-bash scripts/run_rust_operator_demo.sh
+```text
+selected_wallet=0x...
+selected_rank=1
+selected_pnl=...
+selected_username=...
+latest_activity_side=BUY
+latest_activity_slug=...
+latest_activity_tx=0x...
 ```
 
-## Public discovery commands you can run today
+### 7.2 你也可以分开跑
 
-如果你现在想先看 **top 盈利者名单** 或者直接拉某个 trader 的 **公开 activity**，现在已经有不需要私钥的 Rust CLI 命令：
+抓榜：
 
 ```bash
-cd rust-copytrader
-cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20
-cargo run --bin fetch_user_activity -- --user 0x56687bf447db6ffa42ffe2204a05edaa20f55839 --type TRADE --limit 20
+cargo run --bin fetch_trader_leaderboard -- \
+  --category OVERALL \
+  --time-period DAY \
+  --order-by PNL \
+  --limit 20 \
+  --proxy http://127.0.0.1:7897 \
+  --output ../.omx/discovery/leaderboard-overall-day-pnl.json
 ```
 
-如果你想把 discovery 原始响应直接落到 `.omx/` 下面做后续人工筛选，也可以：
+抓某个用户 activity：
 
 ```bash
-cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20 --output ../.omx/discovery/leaderboard-overall-day-pnl.json
-cargo run --bin fetch_user_activity -- --user 0x56687bf447db6ffa42ffe2204a05edaa20f55839 --type TRADE --limit 20 --output ../.omx/discovery/activity-0x56687bf447db6ffa42ffe2204a05edaa20f55839-trade.json
+cargo run --bin fetch_user_activity -- \
+  --user 0x你的wallet \
+  --type TRADE \
+  --limit 20 \
+  --proxy http://127.0.0.1:7897 \
+  --output ../.omx/discovery/activity-0x你的wallet-trade.json
 ```
 
-`--output` 会自动创建父目录，所以 `.omx/discovery/` 不需要你手动先 `mkdir -p`。
-
-如果你想把 leaderboard 产物直接转成后续 operator 会读取的 leader 选择 env，也可以：
+用 leaderboard 结果选 leader：
 
 ```bash
-cargo run --bin select_copy_leader -- --leaderboard ../.omx/discovery/leaderboard-overall-day-pnl.json --output ../.omx/discovery/selected-leader.env
-set -a && source ../.omx/discovery/selected-leader.env && set +a
+cargo run --bin select_copy_leader -- \
+  --leaderboard ../.omx/discovery/leaderboard-overall-day-pnl.json \
+  --output ../.omx/discovery/selected-leader.env
 ```
 
-后续再跑 `--operator-demo` 时，会优先读取 `.omx/discovery/selected-leader.env` 里的 `COPYTRADER_DISCOVERY_WALLET`。
-
-如果你不是从 leaderboard 选，而是想直接把某个 trader 的 activity 产物转成 leader env，也可以：
+用 activity 结果选 leader：
 
 ```bash
-cargo run --bin select_copy_leader -- --activity ../.omx/discovery/activity-0x56687bf447db6ffa42ffe2204a05edaa20f55839-trade.json --output ../.omx/discovery/selected-leader.env
-set -a && source ../.omx/discovery/selected-leader.env && set +a
+cargo run --bin select_copy_leader -- \
+  --activity ../.omx/discovery/activity-0x你的wallet-trade.json \
+  --output ../.omx/discovery/selected-leader.env
 ```
 
-如果你想把“抓 leaderboard -> 选 leader -> 抓这个 leader 的 activity -> 写 selected-leader.env”压成一个更真实的一步，也可以直接跑：
+---
+
+## 8. 第三步：真实 watcher，盯 leader 的 activity
 
 ```bash
-cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery
-set -a && source ../.omx/discovery/selected-leader.env && set +a
+cd ~/onFire/rust-copytrader
+cargo run --bin watch_copy_leader_activity -- \
+  --root .. \
+  --proxy http://127.0.0.1:7897 \
+  --poll-count 1
 ```
 
-这个命令会：
-- 抓 leaderboard 到 `.omx/discovery/leaderboard-*.json`
-- 选出一个 leader wallet
-- 抓这个 wallet 的 activity 到 `.omx/discovery/activity-*.json`
-- 写 `.omx/discovery/selected-leader.env`
-- 并输出真实 summary，例如：
-  - `selected_rank=...`
-  - `selected_pnl=...`
-  - `selected_username=...`
-  - `latest_activity_side=...`
-  - `latest_activity_slug=...`
+成功后你会看到：
+- `watch_user=0x...`
+- `watch_latest_path=.../latest-activity.json`
+- `watch_log_path=.../activity-events.jsonl`
 
-如果你想把 discovery + 选 leader + operator demo 一把串起来，也可以：
+落地文件：
+- `.omx/live-activity/<wallet>/latest-activity.json`
+- `.omx/live-activity/<wallet>/activity-events.jsonl`
+- `.omx/live-activity/<wallet>/seen-tx.txt`
 
-```bash
-cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
-```
+这一步的意义是：
 
-如果你已经选好了 leader，想开始**真实轮询这个 leader 的 activity**，现在也有一个 Rust 入口：
+> 你已经不是“拿静态榜单”了，而是在盯一个真实 leader 的公开 activity。
+
+---
+
+## 9. 第四步：把真实 activity 喂进 guarded runtime
 
 ```bash
-cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1:7897 --poll-count 1
-```
-
-它会：
-- 从 `.omx/discovery/selected-leader.env` 读取当前 leader
-- 真请求 activity API
-- 把原始响应写到 `.omx/live-activity/<wallet>/latest-activity.json`
-- 把新增交易写到 `.omx/live-activity/<wallet>/activity-events.jsonl`
-- 持久化已见 transaction hashes，避免重复处理
-
-如果你想把“真实 leader activity -> 受控 runtime 一次处理”继续往前推，现在还有一个 replay-backed 受控入口：
-
-```bash
+cd ~/onFire/rust-copytrader
 cargo run --bin run_copytrader_guarded_cycle -- --root ..
 ```
 
-它会：
-- 读取 `.omx/discovery/selected-leader.env`
-- 读取 `.omx/live-activity/<wallet>/latest-activity.json`
-- 用这条真实 activity 生成一轮 guarded replay runtime
-- 把结果落到 `.omx/guarded-cycle/`
+成功后通常能看到：
+- `cycle_outcome=processed`
+- `runtime_mode=replay`
+- `last_submit_status=verified`
 
-如果你想把这条链再往前推进成一个连续的自动轮询 + guarded cycle loop，也有一个 Rust 入口：
+这里要说清楚：
 
-```bash
-cargo run --bin run_copytrader_auto_guarded_loop -- --root .. --proxy http://127.0.0.1:7897 --watch-poll-count 1 --loop-count 1
-```
+- 这一步是 **真实 activity 输入**
+- 但 runtime 执行侧仍然是 **guarded / replay-backed**
+- 它的作用是证明整条热路径在当前约束下能正确吃进去
 
-它会按顺序串：
-- `discover_copy_leader`
-- `watch_copy_leader_activity`
-- `run_copytrader_guarded_cycle`
+不是说已经真下单了。
 
-并把每轮结果落到 `.omx/auto-guarded/auto-guarded-*.txt`
+---
 
-最后一层现在也有了一个**live submit gate** 入口，不过它默认仍然 fail-closed，只有当你显式把 live gate 条件都打开时才会继续：
+## 10. 第五步：跑到 live submit gate（默认安全）
+
+### 10.1 单独跑 preview gate
 
 ```bash
+cd ~/onFire/rust-copytrader
 cargo run --bin run_copytrader_live_submit_gate -- \
   --root .. \
   --activity-source-verified \
@@ -316,104 +370,388 @@ cargo run --bin run_copytrader_live_submit_gate -- \
   --positions-under-budget
 ```
 
-默认它只会构建真实 live submit preview；  
-要真正尝试提交，还需要额外传：
+如果一切正常，你会看到：
+
+```text
+live_gate_status=unlocked
+live_submit_status=preview_only
+```
+
+这就是现在最关键的“最后一米”状态。
+
+它表示：
+- 真实 activity 已经进入 live gate
+- 真正的 signed order 已经生成
+- 真正的 L2 header 已经生成
+- 真正的 submit request preview 已经生成
+- 但默认还是 **只预览，不发真单**
+
+### 10.2 报告在哪里
+这一步会落：
+
+- `.omx/live-submit/live-submit-*.txt`
+
+里面能看到：
+- `activity_tx=...`
+- `activity_side=...`
+- `activity_asset=...`
+- `unsigned_maker_amount=...`
+- `unsigned_taker_amount=...`
+- `preview_program=...`
+- `preview_args=...`
+
+---
+
+## 11. 第六步：一键 operator flow（最推荐）
+
+如果你不想一步一步敲，直接跑这条：
+
+```bash
+cd ~/onFire/rust-copytrader
+cargo run --bin run_copytrader_operator_flow -- \
+  --root .. \
+  --discovery-dir ../.omx/discovery \
+  --proxy http://127.0.0.1:7897 \
+  --watch-poll-count 1 \
+  --connect-timeout-ms 8000 \
+  --max-time-ms 20000 \
+  --live-submit-gate
+```
+
+它会串起来：
+
+1. discovery
+2. 选 leader
+3. watcher
+4. guarded cycle
+5. live submit gate
+6. operator demo report
+
+最终会落：
+- `.omx/operator-demo/discover-and-demo-*.txt`
+
+你最该看这些字段：
+- `selected_rank=...`
+- `selected_pnl=...`
+- `watch_user=...`
+- `cycle_outcome=processed`
+- `live_gate_status=unlocked`
+- `live_submit_status=preview_only`
+
+如果这些都在，就说明：
+
+> **真实公开数据 -> 真实 leader -> 真实 watcher -> 真实 live preview**
+> 已经串通了。
+
+---
+
+## 12. 第七步：自动循环 lane
+
+如果你想让它不是只跑一轮，而是按 loop 跑：
+
+```bash
+cd ~/onFire/rust-copytrader
+cargo run --bin run_copytrader_auto_guarded_loop -- \
+  --root .. \
+  --proxy http://127.0.0.1:7897 \
+  --watch-poll-count 1 \
+  --loop-count 1 \
+  --live-submit-gate
+```
+
+会落：
+- `.omx/auto-guarded/auto-guarded-*.txt`
+
+这条 lane 当前也已经能跑到：
+- `live_gate_status=unlocked`
+- `live_submit_status=preview_only`
+
+---
+
+## 13. 真下单怎么做（先看再决定）
+
+先说结论：
+
+> **代码已经到真下单门口，但默认不会替你按这个按钮。**
+
+如果你真的要尝试 live submit，需要显式加：
 
 ```bash
 --allow-live-submit
 ```
 
-如果默认的 Polymarket discovery host 在你当前环境里不可达，也可以显式覆盖：
+例如：
 
 ```bash
-POLYMARKET_LEADERBOARD_BASE_URL=https://your-proxy.example/leaderboard \
-POLYMARKET_ACTIVITY_BASE_URL=https://your-proxy.example/activity \
-cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
+cd ~/onFire/rust-copytrader
+cargo run --bin run_copytrader_live_submit_gate -- \
+  --root .. \
+  --activity-source-verified \
+  --activity-under-budget \
+  --activity-capability-detected \
+  --positions-under-budget \
+  --allow-live-submit
 ```
 
-如果你只是要显式指定代理，而不是换 host，也可以：
+### 强提醒
+这一步可能会有：
+- 真正的资金 side effect
+- 真正的挂单 / 吃单 / 拒单
+- 真正的交易后果
+
+所以：
+- **不确认资金账户状态，不要跑**
+- **不确认 market / token / signer / proxy signature 配置，不要跑**
+- **不确认你就是要上真单，不要跑**
+
+---
+
+## 14. 当前延时怎么理解
+
+当前仓库里最可靠、反复验证过的延时证据是：
+
+- `submit ack = 60ms`
+- `verified = 82ms`
+- `hard budget = 200ms`
+- `headroom = 140ms`
+
+但是一定要按真实语义理解：
+
+> 这是 **replay / guarded runtime 证据**，  
+> **不是 live 实盘 submit latency 证据**。
+
+别把它理解成“已经实盘 60ms 下单了”。
+
+现在准确说法是：
+- **preview / guarded 执行链证明了这条热路径是快的**
+- **但真实 live submit latency 还要等你真正执行 `--allow-live-submit` 后再看**
+
+---
+
+## 15. 最常用命令速查表
+
+### 15.1 Bootstrap / smoke
 
 ```bash
-POLYMARKET_CURL_PROXY=http://127.0.0.1:7897 \
-cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
+cd ~/onFire/rust-copytrader
+cargo run -- --root ..
+cargo run -- --smoke-helper --root ..
+cargo run -- --smoke-runtime --root ..
+cargo run -- --operator-demo --root ..
 ```
 
-如果代理链路偶发超时/SSL 抖动，也可以直接提高重试：
+### 15.2 Discovery
 
 ```bash
-POLYMARKET_CURL_PROXY=http://127.0.0.1:7897 \
-cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery --retry-count 3 --retry-delay-ms 1000
+cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20 --proxy http://127.0.0.1:7897
+cargo run --bin fetch_user_activity -- --user 0xWALLET --type TRADE --limit 20 --proxy http://127.0.0.1:7897
+cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery --proxy http://127.0.0.1:7897 --connect-timeout-ms 8000 --max-time-ms 20000
 ```
 
-如果网络环境有问题，或者你想先看它到底会打什么请求：
+### 15.3 Watch / guarded
 
 ```bash
-cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20 --print-url
-cargo run --bin fetch_user_activity -- --user 0x56687bf447db6ffa42ffe2204a05edaa20f55839 --type TRADE --limit 20 --print-curl
+cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1:7897 --poll-count 1
+cargo run --bin run_copytrader_guarded_cycle -- --root ..
+cargo run --bin run_copytrader_auto_guarded_loop -- --root .. --proxy http://127.0.0.1:7897 --watch-poll-count 1 --loop-count 1 --live-submit-gate
 ```
 
-它们调用的是官方 public Data API：
-- leaderboard: `https://data-api.polymarket.com/v1/leaderboard`
-- activity: `https://data-api.polymarket.com/activity`
-
-这两个 Rust 命令的定位是：
-- **discovery / watchlist / manual inspection**
-- 不是 live 跟单解锁
-- 不会改变当前 fail-closed 的 hot-path 决策
-
-### 4. 当前运行模式的含义
-- **replay**
-  - 用 fixture 驱动完整热路径；
-  - 是当前验证固定路径、预算和状态机行为的主模式。
-- **shadow_poll**
-  - 允许保留影子模式的活动输入/轮询思路；
-  - 但不会被当成已经满足 live 200ms 目标的真实证据。
-- **live_listen**
-  - 仍然被 gate 住；
-  - 只有当第三方 leader activity source 被证实存在、官方/实验能力成立、并满足预算要求后才能解锁。
-
-### 5. 用一句话概括当前策略
-> **先证实 leader 的真实净仓位变化，再在新鲜 quote 和严格预算下尝试跟单；任何一步不能被证实，就拒绝执行。**
-
-## Test coverage
-
-The scaffold is intentionally contract-first. Key coverage includes:
-
-- `tests/activity_adapter.rs` / `tests/bootstrap_mode.rs` — live-mode feasibility gate and blocked/shadow/replay decisions
-- `tests/pre_trade_gate.rs` / `tests/orchestrator.rs` — preview+submit contract skeletons, pre-submit fail-closed checks, and lifecycle outcomes
-- `tests/http_submit_contract.rs` — authenticated `/orders` request-spec generation, missing-header rejection, and auth-readiness rejection
-- `tests/http_submit_executor.rs` — curl command generation plus execution-runner success/failure behavior
-- `tests/signing_contract.rs` — auth-material validation, signer bridging, and deriving L2 headers from explicit signing inputs
-- `tests/submit_pipeline.rs` — end-to-end composition from auth material + unsigned order + L2 header provider to executed submit command output
-- `tests/runtime_session.rs` / `tests/session_persistence.rs` / `tests/snapshots.rs` / `tests/telemetry_latency.rs` — runtime session evidence, rotating local persistence, stable snapshot shape, and stage-latency accounting
-- `tests/e2e_replay.rs` / `tests/perf_budget.rs` / `tests/transport_runtime.rs` — replay parity, fixed stage ordering, hard budget rejection behavior, config-driven transport selection, mixed-mode fail-closed behavior, and live-gate enforcement
-- `tests/reconciliation_and_market_ws.rs` / `tests/verification_adapter.rs` / `tests/verification_state.rs` — stale data rejection, verification correlation, timeout handling, and state-machine separation
-
-Run the crate verification with:
+### 15.4 Live preview / live submit
 
 ```bash
-cd rust-copytrader
-cargo test
-cargo clippy --all-targets --all-features -- -D warnings
+cargo run --bin run_copytrader_live_submit_gate -- --root .. --activity-source-verified --activity-under-budget --activity-capability-detected --positions-under-budget
+cargo run --bin run_copytrader_live_submit_gate -- --root .. --activity-source-verified --activity-under-budget --activity-capability-detected --positions-under-budget --allow-live-submit
+```
+
+### 15.5 One-command operator flow
+
+```bash
+cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery --proxy http://127.0.0.1:7897 --watch-poll-count 1 --connect-timeout-ms 8000 --max-time-ms 20000 --live-submit-gate
+```
+
+---
+
+## 16. 怎么测试（开发 / 回归）
+
+### 16.1 Rust 侧
+
+```bash
+cd ~/onFire/rust-copytrader
 cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
-## What is still intentionally missing
+### 16.2 重点二进制
 
-This crate is still a scaffold, not a production trading runtime. Remaining work includes:
+```bash
+cargo test --bin rust-copytrader
+cargo test --bin run_copytrader_operator_flow
+cargo test --bin run_copytrader_auto_guarded_loop
+cargo test --bin run_copytrader_live_submit_gate
+```
 
-1. real cryptographic signing material, command execution hardening, and live network execution backed by production auth/runtime inputs instead of scaffold-only adapter selection (the runtime can now select command-signing + HTTP-submit surfaces, but that does **not** claim live unlock)
-2. external metrics export beyond the new local JSON/text operator reports
-3. concrete network-backed live/replay transport integrations that feed the config-driven adapter boundaries without breaking replay parity
+### 16.3 Python helper / shell wrapper
 
-## Review notes
+```bash
+cd ~/onFire
+PYTHONPATH=polymarket_arb $HOME/anaconda3/bin/python3 -m unittest \
+  scripts.tests.test_clob_sign_helpers \
+  scripts.tests.test_run_rust_helper_smoke \
+  scripts.tests.test_run_rust_operator_demo \
+  scripts.tests.test_run_rust_runtime_smoke
+```
 
-The current implementation is small, readable, and strongly fail-closed. The main remaining gap is breadth, not the correctness of the encoded contracts:
+### 16.4 文档相关测试
 
-- live-mode safety is explicit and remains blocked by default
-- hot-path budget enforcement is encoded before submit, not merely documented
-- submit failure and post-submit verification failure remain separate states
-- replay coverage already protects the fixed activity -> positions -> market websocket -> submit -> verification sequence
-- current runtime evidence is still process-local (`RuntimeSession::snapshot`, `RuntimeMetrics`, `LatencyReport`) until file/report wiring lands
+```bash
+cd ~/onFire
+PYTHONPATH=polymarket_arb $HOME/anaconda3/bin/python3 -m pytest -q tests/test_secret_setup_doc.py
+```
 
-Future lanes should extend these existing boundaries rather than bypass them.
+---
+
+## 17. 常见报错怎么处理
+
+### 17.1 `Failed to connect to data-api.polymarket.com`
+原因：网络不通 / 代理没配对。
+
+处理：
+- 开代理环境变量
+- 并给 discovery / watcher 显式加：
+
+```bash
+--proxy http://127.0.0.1:7897
+```
+
+---
+
+### 17.2 `missing field POLY_ADDRESS`
+旧问题。当前 preview lane 已经基本兜住了。
+
+如果还出现：
+- 看 `.env` / `.env.local` 里有没有私钥和 CLOB creds
+- 先跑：
+
+```bash
+cargo run -- --smoke-helper --root ..
+```
+
+如果 helper smoke 都过不了，再看 Python SDK / key 配置。
+
+---
+
+### 17.3 `Using SOCKS proxy, but the 'socksio' package is not installed`
+这通常是全局 `all_proxy=socks5://...` 影响到了本地 helper。
+
+当前仓库已经尽量隔离这个问题。
+如果你还碰到：
+- discovery/watch 继续用显式 `--proxy`
+- 不要指望 signing helper 靠 SOCKS 环境工作
+
+---
+
+### 17.4 `py-clob-client / py-order-utils import failed`
+说明本地 Python SDK 依赖不完整。
+
+处理：
+- 确认当前 `python3` / `PYTHON_BIN` 对应的是你装过 SDK 的环境
+- 最稳妥是用：
+
+```bash
+export PYTHON_BIN=$HOME/anaconda3/bin/python3
+```
+
+---
+
+### 17.5 `live_submit_status=preview_only`
+这不是报错，这是**正常安全结果**。
+
+它表示：
+- 预览链路通了
+- 但你没有显式要求真下单
+
+---
+
+## 18. 现在项目完成度怎么理解
+
+如果你关心的是：
+
+> **Rust-first copytrader 主路是否已基本成型？**
+
+答案是：**是。**
+
+如果你关心的是：
+
+> **是否已经默认自动替我真下单？**
+
+答案是：**没有，默认不会。**
+
+如果你问：
+
+> **现在离真下单还有多远？**
+
+答案是：
+
+> **只差你显式执行 `--allow-live-submit` 这一步。**
+
+也就是说：
+- discovery 已经真连了
+- watcher 已经真连了
+- guarded cycle 已经真吃到 activity 了
+- submit preview 已经真生成了
+- 剩下就是真正放开 live submit
+
+---
+
+## 19. 我建议你怎么实际使用
+
+### 如果你现在只是想确认“整条链通没通”
+直接跑：
+
+```bash
+cd ~/onFire/rust-copytrader
+cargo run --bin run_copytrader_operator_flow -- \
+  --root .. \
+  --discovery-dir ../.omx/discovery \
+  --proxy http://127.0.0.1:7897 \
+  --watch-poll-count 1 \
+  --connect-timeout-ms 8000 \
+  --max-time-ms 20000 \
+  --live-submit-gate
+```
+
+### 如果你想持续看自动链路是否还稳定
+跑：
+
+```bash
+cd ~/onFire/rust-copytrader
+cargo run --bin run_copytrader_auto_guarded_loop -- \
+  --root .. \
+  --proxy http://127.0.0.1:7897 \
+  --watch-poll-count 1 \
+  --loop-count 1 \
+  --live-submit-gate
+```
+
+### 如果你准备冲真下单
+先别急，先确认三件事：
+1. auth / signer / funder 配置完全对
+2. 你知道当前选中的 market / token / side 到底是什么
+3. 你确认要承担真钱后果
+
+然后再去考虑：
+
+```bash
+--allow-live-submit
+```
+
+---
+
+## 20. 最后一句
+
+这个 README 对应的是当前仓库的真实状态：
+
+> **它已经不是“想法”，而是一条能跑到 real live preview 的 Rust 主路。**  
+> **默认安全，不乱下单；真下单需要你自己显式解锁。**
+
