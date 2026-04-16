@@ -183,6 +183,8 @@ cargo run -- --operator-demo --root ..
 - `.omx/operator-demo/operator-demo-*.txt`
 - `.omx/operator-demo/latest.txt`
 并额外给出：
+- `selected_leader_wallet=...`
+- `selected_leader_source=...`
 - `leaderboard_preview_url=...`
 - `leaderboard_preview_curl=...`
 - `activity_preview_url=...`

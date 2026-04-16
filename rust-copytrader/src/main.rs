@@ -295,7 +295,9 @@ fn render_operator_demo_report(root: &Path) -> Result<String, RootEnvLoadError> 
             .lines()
             .map(ToString::to_string),
     );
-    let discovery_wallet = discovery_wallet_hint(root);
+    let (discovery_wallet, discovery_source) = selected_leader_context(root);
+    lines.push(format!("selected_leader_wallet={discovery_wallet}"));
+    lines.push(format!("selected_leader_source={discovery_source}"));
     lines.push(
         "leaderboard_hint=cd rust-copytrader && cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20".to_string(),
     );
@@ -409,20 +411,41 @@ fn format_session_outcome(outcome: &SessionOutcome) -> String {
     }
 }
 
-fn discovery_wallet_hint(root: &Path) -> String {
+fn selected_leader_context(root: &Path) -> (String, String) {
     env::var("COPYTRADER_DISCOVERY_WALLET")
         .ok()
+        .map(|wallet| (wallet, "env:COPYTRADER_DISCOVERY_WALLET".to_string()))
         .or_else(|| {
-            discovery_wallet_from_env_file(&root.join(".omx/discovery/selected-leader.env"))
+            discovery_wallet_from_env_file(&root.join(".omx/discovery/selected-leader.env")).map(
+                |wallet| {
+                    (
+                        wallet,
+                        "file:.omx/discovery/selected-leader.env".to_string(),
+                    )
+                },
+            )
         })
         .or_else(|| {
             AuthMaterial::from_root(root)
                 .ok()
-                .map(|material| material.poly_address)
+                .map(|material| (material.poly_address, "auth_material".to_string()))
         })
-        .or_else(|| env::var("POLY_ADDRESS").ok())
-        .or_else(|| env::var("SIGNER_ADDRESS").ok())
-        .unwrap_or_else(|| "0x56687bf447db6ffa42ffe2204a05edaa20f55839".to_string())
+        .or_else(|| {
+            env::var("POLY_ADDRESS")
+                .ok()
+                .map(|wallet| (wallet, "env:POLY_ADDRESS".to_string()))
+        })
+        .or_else(|| {
+            env::var("SIGNER_ADDRESS")
+                .ok()
+                .map(|wallet| (wallet, "env:SIGNER_ADDRESS".to_string()))
+        })
+        .unwrap_or_else(|| {
+            (
+                "0x56687bf447db6ffa42ffe2204a05edaa20f55839".to_string(),
+                "fallback".to_string(),
+            )
+        })
 }
 
 fn discovery_wallet_from_env_file(path: &Path) -> Option<String> {
@@ -937,6 +960,8 @@ mod tests {
 
         assert!(report.contains("mode=operator-demo"));
         assert!(report.contains("mode=runtime-smoke"));
+        assert!(report.contains("selected_leader_wallet=0xpoly-address"));
+        assert!(report.contains("selected_leader_source=auth_material"));
         assert!(report.contains("leaderboard_hint="));
         assert!(report.contains("activity_hint=cd rust-copytrader && cargo run --bin fetch_user_activity -- --user 0xpoly-address --type TRADE --limit 20"));
         assert!(report.contains("leaderboard_preview_url=https://data-api.polymarket.com/v1/leaderboard?category=OVERALL&timePeriod=DAY&orderBy=PNL&limit=20&offset=0"));
@@ -975,9 +1000,10 @@ mod tests {
         )
         .expect("selected leader env written");
 
-        let wallet = super::discovery_wallet_hint(&root);
+        let (selected_wallet, selected_source) = super::selected_leader_context(&root);
 
-        assert_eq!(wallet, "0xselected-wallet");
+        assert_eq!(selected_wallet, "0xselected-wallet");
+        assert_eq!(selected_source, "file:.omx/discovery/selected-leader.env");
 
         fs::remove_dir_all(root).expect("temp root removed");
     }

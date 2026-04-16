@@ -117,6 +117,8 @@ cargo run -- --operator-demo --root ..
 - `.omx/operator-demo/operator-demo-*.txt`
 - `.omx/operator-demo/latest.txt`
 并补充 discovery preview：
+- `selected_leader_wallet=...`
+- `selected_leader_source=...`
 - `leaderboard_preview_url=...`
 - `leaderboard_preview_curl=...`
 - `activity_preview_url=...`
@@ -127,6 +129,19 @@ cargo run -- --operator-demo --root ..
 - `leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a`
 
 `--output` 会自动创建父目录，所以 `.omx/discovery/` 不需要手工先建。
+
+如果你想把 leaderboard discovery 产物明确转成后续 operator/read-only 跟单会消费的 leader env，可以直接运行：
+
+```bash
+cd rust-copytrader
+cargo run --bin select_copy_leader -- --leaderboard ../.omx/discovery/leaderboard-overall-day-pnl.json --output ../.omx/discovery/selected-leader.env
+set -a && source ../.omx/discovery/selected-leader.env && set +a
+```
+
+这个 env 文件会包含：
+- `COPYTRADER_DISCOVERY_WALLET=...`
+- `COPYTRADER_LEADER_WALLET=...`
+- `COPYTRADER_SELECTED_FROM=...`
 
 它仍然是 **fail-closed** 的：
 - helper / runtime smoke 都只做本地验证
