@@ -4,7 +4,7 @@ use crate::adapters::transport::{
 use crate::config::TransportBoundaryConfig;
 use crate::config::{
     ActivityMode, CommandAdapterConfig, ExecutionAdapterConfig, LiveExecutionWiring, LiveModeGate,
-    RootEnvLoadError,
+    RootEnvLoadError, merged_root_env,
 };
 use crate::persistence::jsonl::{RotatingJsonlWriter, SessionLogKind};
 use crate::persistence::snapshots::{
@@ -15,6 +15,8 @@ use crate::replay::fixture::ReplayFixture;
 use crate::telemetry::latency::LatencyReport;
 use crate::telemetry::metrics::RuntimeMetrics;
 use crate::telemetry::report::{OperatorArtifactPaths, OperatorReport};
+use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -27,11 +29,18 @@ pub enum BootstrapDecision {
     Blocked(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedLeaderContext {
+    pub wallet: String,
+    pub source: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeBootstrap {
     requested_mode: ActivityMode,
     gate: LiveModeGate,
     execution_config: Option<ExecutionAdapterConfig>,
+    selected_leader: Option<SelectedLeaderContext>,
 }
 
 impl RuntimeBootstrap {
@@ -40,6 +49,7 @@ impl RuntimeBootstrap {
             requested_mode,
             gate,
             execution_config: None,
+            selected_leader: None,
         }
     }
 
@@ -52,6 +62,7 @@ impl RuntimeBootstrap {
             requested_mode,
             gate,
             execution_config: Some(execution_config),
+            selected_leader: None,
         }
     }
 
@@ -60,11 +71,14 @@ impl RuntimeBootstrap {
         gate: LiveModeGate,
         root: impl AsRef<Path>,
     ) -> Result<Self, RootEnvLoadError> {
-        Ok(Self::with_execution_config(
+        let root = root.as_ref();
+        let env = merged_root_env(root)?;
+        Ok(Self {
             requested_mode,
             gate,
-            ExecutionAdapterConfig::from_root(root)?,
-        ))
+            execution_config: Some(ExecutionAdapterConfig::from_env_map(&env)?),
+            selected_leader: selected_leader_context_from_root(root, &env)?,
+        })
     }
 
     fn effective_gate(&self) -> LiveModeGate {
@@ -93,6 +107,10 @@ impl RuntimeBootstrap {
         self.execution_config
             .as_ref()
             .and_then(ExecutionAdapterConfig::live_l2_header_helper)
+    }
+
+    pub fn selected_leader(&self) -> Option<&SelectedLeaderContext> {
+        self.selected_leader.as_ref()
     }
 
     pub fn decide(&self) -> BootstrapDecision {
@@ -285,6 +303,14 @@ impl RuntimeSession {
             last_transaction_hash: fixture.activity.transaction_hash.clone(),
             last_position_size: fixture.current_position.current_size,
         };
+        let selected_leader_wallet = self
+            .bootstrap
+            .selected_leader()
+            .map(|leader| leader.wallet.clone());
+        let selected_leader_source = self
+            .bootstrap
+            .selected_leader()
+            .map(|leader| leader.source.clone());
 
         if let BootstrapDecision::Blocked(ref reason) = decision {
             self.latest_snapshot = Some(SnapshotBundle {
@@ -293,6 +319,8 @@ impl RuntimeSession {
                     mode: mode_label(&decision).to_string(),
                     live_mode_unlocked: false,
                     blocked_reason: Some(reason.clone()),
+                    selected_leader_wallet: selected_leader_wallet.clone(),
+                    selected_leader_source: selected_leader_source.clone(),
                     verification_pending: 0,
                     last_submit_status: format!("blocked:{reason}"),
                     last_correlation_id: None,
@@ -317,6 +345,8 @@ impl RuntimeSession {
                         mode: "blocked".to_string(),
                         live_mode_unlocked: false,
                         blocked_reason: Some(reason.clone()),
+                        selected_leader_wallet: selected_leader_wallet.clone(),
+                        selected_leader_source: selected_leader_source.clone(),
                         verification_pending: 0,
                         last_submit_status: format!("blocked:{reason}"),
                         last_correlation_id: None,
@@ -392,6 +422,8 @@ impl RuntimeSession {
             mode: mode_label(&decision).to_string(),
             live_mode_unlocked: matches!(decision, BootstrapDecision::LiveListen),
             blocked_reason: None,
+            selected_leader_wallet,
+            selected_leader_source,
             verification_pending,
             last_submit_status,
             last_correlation_id: Some(if rejected_reason.is_some() {
@@ -431,6 +463,69 @@ fn mode_label(decision: &BootstrapDecision) -> &'static str {
         BootstrapDecision::Replay => "replay",
         BootstrapDecision::Blocked(_) => "blocked",
     }
+}
+
+fn selected_leader_context_from_root(
+    root: &Path,
+    env_map: &BTreeMap<String, String>,
+) -> Result<Option<SelectedLeaderContext>, RootEnvLoadError> {
+    if let Ok(wallet) = env::var("COPYTRADER_DISCOVERY_WALLET")
+        && !wallet.trim().is_empty()
+    {
+        return Ok(Some(SelectedLeaderContext {
+            wallet,
+            source: "env:COPYTRADER_DISCOVERY_WALLET".to_string(),
+        }));
+    }
+
+    let selected_leader_path = root.join(".omx/discovery/selected-leader.env");
+    if selected_leader_path.exists() {
+        let content =
+            fs::read_to_string(&selected_leader_path).map_err(|error| RootEnvLoadError::Io {
+                path: selected_leader_path.clone(),
+                error: error.to_string(),
+            })?;
+        for line in content.lines() {
+            if let Some((key, value)) = line.split_once('=') {
+                let key = key.trim();
+                let value = value.trim();
+                if (key == "COPYTRADER_DISCOVERY_WALLET" || key == "COPYTRADER_LEADER_WALLET")
+                    && !value.is_empty()
+                {
+                    return Ok(Some(SelectedLeaderContext {
+                        wallet: value.to_string(),
+                        source: "file:.omx/discovery/selected-leader.env".to_string(),
+                    }));
+                }
+            }
+        }
+    }
+
+    for (key, source) in [
+        (
+            "COPYTRADER_DISCOVERY_WALLET",
+            "env_map:COPYTRADER_DISCOVERY_WALLET",
+        ),
+        (
+            "COPYTRADER_LEADER_WALLET",
+            "env_map:COPYTRADER_LEADER_WALLET",
+        ),
+        ("POLY_ADDRESS", "env_map:POLY_ADDRESS"),
+        ("SIGNER_ADDRESS", "env_map:SIGNER_ADDRESS"),
+    ] {
+        if let Some(value) = env_map
+            .get(key)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            return Ok(Some(SelectedLeaderContext {
+                wallet: value.to_string(),
+                source: source.to_string(),
+            }));
+        }
+    }
+
+    Ok(None)
 }
 
 fn stage_label(stage: crate::pipeline::trace_context::Stage) -> String {

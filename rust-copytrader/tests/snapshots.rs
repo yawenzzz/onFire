@@ -25,6 +25,8 @@ fn snapshot_bundle_renders_stable_json_shape() {
             mode: "shadow_poll".into(),
             live_mode_unlocked: false,
             blocked_reason: Some("activity_source_unverified".into()),
+            selected_leader_wallet: Some("0xleader-wallet".into()),
+            selected_leader_source: Some("file:.omx/discovery/selected-leader.env".into()),
             verification_pending: 2,
             last_submit_status: "submitted_unverified".into(),
             last_correlation_id: Some("corr-7".into()),
@@ -40,6 +42,10 @@ fn snapshot_bundle_renders_stable_json_shape() {
     assert!(json.contains("\"last_transaction_hash\":\"0xtx\""));
     assert!(json.contains("\"mode\":\"shadow_poll\""));
     assert!(json.contains("\"blocked_reason\":\"activity_source_unverified\""));
+    assert!(json.contains("\"selected_leader_wallet\":\"0xleader-wallet\""));
+    assert!(
+        json.contains("\"selected_leader_source\":\"file:.omx/discovery/selected-leader.env\"")
+    );
     assert!(json.contains("\"verification_pending\":2"));
     assert!(json.contains("\"last_correlation_id\":\"corr-7\""));
     assert!(json.contains("\"last_reject_reason\":\"quote_stale\""));
@@ -60,6 +66,8 @@ fn snapshot_bundle_renders_nulls_and_escaped_strings_for_operator_reports() {
             mode: "replay".into(),
             live_mode_unlocked: true,
             blocked_reason: None,
+            selected_leader_wallet: None,
+            selected_leader_source: None,
             verification_pending: 0,
             last_submit_status: "rejected:\\\"quote_stale".into(),
             last_correlation_id: None,
@@ -75,6 +83,8 @@ fn snapshot_bundle_renders_nulls_and_escaped_strings_for_operator_reports() {
     assert!(json.contains("\"last_transaction_hash\":\"0x\\\\\\\"tx\""));
     assert!(json.contains("\"live_mode_unlocked\":true"));
     assert!(json.contains("\"blocked_reason\":null"));
+    assert!(json.contains("\"selected_leader_wallet\":null"));
+    assert!(json.contains("\"selected_leader_source\":null"));
     assert!(json.contains("\"last_submit_status\":\"rejected:\\\\\\\"quote_stale\""));
     assert!(json.contains("\"last_correlation_id\":null"));
     assert!(json.contains("\"last_reject_reason\":null"));

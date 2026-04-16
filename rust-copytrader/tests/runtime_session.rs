@@ -28,6 +28,8 @@ fn blocked_live_session_reports_reason_without_processing_fixture() {
         snapshot.runtime.blocked_reason.as_deref(),
         Some("activity_source_unverified")
     );
+    assert_eq!(snapshot.runtime.selected_leader_wallet, None);
+    assert_eq!(snapshot.runtime.selected_leader_source, None);
     assert!(!snapshot.runtime.live_mode_unlocked);
     assert_eq!(
         snapshot.runtime.last_submit_status,
@@ -53,6 +55,8 @@ fn replay_session_accumulates_submit_metrics_and_snapshot_after_success() {
     assert_eq!(session.metrics().rejected_total(), 0);
     assert_eq!(snapshot.runtime.mode, "replay");
     assert_eq!(snapshot.runtime.blocked_reason, None);
+    assert_eq!(snapshot.runtime.selected_leader_wallet, None);
+    assert_eq!(snapshot.runtime.selected_leader_source, None);
     assert_eq!(snapshot.runtime.last_submit_status, "verified");
     assert_eq!(
         snapshot.runtime.last_correlation_id.as_deref(),
@@ -86,6 +90,8 @@ fn replay_session_tracks_reject_reason_and_preserves_latest_leader_snapshot() {
         snapshot.runtime.last_submit_status,
         "rejected:no_net_position_change"
     );
+    assert_eq!(snapshot.runtime.selected_leader_wallet, None);
+    assert_eq!(snapshot.runtime.selected_leader_source, None);
     assert_eq!(
         snapshot.runtime.last_correlation_id.as_deref(),
         Some("0xtx-success")
@@ -156,6 +162,8 @@ fn shadow_poll_session_reports_runtime_mode_without_live_unlock() {
     assert_eq!(snapshot.runtime.mode, "shadow_poll");
     assert!(!snapshot.runtime.live_mode_unlocked);
     assert_eq!(snapshot.runtime.blocked_reason, None);
+    assert_eq!(snapshot.runtime.selected_leader_wallet, None);
+    assert_eq!(snapshot.runtime.selected_leader_source, None);
     assert_eq!(snapshot.runtime.last_submit_status, "verified");
 }
 
@@ -178,6 +186,8 @@ fn live_session_processes_fixture_through_unified_transport_when_gate_is_unlocke
     assert_eq!(snapshot.runtime.mode, "live_listen");
     assert!(snapshot.runtime.live_mode_unlocked);
     assert_eq!(snapshot.runtime.blocked_reason, None);
+    assert_eq!(snapshot.runtime.selected_leader_wallet, None);
+    assert_eq!(snapshot.runtime.selected_leader_source, None);
     assert_eq!(snapshot.runtime.last_submit_status, "verified");
     assert_eq!(
         snapshot.runtime.last_stage.as_deref(),
@@ -214,6 +224,8 @@ fn config_driven_live_session_stays_blocked_with_default_execution_selection() {
         snapshot.runtime.blocked_reason.as_deref(),
         Some("execution_surface_not_ready")
     );
+    assert_eq!(snapshot.runtime.selected_leader_wallet, None);
+    assert_eq!(snapshot.runtime.selected_leader_source, None);
 }
 
 #[test]
@@ -313,6 +325,7 @@ fn runtime_bootstrap_exposes_repo_local_helper_bridge_for_live_selection() {
 fn runtime_bootstrap_loads_live_execution_wiring_from_root_without_unlocking_live_mode() {
     let root = unique_temp_root("runtime-bootstrap-root");
     fs::create_dir_all(&root).expect("temp root created");
+    fs::create_dir_all(root.join(".omx/discovery")).expect("discovery dir created");
     fs::write(
         root.join(".env.local"),
         concat!(
@@ -324,6 +337,11 @@ fn runtime_bootstrap_loads_live_execution_wiring_from_root_without_unlocking_liv
         ),
     )
     .expect(".env.local written");
+    fs::write(
+        root.join(".omx/discovery/selected-leader.env"),
+        "COPYTRADER_DISCOVERY_WALLET=0xselected-leader\n",
+    )
+    .expect("selected leader env written");
 
     let bootstrap = RuntimeBootstrap::from_root(
         ActivityMode::LiveListen,
@@ -355,6 +373,13 @@ fn runtime_bootstrap_loads_live_execution_wiring_from_root_without_unlocking_liv
             .expect("l2 helper wiring expected")
             .args,
         vec!["scripts/sign_l2.py".to_string(), "--json".to_string()]
+    );
+    assert_eq!(
+        bootstrap
+            .selected_leader()
+            .expect("selected leader expected")
+            .wallet,
+        "0xselected-leader"
     );
 
     fs::remove_dir_all(root).expect("temp root removed");

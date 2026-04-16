@@ -16,6 +16,8 @@ pub struct RuntimeSnapshot {
     pub mode: String,
     pub live_mode_unlocked: bool,
     pub blocked_reason: Option<String>,
+    pub selected_leader_wallet: Option<String>,
+    pub selected_leader_source: Option<String>,
     pub verification_pending: u64,
     pub last_submit_status: String,
     pub last_correlation_id: Option<String>,
@@ -33,6 +35,8 @@ pub struct SnapshotBundle {
 impl SnapshotBundle {
     pub fn render_json(&self) -> String {
         let blocked_reason = opt_json(&self.runtime.blocked_reason);
+        let selected_leader_wallet = opt_json(&self.runtime.selected_leader_wallet);
+        let selected_leader_source = opt_json(&self.runtime.selected_leader_source);
         let last_correlation_id = opt_json(&self.runtime.last_correlation_id);
         let last_reject_reason = opt_json(&self.runtime.last_reject_reason);
         let last_stage = opt_json(&self.runtime.last_stage);
@@ -49,6 +53,8 @@ impl SnapshotBundle {
                 "\"mode\":\"{}\",",
                 "\"live_mode_unlocked\":{},",
                 "\"blocked_reason\":{},",
+                "\"selected_leader_wallet\":{},",
+                "\"selected_leader_source\":{},",
                 "\"verification_pending\":{},",
                 "\"last_submit_status\":\"{}\",",
                 "\"last_correlation_id\":{},",
@@ -65,6 +71,8 @@ impl SnapshotBundle {
             escape_json(&self.runtime.mode),
             self.runtime.live_mode_unlocked,
             blocked_reason,
+            selected_leader_wallet,
+            selected_leader_source,
             self.runtime.verification_pending,
             escape_json(&self.runtime.last_submit_status),
             last_correlation_id,
