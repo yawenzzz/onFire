@@ -121,6 +121,8 @@ cargo run -- --operator-demo --root ..
 - `leaderboard_preview_curl=...`
 - `activity_preview_url=...`
 - `activity_preview_curl=...`
+- `leaderboard_capture_hint=... --output ../.omx/discovery/leaderboard-overall-day-pnl.json`
+- `activity_capture_hint=... --output ../.omx/discovery/activity-<wallet>-trade.json`
 
 它仍然是 **fail-closed** 的：
 - helper / runtime smoke 都只做本地验证

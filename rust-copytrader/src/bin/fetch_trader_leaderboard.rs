@@ -1,5 +1,7 @@
 use std::env;
-use std::process::{Command, ExitCode};
+use std::fs;
+use std::io::{self, Write};
+use std::process::{Command, ExitCode, Output};
 
 const BASE_URL: &str = "https://data-api.polymarket.com/v1/leaderboard";
 
@@ -12,6 +14,7 @@ struct Options {
     offset: usize,
     user: Option<String>,
     username: Option<String>,
+    output: Option<String>,
     curl_bin: String,
     print_url: bool,
     print_curl: bool,
@@ -27,6 +30,7 @@ impl Default for Options {
             offset: 0,
             user: None,
             username: None,
+            output: None,
             curl_bin: "curl".to_string(),
             print_url: false,
             print_curl: false,
@@ -63,23 +67,39 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let status = Command::new(&options.curl_bin)
-        .args(build_curl_args(&options))
-        .status();
-
-    match status {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
-        Err(error) => {
+    match run_request(&options) {
+        Ok(output) => {
+            if let Some(path) = &options.output {
+                if let Err(error) = fs::write(path, &output.stdout) {
+                    eprintln!("failed to write {path}: {error}");
+                    return ExitCode::from(1);
+                }
+                println!("saved_output={path}");
+            } else if let Err(error) = io::stdout().write_all(&output.stdout) {
+                eprintln!("failed to write response: {error}");
+                return ExitCode::from(1);
+            }
+            if let Err(error) = io::stderr().write_all(&output.stderr) {
+                eprintln!("failed to write stderr: {error}");
+                return ExitCode::from(1);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(RequestError::Command(error)) => {
             eprintln!("failed to execute {}: {error}", options.curl_bin);
             ExitCode::from(1)
+        }
+        Err(RequestError::Curl(output)) => {
+            let _ = io::stderr().write_all(&output.stderr);
+            let _ = io::stderr().write_all(&output.stdout);
+            ExitCode::from(output.status.code().unwrap_or(1) as u8)
         }
     }
 }
 
 fn print_usage() {
     println!(
-        "usage: fetch_trader_leaderboard [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--user <wallet>] [--username <name>] [--curl-bin <path>] [--print-url] [--print-curl]"
+        "usage: fetch_trader_leaderboard [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--user <wallet>] [--username <name>] [--output <path>] [--curl-bin <path>] [--print-url] [--print-curl]"
     );
 }
 
@@ -95,6 +115,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--offset" => options.offset = parse_usize(&next_value(&mut iter, arg)?, "offset")?,
             "--user" => options.user = Some(next_value(&mut iter, arg)?),
             "--username" => options.username = Some(next_value(&mut iter, arg)?),
+            "--output" => options.output = Some(next_value(&mut iter, arg)?),
             "--curl-bin" => options.curl_bin = next_value(&mut iter, arg)?,
             "--print-url" => options.print_url = true,
             "--print-curl" => options.print_curl = true,
@@ -162,6 +183,24 @@ fn build_curl_args(options: &Options) -> Vec<String> {
     ]
 }
 
+#[derive(Debug)]
+enum RequestError {
+    Command(io::Error),
+    Curl(Output),
+}
+
+fn run_request(options: &Options) -> Result<Output, RequestError> {
+    let output = Command::new(&options.curl_bin)
+        .args(build_curl_args(options))
+        .output()
+        .map_err(RequestError::Command)?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(RequestError::Curl(output))
+    }
+}
+
 fn shell_join(args: &[String]) -> String {
     args.iter()
         .map(|arg| {
@@ -180,7 +219,19 @@ fn shell_join(args: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Options, build_curl_args, build_url, parse_args};
+    use super::{Options, build_curl_args, build_url, parse_args, run_request};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("fetch-trader-leaderboard-{name}-{suffix}"))
+    }
 
     #[test]
     fn parses_and_builds_leaderboard_url() {
@@ -224,5 +275,37 @@ mod tests {
         let options = parse_args(&["--print-url".into(), "--print-curl".into()]).expect("parse");
         assert!(options.print_url);
         assert!(options.print_curl);
+    }
+
+    #[test]
+    fn parse_args_supports_output_path() {
+        let options =
+            parse_args(&["--output".into(), "/tmp/leaderboard.json".into()]).expect("parse");
+        assert_eq!(options.output.as_deref(), Some("/tmp/leaderboard.json"));
+    }
+
+    #[test]
+    fn run_request_captures_successful_stdout_for_output_files() {
+        let root = unique_temp_dir("output");
+        fs::create_dir_all(&root).expect("temp dir created");
+        let curl_stub = root.join("curl-stub.sh");
+        fs::write(&curl_stub, "#!/usr/bin/env bash\nprintf '{\"rows\":[1]}'\n")
+            .expect("stub written");
+        let mut perms = fs::metadata(&curl_stub).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&curl_stub, perms).expect("perms");
+
+        let options = parse_args(&[
+            "--curl-bin".into(),
+            curl_stub.display().to_string(),
+            "--output".into(),
+            root.join("leaderboard.json").display().to_string(),
+        ])
+        .expect("parse");
+
+        let output = run_request(&options).expect("request should succeed");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "{\"rows\":[1]}");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
     }
 }

@@ -187,6 +187,8 @@ cargo run -- --operator-demo --root ..
 - `leaderboard_preview_curl=...`
 - `activity_preview_url=...`
 - `activity_preview_curl=...`
+- `leaderboard_capture_hint=... --output ../.omx/discovery/leaderboard-overall-day-pnl.json`
+- `activity_capture_hint=... --output ../.omx/discovery/activity-<wallet>-trade.json`
 
 如果你已经设置了 `COPYTRADER_DISCOVERY_WALLET`，operator demo 会优先用它；否则会回退到 `POLY_ADDRESS` / `SIGNER_ADDRESS`。
 
@@ -204,6 +206,13 @@ bash scripts/run_rust_operator_demo.sh
 cd rust-copytrader
 cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20
 cargo run --bin fetch_user_activity -- --user 0x56687bf447db6ffa42ffe2204a05edaa20f55839 --type TRADE --limit 20
+```
+
+如果你想把 discovery 原始响应直接落到 `.omx/` 下面做后续人工筛选，也可以：
+
+```bash
+cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20 --output ../.omx/discovery/leaderboard-overall-day-pnl.json
+cargo run --bin fetch_user_activity -- --user 0x56687bf447db6ffa42ffe2204a05edaa20f55839 --type TRADE --limit 20 --output ../.omx/discovery/activity-0x56687bf447db6ffa42ffe2204a05edaa20f55839-trade.json
 ```
 
 如果网络环境有问题，或者你想先看它到底会打什么请求：

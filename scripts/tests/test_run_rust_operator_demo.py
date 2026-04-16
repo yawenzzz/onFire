@@ -36,6 +36,8 @@ class RunRustOperatorDemoScriptTest(unittest.TestCase):
                 sys.stdout.write("leaderboard_hint=cd rust-copytrader && cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20\\n")
                 sys.stdout.write("leaderboard_preview_url=https://data-api.polymarket.com/v1/leaderboard?category=OVERALL&timePeriod=DAY&orderBy=PNL&limit=20&offset=0\\n")
                 sys.stdout.write("activity_preview_url=https://data-api.polymarket.com/activity?user=0xpoly-address&limit=20&offset=0&sortBy=TIMESTAMP&sortDirection=DESC&type=TRADE\\n")
+                sys.stdout.write("leaderboard_capture_hint=cd rust-copytrader && cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20 --output ../.omx/discovery/leaderboard-overall-day-pnl.json\\n")
+                sys.stdout.write("activity_capture_hint=cd rust-copytrader && cargo run --bin fetch_user_activity -- --user 0xpoly-address --type TRADE --limit 20 --output ../.omx/discovery/activity-0xpoly-address-trade.json\\n")
                 """
             ),
             encoding="utf-8",
@@ -67,6 +69,8 @@ class RunRustOperatorDemoScriptTest(unittest.TestCase):
             self.assertIn("leaderboard_hint=", result.stdout)
             self.assertIn("leaderboard_preview_url=", result.stdout)
             self.assertIn("activity_preview_url=", result.stdout)
+            self.assertIn("leaderboard_capture_hint=", result.stdout)
+            self.assertIn("activity_capture_hint=", result.stdout)
 
     def test_run_rust_operator_demo_fails_closed_without_required_env(self):
         result = subprocess.run(
