@@ -215,6 +215,8 @@ cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY
 cargo run --bin fetch_user_activity -- --user 0x56687bf447db6ffa42ffe2204a05edaa20f55839 --type TRADE --limit 20 --output ../.omx/discovery/activity-0x56687bf447db6ffa42ffe2204a05edaa20f55839-trade.json
 ```
 
+`--output` 会自动创建父目录，所以 `.omx/discovery/` 不需要你手动先 `mkdir -p`。
+
 如果网络环境有问题，或者你想先看它到底会打什么请求：
 
 ```bash

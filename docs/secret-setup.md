@@ -124,6 +124,8 @@ cargo run -- --operator-demo --root ..
 - `leaderboard_capture_hint=... --output ../.omx/discovery/leaderboard-overall-day-pnl.json`
 - `activity_capture_hint=... --output ../.omx/discovery/activity-<wallet>-trade.json`
 
+`--output` 会自动创建父目录，所以 `.omx/discovery/` 不需要手工先建。
+
 它仍然是 **fail-closed** 的：
 - helper / runtime smoke 都只做本地验证
 - 仍然不会解锁 live mode

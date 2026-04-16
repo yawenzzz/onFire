@@ -78,7 +78,7 @@ fn main() -> ExitCode {
     match run_request(&options) {
         Ok(output) => {
             if let Some(path) = &options.output {
-                if let Err(error) = fs::write(path, &output.stdout) {
+                if let Err(error) = write_output_file(path, &output.stdout) {
                     eprintln!("failed to write {path}: {error}");
                     return ExitCode::from(1);
                 }
@@ -234,6 +234,15 @@ enum RequestError {
     Curl(Output),
 }
 
+fn write_output_file(path: &str, bytes: &[u8]) -> io::Result<()> {
+    if let Some(parent) = std::path::Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, bytes)
+}
+
 fn run_request(options: &Options) -> Result<Output, RequestError> {
     let output = Command::new(&options.curl_bin)
         .args(build_curl_args(options))
@@ -264,7 +273,7 @@ fn shell_join(args: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_curl_args, build_url, parse_args, run_request};
+    use super::{build_curl_args, build_url, parse_args, run_request, write_output_file};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
@@ -355,6 +364,25 @@ mod tests {
 
         let output = run_request(&options).expect("request should succeed");
         assert_eq!(String::from_utf8_lossy(&output.stdout), "{\"fills\":[1]}");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn write_output_file_creates_parent_directories() {
+        let root = unique_temp_dir("nested-output");
+        let output_path = root.join("nested").join("activity.json");
+
+        write_output_file(
+            output_path.to_str().expect("utf8 path"),
+            br#"{"fills":[1]}"#,
+        )
+        .expect("write should succeed");
+
+        assert_eq!(
+            fs::read_to_string(&output_path).expect("file exists"),
+            "{\"fills\":[1]}"
+        );
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
