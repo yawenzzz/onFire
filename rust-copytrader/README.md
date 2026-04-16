@@ -305,6 +305,24 @@ cargo run --bin run_copytrader_auto_guarded_loop -- --root .. --proxy http://127
 
 并把每轮结果落到 `.omx/auto-guarded/auto-guarded-*.txt`
 
+最后一层现在也有了一个**live submit gate** 入口，不过它默认仍然 fail-closed，只有当你显式把 live gate 条件都打开时才会继续：
+
+```bash
+cargo run --bin run_copytrader_live_submit_gate -- \
+  --root .. \
+  --activity-source-verified \
+  --activity-under-budget \
+  --activity-capability-detected \
+  --positions-under-budget
+```
+
+默认它只会构建真实 live submit preview；  
+要真正尝试提交，还需要额外传：
+
+```bash
+--allow-live-submit
+```
+
 如果默认的 Polymarket discovery host 在你当前环境里不可达，也可以显式覆盖：
 
 ```bash

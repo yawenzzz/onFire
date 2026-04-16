@@ -209,6 +209,27 @@ cargo run --bin run_copytrader_auto_guarded_loop -- --root .. --proxy http://127
 它会把每轮完整结果落到：
 - `.omx/auto-guarded/auto-guarded-*.txt`
 
+如果你要继续往最后一层推进，现在也有一个 live submit gate 入口：
+
+```bash
+cd rust-copytrader
+cargo run --bin run_copytrader_live_submit_gate -- \
+  --root .. \
+  --activity-source-verified \
+  --activity-under-budget \
+  --activity-capability-detected \
+  --positions-under-budget
+```
+
+默认它还是 fail-closed，只做 live submit preview。  
+只有你显式再加上：
+
+```bash
+--allow-live-submit
+```
+
+它才会真的尝试 live submit。
+
 如果默认 `data-api.polymarket.com` / `activity` host 在你当前环境里连不通，也可以先覆盖：
 
 ```bash
