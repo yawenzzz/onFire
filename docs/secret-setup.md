@@ -175,6 +175,17 @@ cd rust-copytrader
 cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
 ```
 
+如果你想开始真实轮询当前选中的 leader activity，也可以：
+
+```bash
+cd rust-copytrader
+cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1:7897 --poll-count 1
+```
+
+它会把轮询结果落到：
+- `.omx/live-activity/<wallet>/latest-activity.json`
+- `.omx/live-activity/<wallet>/activity-events.jsonl`
+
 如果默认 `data-api.polymarket.com` / `activity` host 在你当前环境里连不通，也可以先覆盖：
 
 ```bash

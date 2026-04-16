@@ -267,6 +267,19 @@ set -a && source ../.omx/discovery/selected-leader.env && set +a
 cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
 ```
 
+如果你已经选好了 leader，想开始**真实轮询这个 leader 的 activity**，现在也有一个 Rust 入口：
+
+```bash
+cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1:7897 --poll-count 1
+```
+
+它会：
+- 从 `.omx/discovery/selected-leader.env` 读取当前 leader
+- 真请求 activity API
+- 把原始响应写到 `.omx/live-activity/<wallet>/latest-activity.json`
+- 把新增交易写到 `.omx/live-activity/<wallet>/activity-events.jsonl`
+- 持久化已见 transaction hashes，避免重复处理
+
 如果默认的 Polymarket discovery host 在你当前环境里不可达，也可以显式覆盖：
 
 ```bash
