@@ -161,6 +161,13 @@ cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery
 set -a && source ../.omx/discovery/selected-leader.env && set +a
 ```
 
+如果你想把这条 discovery + 选 leader + operator demo 直接串成一把，也可以：
+
+```bash
+cd rust-copytrader
+cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
+```
+
 它仍然是 **fail-closed** 的：
 - helper / runtime smoke 都只做本地验证
 - 仍然不会解锁 live mode

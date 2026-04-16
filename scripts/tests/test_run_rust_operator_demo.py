@@ -41,6 +41,7 @@ class RunRustOperatorDemoScriptTest(unittest.TestCase):
                 sys.stdout.write("leader_selection_hint=cd rust-copytrader && cargo run --bin select_copy_leader -- --leaderboard ../.omx/discovery/leaderboard-overall-day-pnl.json --output ../.omx/discovery/selected-leader.env\\n")
                 sys.stdout.write("activity_selection_hint=cd rust-copytrader && cargo run --bin select_copy_leader -- --activity ../.omx/discovery/activity-0xpoly-address-trade.json --output ../.omx/discovery/selected-leader.env\\n")
                 sys.stdout.write("discover_copy_leader_hint=cd rust-copytrader && cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery\\n")
+                sys.stdout.write("run_copytrader_operator_flow_hint=cd rust-copytrader && cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery\\n")
                 sys.stdout.write("leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a\\n")
                 """
             ),
@@ -78,6 +79,7 @@ class RunRustOperatorDemoScriptTest(unittest.TestCase):
             self.assertIn("leader_selection_hint=", result.stdout)
             self.assertIn("activity_selection_hint=", result.stdout)
             self.assertIn("discover_copy_leader_hint=", result.stdout)
+            self.assertIn("run_copytrader_operator_flow_hint=", result.stdout)
             self.assertIn("leader_selection_source_hint=", result.stdout)
 
     def test_run_rust_operator_demo_fails_closed_without_required_env(self):

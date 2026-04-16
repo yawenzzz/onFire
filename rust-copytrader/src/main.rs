@@ -382,6 +382,10 @@ fn render_operator_demo_report(root: &Path) -> Result<String, RootEnvLoadError> 
             .to_string(),
     );
     lines.push(
+        "run_copytrader_operator_flow_hint=cd rust-copytrader && cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery"
+            .to_string(),
+    );
+    lines.push(
         "leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a"
             .to_string(),
     );
@@ -1038,6 +1042,7 @@ mod tests {
         assert!(report.contains("leader_selection_hint=cd rust-copytrader && cargo run --bin select_copy_leader -- --leaderboard ../.omx/discovery/leaderboard-overall-day-pnl.json --output ../.omx/discovery/selected-leader.env"));
         assert!(report.contains("activity_selection_hint=cd rust-copytrader && cargo run --bin select_copy_leader -- --activity ../.omx/discovery/activity-0xpoly-address-trade.json --output ../.omx/discovery/selected-leader.env"));
         assert!(report.contains("discover_copy_leader_hint=cd rust-copytrader && cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery"));
+        assert!(report.contains("run_copytrader_operator_flow_hint=cd rust-copytrader && cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery"));
         assert!(report.contains("leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a"));
         assert!(report.contains("note=public discovery commands are read-only"));
         let report_path = report

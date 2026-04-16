@@ -17,6 +17,7 @@ class SecretSetupDocTests(unittest.TestCase):
         self.assertIn('scripts/run_rust_operator_demo.sh', text)
         self.assertIn('select_copy_leader', text)
         self.assertIn('discover_copy_leader', text)
+        self.assertIn('run_copytrader_operator_flow', text)
         self.assertIn('selected-leader.env', text)
         self.assertIn('COPYTRADER_LEADER_WALLET', text)
         self.assertIn('--operator-demo', text)

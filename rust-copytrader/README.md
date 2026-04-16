@@ -255,6 +255,12 @@ set -a && source ../.omx/discovery/selected-leader.env && set +a
 - 抓这个 wallet 的 activity 到 `.omx/discovery/activity-*.json`
 - 写 `.omx/discovery/selected-leader.env`
 
+如果你想把 discovery + 选 leader + operator demo 一把串起来，也可以：
+
+```bash
+cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
+```
+
 如果网络环境有问题，或者你想先看它到底会打什么请求：
 
 ```bash
