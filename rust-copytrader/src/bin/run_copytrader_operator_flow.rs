@@ -169,6 +169,16 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
         })
     };
 
+    if discovery_result.is_ok() || options.skip_discovery {
+        sync_selected_leader_env(&root, Path::new(&options.discovery_dir)).map_err(|error| {
+            format!(
+                "failed to sync selected leader env from {} into {}: {error}",
+                options.discovery_dir,
+                root.join(".omx/discovery/selected-leader.env").display()
+            )
+        })?;
+    }
+
     let operator_result = resolve_bin_path("rust-copytrader", options.operator_bin.as_deref())
         .map_err(|error| format!("failed to resolve rust-copytrader operator binary: {error}"))
         .and_then(|operator_bin| {
@@ -237,6 +247,24 @@ fn operator_report_path(operator_dir: &Path) -> Result<PathBuf, String> {
         .map_err(|error| format!("system time error: {error}"))?
         .as_nanos();
     Ok(operator_dir.join(format!("discover-and-demo-{run_id}.txt")))
+}
+
+fn sync_selected_leader_env(root: &Path, discovery_dir: &Path) -> io::Result<()> {
+    let source = discovery_dir.join("selected-leader.env");
+    if !source.exists() {
+        return Ok(());
+    }
+
+    let target = root.join(".omx/discovery/selected-leader.env");
+    if source == target {
+        return Ok(());
+    }
+
+    let bytes = fs::read(&source)?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(target, bytes)
 }
 
 fn build_discover_args(options: &Options) -> Vec<String> {
@@ -328,7 +356,7 @@ fn run_command(program: &Path, args: &[String], cwd: Option<&Path>) -> Result<Ou
 
 #[cfg(test)]
 mod tests {
-    use super::{build_discover_args, parse_args, run_operator_flow};
+    use super::{build_discover_args, parse_args, run_operator_flow, sync_selected_leader_env};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
@@ -437,6 +465,26 @@ mod tests {
         assert!(report.contains("selected_wallet=0xleader"));
         assert!(report.contains("== operator_demo =="));
         assert!(report.contains("mode=operator-demo"));
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn sync_selected_leader_env_copies_custom_discovery_env_into_root_scope() {
+        let root = unique_temp_dir("sync-env");
+        let custom_discovery = root.join("custom-discovery");
+        fs::create_dir_all(&custom_discovery).expect("custom discovery created");
+        fs::write(
+            custom_discovery.join("selected-leader.env"),
+            "COPYTRADER_DISCOVERY_WALLET=0xleader-sync\n",
+        )
+        .expect("selected leader written");
+
+        sync_selected_leader_env(&root, &custom_discovery).expect("sync should succeed");
+
+        let synced = fs::read_to_string(root.join(".omx/discovery/selected-leader.env"))
+            .expect("synced env exists");
+        assert!(synced.contains("COPYTRADER_DISCOVERY_WALLET=0xleader-sync"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
