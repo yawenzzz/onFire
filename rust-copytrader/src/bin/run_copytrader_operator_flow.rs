@@ -27,8 +27,10 @@ struct Options {
     retry_delay_ms: u64,
     skip_activity: bool,
     skip_discovery: bool,
+    skip_guarded_cycle: bool,
     discover_bin: Option<String>,
     watch_bin: Option<String>,
+    guarded_bin: Option<String>,
     operator_bin: Option<String>,
 }
 
@@ -55,8 +57,10 @@ impl Default for Options {
             retry_delay_ms: 500,
             skip_activity: false,
             skip_discovery: false,
+            skip_guarded_cycle: false,
             discover_bin: None,
             watch_bin: None,
+            guarded_bin: None,
             operator_bin: None,
         }
     }
@@ -97,7 +101,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--watch-poll-count <n>] [--watch-poll-interval-ms <n>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--skip-activity] [--skip-discovery] [--discover-bin <path>] [--watch-bin <path>] [--operator-bin <path>]"
+        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--watch-poll-count <n>] [--watch-poll-interval-ms <n>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--skip-activity] [--skip-discovery] [--skip-guarded-cycle] [--discover-bin <path>] [--watch-bin <path>] [--guarded-bin <path>] [--operator-bin <path>]"
     );
 }
 
@@ -143,8 +147,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             "--skip-activity" => options.skip_activity = true,
             "--skip-discovery" => options.skip_discovery = true,
+            "--skip-guarded-cycle" => options.skip_guarded_cycle = true,
             "--discover-bin" => options.discover_bin = Some(next_value(&mut iter, arg)?),
             "--watch-bin" => options.watch_bin = Some(next_value(&mut iter, arg)?),
+            "--guarded-bin" => options.guarded_bin = Some(next_value(&mut iter, arg)?),
             "--operator-bin" => options.operator_bin = Some(next_value(&mut iter, arg)?),
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -223,6 +229,26 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
         )
     };
 
+    let guarded_result = if options.skip_guarded_cycle || options.watch_poll_count == 0 {
+        Ok("skipped guarded cycle".to_string())
+    } else {
+        let guarded_bin =
+            resolve_bin_path("run_copytrader_guarded_cycle", options.guarded_bin.as_deref())
+                .map_err(|error| format!("failed to resolve run_copytrader_guarded_cycle: {error}"))?;
+        run_command(
+            &guarded_bin,
+            &[
+                "--root".to_string(),
+                options.root.clone(),
+            ],
+            Some(Path::new(".")),
+        )
+        .and_then(|output| {
+            String::from_utf8(output.stdout)
+                .map_err(|error| format!("run_copytrader_guarded_cycle stdout was not utf-8: {error}"))
+        })
+    };
+
     let operator_result = resolve_bin_path("rust-copytrader", options.operator_bin.as_deref())
         .map_err(|error| format!("failed to resolve rust-copytrader operator binary: {error}"))
         .and_then(|operator_bin| {
@@ -241,62 +267,48 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
                 .map_err(|error| format!("operator demo stdout was not utf-8: {error}"))
         });
 
-    let report = build_flow_report(
-        discovery_result.as_deref(),
-        discovery_result.as_ref().err(),
-        watch_result.as_deref(),
-        watch_result.as_ref().err(),
-        operator_result.as_deref(),
-        operator_result.as_ref().err(),
-    );
+    let report = build_flow_report([
+        ("discover_copy_leader", discovery_result.as_deref(), discovery_result.as_ref().err()),
+        ("watch_copy_leader_activity", watch_result.as_deref(), watch_result.as_ref().err()),
+        ("run_copytrader_guarded_cycle", guarded_result.as_deref(), guarded_result.as_ref().err()),
+        ("operator_demo", operator_result.as_deref(), operator_result.as_ref().err()),
+    ]);
 
     fs::write(&report_path, report)
         .map_err(|error| format!("failed to write {}: {error}", report_path.display()))?;
     let error = discovery_result
         .err()
         .or_else(|| watch_result.err())
+        .or_else(|| guarded_result.err())
         .or_else(|| operator_result.err());
     Ok((report_path, error))
 }
 
 fn build_flow_report(
-    discovery_output: Result<&str, &String>,
-    discovery_error: Option<&String>,
-    watch_output: Result<&str, &String>,
-    watch_error: Option<&String>,
-    operator_output: Result<&str, &String>,
-    operator_error: Option<&String>,
+    stages: [(
+        &'static str,
+        Result<&str, &String>,
+        Option<&String>,
+    ); 4],
 ) -> String {
-    let discovery_section = match discovery_output {
-        Ok(output) => output.trim_end().to_string(),
-        Err(error) => format!("error={error}"),
-    };
-    let watch_section = match watch_output {
-        Ok(output) => output.trim_end().to_string(),
-        Err(error) => format!("error={error}"),
-    };
-    let operator_section = match operator_output {
-        Ok(output) => output.trim_end().to_string(),
-        Err(error) => format!("error={error}"),
-    };
+    let mut report = stages
+        .iter()
+        .map(|(name, output, _)| {
+            let section = match output {
+                Ok(output) => output.trim_end().to_string(),
+                Err(error) => format!("error={error}"),
+            };
+            format!("== {name} ==\n{section}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    let mut report = format!(
-        "== discover_copy_leader ==\n{}\n== watch_copy_leader_activity ==\n{}\n== operator_demo ==\n{}",
-        discovery_section, watch_section, operator_section
-    );
-    if let Some(error) = discovery_error {
+    if let Some((stage, _, Some(error))) = stages.iter().find(|(_, _, error)| error.is_some()) {
         report.push_str(&format!(
-            "\nflow_failure_stage=discover_copy_leader\nflow_failure_reason={error}"
-        ));
-    } else if let Some(error) = watch_error {
-        report.push_str(&format!(
-            "\nflow_failure_stage=watch_copy_leader_activity\nflow_failure_reason={error}"
-        ));
-    } else if let Some(error) = operator_error {
-        report.push_str(&format!(
-            "\nflow_failure_stage=operator_demo\nflow_failure_reason={error}"
+            "\nflow_failure_stage={stage}\nflow_failure_reason={error}"
         ));
     }
+
     report
 }
 
@@ -500,6 +512,7 @@ mod tests {
             "25".into(),
             "--skip-activity".into(),
             "--skip-discovery".into(),
+            "--skip-guarded-cycle".into(),
         ])
         .expect("parse");
 
@@ -520,6 +533,7 @@ mod tests {
         assert_eq!(options.retry_delay_ms, 25);
         assert!(options.skip_activity);
         assert!(options.skip_discovery);
+        assert!(options.skip_guarded_cycle);
     }
 
     #[test]
@@ -598,6 +612,11 @@ mod tests {
             &watch,
             "#!/usr/bin/env bash\nprintf 'watch_user=0xleader\\npoll_new_events=1\\n'\n",
         );
+        let guarded = root.join("run_copytrader_guarded_cycle");
+        write_executable(
+            &guarded,
+            "#!/usr/bin/env bash\nprintf 'mode=guarded-cycle\\nlast_submit_status=verified\\n'\n",
+        );
 
         let options = parse_args(&[
             "--root".into(),
@@ -610,6 +629,8 @@ mod tests {
             watch.display().to_string(),
             "--watch-poll-count".into(),
             "1".into(),
+            "--guarded-bin".into(),
+            guarded.display().to_string(),
             "--operator-bin".into(),
             operator.display().to_string(),
         ])
@@ -623,6 +644,8 @@ mod tests {
         assert!(report.contains("selected_wallet=0xleader"));
         assert!(report.contains("== watch_copy_leader_activity =="));
         assert!(report.contains("watch_user=0xleader"));
+        assert!(report.contains("== run_copytrader_guarded_cycle =="));
+        assert!(report.contains("mode=guarded-cycle"));
         assert!(report.contains("== operator_demo =="));
         assert!(report.contains("mode=operator-demo"));
 
@@ -736,6 +759,11 @@ mod tests {
             &watch,
             "#!/usr/bin/env bash\necho 'watch failed' >&2\nexit 1\n",
         );
+        let guarded = root.join("run_copytrader_guarded_cycle");
+        write_executable(
+            &guarded,
+            "#!/usr/bin/env bash\nprintf 'mode=guarded-cycle\\n'\n",
+        );
         let operator = root.join("rust-copytrader");
         write_executable(
             &operator,
@@ -751,6 +779,8 @@ mod tests {
             watch.display().to_string(),
             "--watch-poll-count".into(),
             "1".into(),
+            "--guarded-bin".into(),
+            guarded.display().to_string(),
             "--operator-bin".into(),
             operator.display().to_string(),
         ])
@@ -761,6 +791,57 @@ mod tests {
         let report = fs::read_to_string(&report_path).expect("report exists");
         assert!(report.contains("flow_failure_stage=watch_copy_leader_activity"));
         assert!(report.contains("watch_copy_leader_activity"));
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn run_operator_flow_persists_failure_report_when_guarded_cycle_fails() {
+        let root = unique_temp_dir("guarded-failure");
+        fs::create_dir_all(root.join(".omx/operator-demo")).expect("operator dir created");
+
+        let discover = root.join("discover_copy_leader");
+        write_executable(
+            &discover,
+            "#!/usr/bin/env bash\nprintf 'selected_wallet=0xleader\\nselected_leader_env_path=../.omx/discovery/selected-leader.env\\n'\nmkdir -p ../.omx/discovery\nprintf 'COPYTRADER_DISCOVERY_WALLET=0xleader\\n' > ../.omx/discovery/selected-leader.env\n",
+        );
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            "#!/usr/bin/env bash\nprintf 'watch_user=0xleader\\n'\n",
+        );
+        let guarded = root.join("run_copytrader_guarded_cycle");
+        write_executable(
+            &guarded,
+            "#!/usr/bin/env bash\necho 'guarded failed' >&2\nexit 1\n",
+        );
+        let operator = root.join("rust-copytrader");
+        write_executable(
+            &operator,
+            "#!/usr/bin/env bash\nprintf 'mode=operator-demo\\n'\n",
+        );
+
+        let options = parse_args(&[
+            "--root".into(),
+            root.display().to_string(),
+            "--discover-bin".into(),
+            discover.display().to_string(),
+            "--watch-bin".into(),
+            watch.display().to_string(),
+            "--watch-poll-count".into(),
+            "1".into(),
+            "--guarded-bin".into(),
+            guarded.display().to_string(),
+            "--operator-bin".into(),
+            operator.display().to_string(),
+        ])
+        .expect("parse");
+
+        let (report_path, error) = run_operator_flow(&options).expect("flow should return report");
+        assert!(error.is_some());
+        let report = fs::read_to_string(&report_path).expect("report exists");
+        assert!(report.contains("flow_failure_stage=run_copytrader_guarded_cycle"));
+        assert!(report.contains("run_copytrader_guarded_cycle"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
