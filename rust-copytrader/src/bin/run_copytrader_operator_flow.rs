@@ -19,11 +19,14 @@ struct Options {
     offset: usize,
     index: usize,
     activity_type: String,
+    watch_poll_count: usize,
+    watch_poll_interval_ms: u64,
     connect_timeout_ms: u64,
     max_time_ms: u64,
     skip_activity: bool,
     skip_discovery: bool,
     discover_bin: Option<String>,
+    watch_bin: Option<String>,
     operator_bin: Option<String>,
 }
 
@@ -42,11 +45,14 @@ impl Default for Options {
             offset: 0,
             index: 0,
             activity_type: "TRADE".to_string(),
+            watch_poll_count: 0,
+            watch_poll_interval_ms: 5_000,
             connect_timeout_ms: 5_000,
             max_time_ms: 12_000,
             skip_activity: false,
             skip_discovery: false,
             discover_bin: None,
+            watch_bin: None,
             operator_bin: None,
         }
     }
@@ -87,7 +93,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--skip-activity] [--skip-discovery] [--discover-bin <path>] [--operator-bin <path>]"
+        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--watch-poll-count <n>] [--watch-poll-interval-ms <n>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--skip-activity] [--skip-discovery] [--discover-bin <path>] [--watch-bin <path>] [--operator-bin <path>]"
     );
 }
 
@@ -110,6 +116,14 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--offset" => options.offset = parse_usize(&next_value(&mut iter, arg)?, "offset")?,
             "--index" => options.index = parse_usize(&next_value(&mut iter, arg)?, "index")?,
             "--activity-type" => options.activity_type = next_value(&mut iter, arg)?,
+            "--watch-poll-count" => {
+                options.watch_poll_count =
+                    parse_usize(&next_value(&mut iter, arg)?, "watch-poll-count")?
+            }
+            "--watch-poll-interval-ms" => {
+                options.watch_poll_interval_ms =
+                    parse_u64(&next_value(&mut iter, arg)?, "watch-poll-interval-ms")?
+            }
             "--connect-timeout-ms" => {
                 options.connect_timeout_ms =
                     parse_u64(&next_value(&mut iter, arg)?, "connect-timeout-ms")?
@@ -120,6 +134,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--skip-activity" => options.skip_activity = true,
             "--skip-discovery" => options.skip_discovery = true,
             "--discover-bin" => options.discover_bin = Some(next_value(&mut iter, arg)?),
+            "--watch-bin" => options.watch_bin = Some(next_value(&mut iter, arg)?),
             "--operator-bin" => options.operator_bin = Some(next_value(&mut iter, arg)?),
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -182,6 +197,22 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
         })?;
     }
 
+    let watch_result = if options.watch_poll_count == 0 {
+        Ok("skipped watcher step".to_string())
+    } else {
+        let watch_bin =
+            resolve_bin_path("watch_copy_leader_activity", options.watch_bin.as_deref()).map_err(
+                |error| format!("failed to resolve watch_copy_leader_activity: {error}"),
+            )?;
+        run_command(&watch_bin, &build_watch_args(options), Some(Path::new("."))).and_then(
+            |output| {
+                String::from_utf8(output.stdout).map_err(|error| {
+                    format!("watch_copy_leader_activity stdout was not utf-8: {error}")
+                })
+            },
+        )
+    };
+
     let operator_result = resolve_bin_path("rust-copytrader", options.operator_bin.as_deref())
         .map_err(|error| format!("failed to resolve rust-copytrader operator binary: {error}"))
         .and_then(|operator_bin| {
@@ -203,23 +234,34 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
     let report = build_flow_report(
         discovery_result.as_deref(),
         discovery_result.as_ref().err(),
+        watch_result.as_deref(),
+        watch_result.as_ref().err(),
         operator_result.as_deref(),
         operator_result.as_ref().err(),
     );
 
     fs::write(&report_path, report)
         .map_err(|error| format!("failed to write {}: {error}", report_path.display()))?;
-    let error = discovery_result.err().or_else(|| operator_result.err());
+    let error = discovery_result
+        .err()
+        .or_else(|| watch_result.err())
+        .or_else(|| operator_result.err());
     Ok((report_path, error))
 }
 
 fn build_flow_report(
     discovery_output: Result<&str, &String>,
     discovery_error: Option<&String>,
+    watch_output: Result<&str, &String>,
+    watch_error: Option<&String>,
     operator_output: Result<&str, &String>,
     operator_error: Option<&String>,
 ) -> String {
     let discovery_section = match discovery_output {
+        Ok(output) => output.trim_end().to_string(),
+        Err(error) => format!("error={error}"),
+    };
+    let watch_section = match watch_output {
         Ok(output) => output.trim_end().to_string(),
         Err(error) => format!("error={error}"),
     };
@@ -229,12 +271,16 @@ fn build_flow_report(
     };
 
     let mut report = format!(
-        "== discover_copy_leader ==\n{}\n== operator_demo ==\n{}",
-        discovery_section, operator_section
+        "== discover_copy_leader ==\n{}\n== watch_copy_leader_activity ==\n{}\n== operator_demo ==\n{}",
+        discovery_section, watch_section, operator_section
     );
     if let Some(error) = discovery_error {
         report.push_str(&format!(
             "\nflow_failure_stage=discover_copy_leader\nflow_failure_reason={error}"
+        ));
+    } else if let Some(error) = watch_error {
+        report.push_str(&format!(
+            "\nflow_failure_stage=watch_copy_leader_activity\nflow_failure_reason={error}"
         ));
     } else if let Some(error) = operator_error {
         report.push_str(&format!(
@@ -311,6 +357,32 @@ fn build_discover_args(options: &Options) -> Vec<String> {
     args
 }
 
+fn build_watch_args(options: &Options) -> Vec<String> {
+    let mut args = vec![
+        "--root".to_string(),
+        options.root.clone(),
+        "--poll-count".to_string(),
+        options.watch_poll_count.to_string(),
+        "--poll-interval-ms".to_string(),
+        options.watch_poll_interval_ms.to_string(),
+        "--activity-type".to_string(),
+        options.activity_type.clone(),
+        "--connect-timeout-ms".to_string(),
+        options.connect_timeout_ms.to_string(),
+        "--max-time-ms".to_string(),
+        options.max_time_ms.to_string(),
+    ];
+    if let Some(base_url) = &options.activity_base_url {
+        args.push("--base-url".to_string());
+        args.push(base_url.clone());
+    }
+    if let Some(proxy) = &options.proxy {
+        args.push("--proxy".to_string());
+        args.push(proxy.clone());
+    }
+    args
+}
+
 fn resolve_bin_path(binary_name: &str, override_path: Option<&str>) -> io::Result<PathBuf> {
     if let Some(override_path) = override_path {
         return Ok(PathBuf::from(override_path));
@@ -363,7 +435,10 @@ fn run_command(program: &Path, args: &[String], cwd: Option<&Path>) -> Result<Ou
 
 #[cfg(test)]
 mod tests {
-    use super::{build_discover_args, parse_args, run_operator_flow, sync_selected_leader_env};
+    use super::{
+        build_discover_args, build_watch_args, parse_args, run_operator_flow,
+        sync_selected_leader_env,
+    };
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
@@ -395,6 +470,10 @@ mod tests {
             "https://example.com/leaderboard".into(),
             "--activity-base-url".into(),
             "https://example.com/activity".into(),
+            "--watch-poll-count".into(),
+            "2".into(),
+            "--watch-poll-interval-ms".into(),
+            "10".into(),
             "--proxy".into(),
             "http://127.0.0.1:7897".into(),
             "--skip-activity".into(),
@@ -412,6 +491,8 @@ mod tests {
             options.activity_base_url.as_deref(),
             Some("https://example.com/activity")
         );
+        assert_eq!(options.watch_poll_count, 2);
+        assert_eq!(options.watch_poll_interval_ms, 10);
         assert_eq!(options.proxy.as_deref(), Some("http://127.0.0.1:7897"));
         assert!(options.skip_activity);
         assert!(options.skip_discovery);
@@ -441,6 +522,31 @@ mod tests {
     }
 
     #[test]
+    fn build_watch_args_includes_proxy_and_poll_config() {
+        let options = parse_args(&[
+            "--watch-poll-count".into(),
+            "3".into(),
+            "--watch-poll-interval-ms".into(),
+            "25".into(),
+            "--activity-base-url".into(),
+            "https://example.com/activity".into(),
+            "--proxy".into(),
+            "http://127.0.0.1:7897".into(),
+        ])
+        .expect("parse");
+
+        let args = build_watch_args(&options);
+
+        assert!(args.contains(&"--poll-count".to_string()));
+        assert!(args.contains(&"3".to_string()));
+        assert!(args.contains(&"--poll-interval-ms".to_string()));
+        assert!(args.contains(&"25".to_string()));
+        assert!(args.contains(&"--base-url".to_string()));
+        assert!(args.contains(&"https://example.com/activity".to_string()));
+        assert!(args.contains(&"--proxy".to_string()));
+    }
+
+    #[test]
     fn run_operator_flow_combines_discovery_and_operator_reports() {
         let root = unique_temp_dir("flow");
         fs::create_dir_all(root.join(".omx/operator-demo")).expect("operator dir created");
@@ -455,6 +561,11 @@ mod tests {
             &operator,
             "#!/usr/bin/env bash\nprintf 'mode=operator-demo\\nselected_leader_wallet=0xleader\\n'\n",
         );
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            "#!/usr/bin/env bash\nprintf 'watch_user=0xleader\\npoll_new_events=1\\n'\n",
+        );
 
         let options = parse_args(&[
             "--root".into(),
@@ -463,6 +574,10 @@ mod tests {
             root.join(".omx/discovery").display().to_string(),
             "--discover-bin".into(),
             discover.display().to_string(),
+            "--watch-bin".into(),
+            watch.display().to_string(),
+            "--watch-poll-count".into(),
+            "1".into(),
             "--operator-bin".into(),
             operator.display().to_string(),
         ])
@@ -474,6 +589,8 @@ mod tests {
 
         assert!(report.contains("== discover_copy_leader =="));
         assert!(report.contains("selected_wallet=0xleader"));
+        assert!(report.contains("== watch_copy_leader_activity =="));
+        assert!(report.contains("watch_user=0xleader"));
         assert!(report.contains("== operator_demo =="));
         assert!(report.contains("mode=operator-demo"));
 
@@ -543,12 +660,21 @@ mod tests {
             &operator,
             "#!/usr/bin/env bash\nprintf 'mode=operator-demo\\n'\n",
         );
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            "#!/usr/bin/env bash\necho 'watch failed' >&2\nexit 1\n",
+        );
 
         let options = parse_args(&[
             "--root".into(),
             root.display().to_string(),
             "--discover-bin".into(),
             discover.display().to_string(),
+            "--watch-bin".into(),
+            watch.display().to_string(),
+            "--watch-poll-count".into(),
+            "1".into(),
             "--operator-bin".into(),
             operator.display().to_string(),
         ])
@@ -559,6 +685,50 @@ mod tests {
         let report = fs::read_to_string(&report_path).expect("report exists");
         assert!(report.contains("flow_failure_stage=discover_copy_leader"));
         assert!(report.contains("discover_copy_leader"));
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn run_operator_flow_persists_failure_report_when_watcher_fails() {
+        let root = unique_temp_dir("watch-failure");
+        fs::create_dir_all(root.join(".omx/operator-demo")).expect("operator dir created");
+
+        let discover = root.join("discover_copy_leader");
+        write_executable(
+            &discover,
+            "#!/usr/bin/env bash\nprintf 'selected_wallet=0xleader\\nselected_leader_env_path=../.omx/discovery/selected-leader.env\\n'\nmkdir -p ../.omx/discovery\nprintf 'COPYTRADER_DISCOVERY_WALLET=0xleader\\n' > ../.omx/discovery/selected-leader.env\n",
+        );
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            "#!/usr/bin/env bash\necho 'watch failed' >&2\nexit 1\n",
+        );
+        let operator = root.join("rust-copytrader");
+        write_executable(
+            &operator,
+            "#!/usr/bin/env bash\nprintf 'mode=operator-demo\\n'\n",
+        );
+
+        let options = parse_args(&[
+            "--root".into(),
+            root.display().to_string(),
+            "--discover-bin".into(),
+            discover.display().to_string(),
+            "--watch-bin".into(),
+            watch.display().to_string(),
+            "--watch-poll-count".into(),
+            "1".into(),
+            "--operator-bin".into(),
+            operator.display().to_string(),
+        ])
+        .expect("parse");
+
+        let (report_path, error) = run_operator_flow(&options).expect("flow should return report");
+        assert!(error.is_some());
+        let report = fs::read_to_string(&report_path).expect("report exists");
+        assert!(report.contains("flow_failure_stage=watch_copy_leader_activity"));
+        assert!(report.contains("watch_copy_leader_activity"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
