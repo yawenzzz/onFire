@@ -52,6 +52,11 @@ fn runtime_session_recorder_persists_reports_and_rotates_session_artifacts() {
     assert!(summary.contains("mode=replay"));
     assert!(summary.contains("selected_leader_wallet=none"));
     assert!(summary.contains("selected_leader_source=none"));
+    assert!(summary.contains("selected_leader_rank=none"));
+    assert!(summary.contains("selected_leader_pnl=none"));
+    assert!(summary.contains("selected_leader_username=none"));
+    assert!(summary.contains("selected_leader_latest_activity_side=none"));
+    assert!(summary.contains("selected_leader_latest_activity_slug=none"));
     assert!(summary.contains("last_submit_status=verified"));
     assert!(summary.contains("submitted=1"));
 
@@ -205,6 +210,8 @@ fn runtime_session_recorder_refreshes_latest_snapshot_and_report_across_rotation
     assert!(summary.contains("last_submit_status=verification_mismatch"));
     assert!(summary.contains("selected_leader_wallet=none"));
     assert!(summary.contains("selected_leader_source=none"));
+    assert!(summary.contains("selected_leader_rank=none"));
+    assert!(summary.contains("selected_leader_pnl=none"));
     assert!(summary.contains("submitted=3"));
     assert!(summary.contains("verified_total=1"));
     assert!(summary.contains("rejected_total=0"));
@@ -230,21 +237,21 @@ fn runtime_session_recorder_writes_correlated_jsonl_records_for_operator_artifac
         fs::read_to_string(&persisted.activity_log_path).expect("activity log should be readable");
     assert_eq!(
         activity_log.trim(),
-        "{\"leader_id\":\"leader-1\",\"selected_leader_wallet\":null,\"selected_leader_source\":null,\"last_activity_at_ms\":1000,\"last_transaction_hash\":\"0xtx-success\"}"
+        "{\"leader_id\":\"leader-1\",\"selected_leader_wallet\":null,\"selected_leader_source\":null,\"selected_leader_rank\":null,\"selected_leader_pnl\":null,\"selected_leader_username\":null,\"selected_leader_latest_activity_timestamp\":null,\"selected_leader_latest_activity_side\":null,\"selected_leader_latest_activity_slug\":null,\"selected_leader_latest_activity_tx\":null,\"last_activity_at_ms\":1000,\"last_transaction_hash\":\"0xtx-success\"}"
     );
 
     let order_log =
         fs::read_to_string(&persisted.order_log_path).expect("order log should be readable");
     assert_eq!(
         order_log.trim(),
-        "{\"selected_leader_wallet\":null,\"selected_leader_source\":null,\"last_submit_status\":\"verified\",\"last_correlation_id\":\"corr-success\",\"last_reject_reason\":null,\"last_stage\":\"verification_observed\",\"last_total_elapsed_ms\":82}"
+        "{\"selected_leader_wallet\":null,\"selected_leader_source\":null,\"selected_leader_rank\":null,\"selected_leader_pnl\":null,\"selected_leader_username\":null,\"selected_leader_latest_activity_side\":null,\"selected_leader_latest_activity_slug\":null,\"selected_leader_latest_activity_tx\":null,\"last_submit_status\":\"verified\",\"last_correlation_id\":\"corr-success\",\"last_reject_reason\":null,\"last_stage\":\"verification_observed\",\"last_total_elapsed_ms\":82}"
     );
 
     let verification_log = fs::read_to_string(&persisted.verification_log_path)
         .expect("verification log should be readable");
     assert_eq!(
         verification_log.trim(),
-        "{\"selected_leader_wallet\":null,\"selected_leader_source\":null,\"verification_pending\":0,\"last_submit_status\":\"verified\",\"last_correlation_id\":\"corr-success\"}"
+        "{\"selected_leader_wallet\":null,\"selected_leader_source\":null,\"selected_leader_rank\":null,\"selected_leader_pnl\":null,\"selected_leader_username\":null,\"selected_leader_latest_activity_side\":null,\"selected_leader_latest_activity_slug\":null,\"selected_leader_latest_activity_tx\":null,\"verification_pending\":0,\"last_submit_status\":\"verified\",\"last_correlation_id\":\"corr-success\"}"
     );
 
     fs::remove_dir_all(root).expect("temp artifacts should be removed");
@@ -256,7 +263,16 @@ fn runtime_session_recorder_persists_selected_leader_metadata_in_logs_and_summar
     fs::create_dir_all(root.join(".omx/discovery")).expect("discovery dir created");
     fs::write(
         root.join(".omx/discovery/selected-leader.env"),
-        "COPYTRADER_DISCOVERY_WALLET=0xselected-leader\n",
+        concat!(
+            "COPYTRADER_DISCOVERY_WALLET=0xselected-leader\n",
+            "COPYTRADER_SELECTED_RANK=1\n",
+            "COPYTRADER_SELECTED_PNL=123.45\n",
+            "COPYTRADER_SELECTED_USERNAME=alpha\n",
+            "COPYTRADER_LATEST_ACTIVITY_TIMESTAMP=1776303488\n",
+            "COPYTRADER_LATEST_ACTIVITY_SIDE=BUY\n",
+            "COPYTRADER_LATEST_ACTIVITY_SLUG=market-slug\n",
+            "COPYTRADER_LATEST_ACTIVITY_TX=0xfeed\n",
+        ),
     )
     .expect("selected leader env written");
 
@@ -273,6 +289,11 @@ fn runtime_session_recorder_persists_selected_leader_metadata_in_logs_and_summar
     let summary = fs::read_to_string(&persisted.summary_path).expect("summary should be readable");
     assert!(summary.contains("selected_leader_wallet=0xselected-leader"));
     assert!(summary.contains("selected_leader_source=file:.omx/discovery/selected-leader.env"));
+    assert!(summary.contains("selected_leader_rank=1"));
+    assert!(summary.contains("selected_leader_pnl=123.45"));
+    assert!(summary.contains("selected_leader_username=alpha"));
+    assert!(summary.contains("selected_leader_latest_activity_side=BUY"));
+    assert!(summary.contains("selected_leader_latest_activity_slug=market-slug"));
 
     let activity_log =
         fs::read_to_string(&persisted.activity_log_path).expect("activity log should be readable");
@@ -281,14 +302,18 @@ fn runtime_session_recorder_persists_selected_leader_metadata_in_logs_and_summar
         activity_log
             .contains("\"selected_leader_source\":\"file:.omx/discovery/selected-leader.env\"")
     );
+    assert!(activity_log.contains("\"selected_leader_rank\":\"1\""));
+    assert!(activity_log.contains("\"selected_leader_latest_activity_tx\":\"0xfeed\""));
 
     let order_log =
         fs::read_to_string(&persisted.order_log_path).expect("order log should be readable");
     assert!(order_log.contains("\"selected_leader_wallet\":\"0xselected-leader\""));
+    assert!(order_log.contains("\"selected_leader_pnl\":\"123.45\""));
 
     let verification_log = fs::read_to_string(&persisted.verification_log_path)
         .expect("verification log should be readable");
     assert!(verification_log.contains("\"selected_leader_wallet\":\"0xselected-leader\""));
+    assert!(verification_log.contains("\"selected_leader_latest_activity_side\":\"BUY\""));
 
     fs::remove_dir_all(root).expect("temp artifacts should be removed");
 }

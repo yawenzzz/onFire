@@ -680,6 +680,13 @@ fn activity_record(snapshot: &SnapshotBundle) -> String {
             "\"leader_id\":\"{}\",",
             "\"selected_leader_wallet\":{},",
             "\"selected_leader_source\":{},",
+            "\"selected_leader_rank\":{},",
+            "\"selected_leader_pnl\":{},",
+            "\"selected_leader_username\":{},",
+            "\"selected_leader_latest_activity_timestamp\":{},",
+            "\"selected_leader_latest_activity_side\":{},",
+            "\"selected_leader_latest_activity_slug\":{},",
+            "\"selected_leader_latest_activity_tx\":{},",
             "\"last_activity_at_ms\":{},",
             "\"last_transaction_hash\":\"{}\"",
             "}}"
@@ -687,6 +694,33 @@ fn activity_record(snapshot: &SnapshotBundle) -> String {
         escape_json(&snapshot.leader.leader_id),
         opt_json(snapshot.runtime.selected_leader_wallet.as_deref()),
         opt_json(snapshot.runtime.selected_leader_source.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_rank.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_pnl.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_username.as_deref()),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_timestamp
+                .as_deref(),
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_side
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_slug
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_tx
+                .as_deref()
+        ),
         snapshot.leader.last_activity_at_ms,
         escape_json(&snapshot.leader.last_transaction_hash),
     )
@@ -698,6 +732,12 @@ fn order_record(snapshot: &SnapshotBundle) -> String {
             "{{",
             "\"selected_leader_wallet\":{},",
             "\"selected_leader_source\":{},",
+            "\"selected_leader_rank\":{},",
+            "\"selected_leader_pnl\":{},",
+            "\"selected_leader_username\":{},",
+            "\"selected_leader_latest_activity_side\":{},",
+            "\"selected_leader_latest_activity_slug\":{},",
+            "\"selected_leader_latest_activity_tx\":{},",
             "\"last_submit_status\":\"{}\",",
             "\"last_correlation_id\":{},",
             "\"last_reject_reason\":{},",
@@ -707,6 +747,27 @@ fn order_record(snapshot: &SnapshotBundle) -> String {
         ),
         opt_json(snapshot.runtime.selected_leader_wallet.as_deref()),
         opt_json(snapshot.runtime.selected_leader_source.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_rank.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_pnl.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_username.as_deref()),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_side
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_slug
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_tx
+                .as_deref()
+        ),
         escape_json(&snapshot.runtime.last_submit_status),
         opt_json(snapshot.runtime.last_correlation_id.as_deref()),
         opt_json(snapshot.runtime.last_reject_reason.as_deref()),
@@ -721,6 +782,12 @@ fn verification_record(snapshot: &SnapshotBundle) -> String {
             "{{",
             "\"selected_leader_wallet\":{},",
             "\"selected_leader_source\":{},",
+            "\"selected_leader_rank\":{},",
+            "\"selected_leader_pnl\":{},",
+            "\"selected_leader_username\":{},",
+            "\"selected_leader_latest_activity_side\":{},",
+            "\"selected_leader_latest_activity_slug\":{},",
+            "\"selected_leader_latest_activity_tx\":{},",
             "\"verification_pending\":{},",
             "\"last_submit_status\":\"{}\",",
             "\"last_correlation_id\":{}",
@@ -728,6 +795,27 @@ fn verification_record(snapshot: &SnapshotBundle) -> String {
         ),
         opt_json(snapshot.runtime.selected_leader_wallet.as_deref()),
         opt_json(snapshot.runtime.selected_leader_source.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_rank.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_pnl.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_username.as_deref()),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_side
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_slug
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_tx
+                .as_deref()
+        ),
         snapshot.runtime.verification_pending,
         escape_json(&snapshot.runtime.last_submit_status),
         opt_json(snapshot.runtime.last_correlation_id.as_deref()),

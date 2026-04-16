@@ -304,6 +304,27 @@ fn render_runtime_smoke_report(root: &Path) -> Result<String, RootEnvLoadError> 
             "last_submit_status={}",
             snapshot.runtime.last_submit_status
         ));
+        if let Some(value) = &snapshot.runtime.selected_leader_rank {
+            lines.push(format!("runtime_subject_rank={value}"));
+        }
+        if let Some(value) = &snapshot.runtime.selected_leader_pnl {
+            lines.push(format!("runtime_subject_pnl={value}"));
+        }
+        if let Some(value) = &snapshot.runtime.selected_leader_username {
+            lines.push(format!("runtime_subject_username={value}"));
+        }
+        if let Some(value) = &snapshot.runtime.selected_leader_latest_activity_timestamp {
+            lines.push(format!("runtime_subject_latest_activity_timestamp={value}"));
+        }
+        if let Some(value) = &snapshot.runtime.selected_leader_latest_activity_side {
+            lines.push(format!("runtime_subject_latest_activity_side={value}"));
+        }
+        if let Some(value) = &snapshot.runtime.selected_leader_latest_activity_slug {
+            lines.push(format!("runtime_subject_latest_activity_slug={value}"));
+        }
+        if let Some(value) = &snapshot.runtime.selected_leader_latest_activity_tx {
+            lines.push(format!("runtime_subject_latest_activity_tx={value}"));
+        }
         lines.push(format!(
             "last_total_elapsed_ms={}",
             snapshot.runtime.last_total_elapsed_ms
