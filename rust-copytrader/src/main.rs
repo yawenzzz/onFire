@@ -89,9 +89,12 @@ fn render_live_bootstrap_report(root: &Path) -> Result<String, RootEnvLoadError>
     let decision = bootstrap.decide();
     let wiring = bootstrap.live_execution_wiring();
     let l2_helper = bootstrap.live_l2_header_helper();
+    let (selected_leader_wallet, selected_leader_source) = selected_leader_context(root);
 
     Ok([
         format!("root={}", root.display()),
+        format!("selected_leader_wallet={selected_leader_wallet}"),
+        format!("selected_leader_source={selected_leader_source}"),
         "requested_mode=live_listen".to_string(),
         format!("decision={}", format_bootstrap_decision(&decision)),
         format!(
@@ -732,6 +735,10 @@ mod tests {
 
         let report = render_live_bootstrap_report(&root).expect("report should render");
 
+        assert!(
+            report.contains("selected_leader_wallet=0x56687bf447db6ffa42ffe2204a05edaa20f55839")
+        );
+        assert!(report.contains("selected_leader_source=fallback"));
         assert!(report.contains("requested_mode=live_listen"));
         assert!(report.contains("decision=blocked:activity_source_unverified"));
         assert!(report.contains("live_mode_unlocked=false"));
@@ -760,6 +767,10 @@ mod tests {
 
         let report = render_live_bootstrap_report(&root).expect("report should render");
 
+        assert!(
+            report.contains("selected_leader_wallet=0x56687bf447db6ffa42ffe2204a05edaa20f55839")
+        );
+        assert!(report.contains("selected_leader_source=fallback"));
         assert!(report.contains("decision=blocked:activity_source_unverified"));
         assert!(report.contains("live_mode_unlocked=false"));
         assert!(report.contains("signing_command=python3 scripts/sign_order.py --json"));
