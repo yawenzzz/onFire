@@ -28,9 +28,12 @@ struct Options {
     skip_activity: bool,
     skip_discovery: bool,
     skip_guarded_cycle: bool,
+    live_submit_gate: bool,
+    allow_live_submit: bool,
     discover_bin: Option<String>,
     watch_bin: Option<String>,
     guarded_bin: Option<String>,
+    live_submit_bin: Option<String>,
     operator_bin: Option<String>,
 }
 
@@ -58,9 +61,12 @@ impl Default for Options {
             skip_activity: false,
             skip_discovery: false,
             skip_guarded_cycle: false,
+            live_submit_gate: false,
+            allow_live_submit: false,
             discover_bin: None,
             watch_bin: None,
             guarded_bin: None,
+            live_submit_bin: None,
             operator_bin: None,
         }
     }
@@ -101,7 +107,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--watch-poll-count <n>] [--watch-poll-interval-ms <n>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--skip-activity] [--skip-discovery] [--skip-guarded-cycle] [--discover-bin <path>] [--watch-bin <path>] [--guarded-bin <path>] [--operator-bin <path>]"
+        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--watch-poll-count <n>] [--watch-poll-interval-ms <n>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--skip-activity] [--skip-discovery] [--skip-guarded-cycle] [--live-submit-gate] [--allow-live-submit] [--discover-bin <path>] [--watch-bin <path>] [--guarded-bin <path>] [--live-submit-bin <path>] [--operator-bin <path>]"
     );
 }
 
@@ -148,9 +154,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--skip-activity" => options.skip_activity = true,
             "--skip-discovery" => options.skip_discovery = true,
             "--skip-guarded-cycle" => options.skip_guarded_cycle = true,
+            "--live-submit-gate" => options.live_submit_gate = true,
+            "--allow-live-submit" => options.allow_live_submit = true,
             "--discover-bin" => options.discover_bin = Some(next_value(&mut iter, arg)?),
             "--watch-bin" => options.watch_bin = Some(next_value(&mut iter, arg)?),
             "--guarded-bin" => options.guarded_bin = Some(next_value(&mut iter, arg)?),
+            "--live-submit-bin" => options.live_submit_bin = Some(next_value(&mut iter, arg)?),
             "--operator-bin" => options.operator_bin = Some(next_value(&mut iter, arg)?),
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -232,21 +241,44 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
     let guarded_result = if options.skip_guarded_cycle || options.watch_poll_count == 0 {
         Ok("skipped guarded cycle".to_string())
     } else {
-        let guarded_bin =
-            resolve_bin_path("run_copytrader_guarded_cycle", options.guarded_bin.as_deref())
-                .map_err(|error| format!("failed to resolve run_copytrader_guarded_cycle: {error}"))?;
+        let guarded_bin = resolve_bin_path(
+            "run_copytrader_guarded_cycle",
+            options.guarded_bin.as_deref(),
+        )
+        .map_err(|error| format!("failed to resolve run_copytrader_guarded_cycle: {error}"))?;
         run_command(
             &guarded_bin,
-            &[
-                "--root".to_string(),
-                options.root.clone(),
-            ],
+            &["--root".to_string(), options.root.clone()],
             Some(Path::new(".")),
         )
         .and_then(|output| {
-            String::from_utf8(output.stdout)
-                .map_err(|error| format!("run_copytrader_guarded_cycle stdout was not utf-8: {error}"))
+            String::from_utf8(output.stdout).map_err(|error| {
+                format!("run_copytrader_guarded_cycle stdout was not utf-8: {error}")
+            })
         })
+    };
+
+    let live_submit_result = if options.live_submit_gate
+        && !options.skip_guarded_cycle
+        && options.watch_poll_count > 0
+    {
+        let live_submit_bin = resolve_bin_path(
+            "run_copytrader_live_submit_gate",
+            options.live_submit_bin.as_deref(),
+        )
+        .map_err(|error| format!("failed to resolve run_copytrader_live_submit_gate: {error}"))?;
+        run_command(
+            &live_submit_bin,
+            &build_live_submit_args(options),
+            Some(Path::new(".")),
+        )
+        .and_then(|output| {
+            String::from_utf8(output.stdout).map_err(|error| {
+                format!("run_copytrader_live_submit_gate stdout was not utf-8: {error}")
+            })
+        })
+    } else {
+        Ok("skipped live submit gate".to_string())
     };
 
     let operator_result = resolve_bin_path("rust-copytrader", options.operator_bin.as_deref())
@@ -268,10 +300,31 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
         });
 
     let report = build_flow_report([
-        ("discover_copy_leader", discovery_result.as_deref(), discovery_result.as_ref().err()),
-        ("watch_copy_leader_activity", watch_result.as_deref(), watch_result.as_ref().err()),
-        ("run_copytrader_guarded_cycle", guarded_result.as_deref(), guarded_result.as_ref().err()),
-        ("operator_demo", operator_result.as_deref(), operator_result.as_ref().err()),
+        (
+            "discover_copy_leader",
+            discovery_result.as_deref(),
+            discovery_result.as_ref().err(),
+        ),
+        (
+            "watch_copy_leader_activity",
+            watch_result.as_deref(),
+            watch_result.as_ref().err(),
+        ),
+        (
+            "run_copytrader_guarded_cycle",
+            guarded_result.as_deref(),
+            guarded_result.as_ref().err(),
+        ),
+        (
+            "run_copytrader_live_submit_gate",
+            live_submit_result.as_deref(),
+            live_submit_result.as_ref().err(),
+        ),
+        (
+            "operator_demo",
+            operator_result.as_deref(),
+            operator_result.as_ref().err(),
+        ),
     ]);
 
     fs::write(&report_path, report)
@@ -280,16 +333,13 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
         .err()
         .or_else(|| watch_result.err())
         .or_else(|| guarded_result.err())
+        .or_else(|| live_submit_result.err())
         .or_else(|| operator_result.err());
     Ok((report_path, error))
 }
 
 fn build_flow_report(
-    stages: [(
-        &'static str,
-        Result<&str, &String>,
-        Option<&String>,
-    ); 4],
+    stages: [(&'static str, Result<&str, &String>, Option<&String>); 5],
 ) -> String {
     let mut report = stages
         .iter()
@@ -413,6 +463,21 @@ fn build_watch_args(options: &Options) -> Vec<String> {
     args
 }
 
+fn build_live_submit_args(options: &Options) -> Vec<String> {
+    let mut args = vec![
+        "--root".to_string(),
+        options.root.clone(),
+        "--activity-source-verified".to_string(),
+        "--activity-under-budget".to_string(),
+        "--activity-capability-detected".to_string(),
+        "--positions-under-budget".to_string(),
+    ];
+    if options.allow_live_submit {
+        args.push("--allow-live-submit".to_string());
+    }
+    args
+}
+
 fn resolve_bin_path(binary_name: &str, override_path: Option<&str>) -> io::Result<PathBuf> {
     if let Some(override_path) = override_path {
         return Ok(PathBuf::from(override_path));
@@ -466,8 +531,8 @@ fn run_command(program: &Path, args: &[String], cwd: Option<&Path>) -> Result<Ou
 #[cfg(test)]
 mod tests {
     use super::{
-        build_discover_args, build_watch_args, parse_args, run_operator_flow,
-        sync_selected_leader_env,
+        build_discover_args, build_live_submit_args, build_watch_args, parse_args,
+        run_operator_flow, sync_selected_leader_env,
     };
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -513,6 +578,8 @@ mod tests {
             "--skip-activity".into(),
             "--skip-discovery".into(),
             "--skip-guarded-cycle".into(),
+            "--live-submit-gate".into(),
+            "--allow-live-submit".into(),
         ])
         .expect("parse");
 
@@ -534,6 +601,8 @@ mod tests {
         assert!(options.skip_activity);
         assert!(options.skip_discovery);
         assert!(options.skip_guarded_cycle);
+        assert!(options.live_submit_gate);
+        assert!(options.allow_live_submit);
     }
 
     #[test]
@@ -593,6 +662,16 @@ mod tests {
     }
 
     #[test]
+    fn build_live_submit_args_carries_gate_unlock_flags() {
+        let options = parse_args(&["--allow-live-submit".into()]).expect("parse");
+        let args = build_live_submit_args(&options);
+
+        assert!(args.contains(&"--activity-source-verified".to_string()));
+        assert!(args.contains(&"--positions-under-budget".to_string()));
+        assert!(args.contains(&"--allow-live-submit".to_string()));
+    }
+
+    #[test]
     fn run_operator_flow_combines_discovery_and_operator_reports() {
         let root = unique_temp_dir("flow");
         fs::create_dir_all(root.join(".omx/operator-demo")).expect("operator dir created");
@@ -617,6 +696,11 @@ mod tests {
             &guarded,
             "#!/usr/bin/env bash\nprintf 'mode=guarded-cycle\\nlast_submit_status=verified\\n'\n",
         );
+        let live_submit = root.join("run_copytrader_live_submit_gate");
+        write_executable(
+            &live_submit,
+            "#!/usr/bin/env bash\nprintf 'mode=live-submit-gate\\nlive_submit_status=preview_only\\n'\n",
+        );
 
         let options = parse_args(&[
             "--root".into(),
@@ -631,6 +715,9 @@ mod tests {
             "1".into(),
             "--guarded-bin".into(),
             guarded.display().to_string(),
+            "--live-submit-bin".into(),
+            live_submit.display().to_string(),
+            "--live-submit-gate".into(),
             "--operator-bin".into(),
             operator.display().to_string(),
         ])
@@ -646,6 +733,8 @@ mod tests {
         assert!(report.contains("watch_user=0xleader"));
         assert!(report.contains("== run_copytrader_guarded_cycle =="));
         assert!(report.contains("mode=guarded-cycle"));
+        assert!(report.contains("== run_copytrader_live_submit_gate =="));
+        assert!(report.contains("live_submit_status=preview_only"));
         assert!(report.contains("== operator_demo =="));
         assert!(report.contains("mode=operator-demo"));
 
@@ -842,6 +931,65 @@ mod tests {
         let report = fs::read_to_string(&report_path).expect("report exists");
         assert!(report.contains("flow_failure_stage=run_copytrader_guarded_cycle"));
         assert!(report.contains("run_copytrader_guarded_cycle"));
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn run_operator_flow_persists_failure_report_when_live_submit_gate_fails() {
+        let root = unique_temp_dir("live-submit-failure");
+        fs::create_dir_all(root.join(".omx/operator-demo")).expect("operator dir created");
+
+        let discover = root.join("discover_copy_leader");
+        write_executable(
+            &discover,
+            "#!/usr/bin/env bash\nprintf 'selected_wallet=0xleader\\nselected_leader_env_path=../.omx/discovery/selected-leader.env\\n'\nmkdir -p ../.omx/discovery\nprintf 'COPYTRADER_DISCOVERY_WALLET=0xleader\\n' > ../.omx/discovery/selected-leader.env\n",
+        );
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            "#!/usr/bin/env bash\nprintf 'watch_user=0xleader\\n'\n",
+        );
+        let guarded = root.join("run_copytrader_guarded_cycle");
+        write_executable(
+            &guarded,
+            "#!/usr/bin/env bash\nprintf 'mode=guarded-cycle\\nlast_submit_status=verified\\n'\n",
+        );
+        let live_submit = root.join("run_copytrader_live_submit_gate");
+        write_executable(
+            &live_submit,
+            "#!/usr/bin/env bash\necho 'live submit failed' >&2\nexit 1\n",
+        );
+        let operator = root.join("rust-copytrader");
+        write_executable(
+            &operator,
+            "#!/usr/bin/env bash\nprintf 'mode=operator-demo\\n'\n",
+        );
+
+        let options = parse_args(&[
+            "--root".into(),
+            root.display().to_string(),
+            "--discover-bin".into(),
+            discover.display().to_string(),
+            "--watch-bin".into(),
+            watch.display().to_string(),
+            "--watch-poll-count".into(),
+            "1".into(),
+            "--guarded-bin".into(),
+            guarded.display().to_string(),
+            "--live-submit-bin".into(),
+            live_submit.display().to_string(),
+            "--live-submit-gate".into(),
+            "--operator-bin".into(),
+            operator.display().to_string(),
+        ])
+        .expect("parse");
+
+        let (report_path, error) = run_operator_flow(&options).expect("flow should return report");
+        assert!(error.is_some());
+        let report = fs::read_to_string(&report_path).expect("report exists");
+        assert!(report.contains("flow_failure_stage=run_copytrader_live_submit_gate"));
+        assert!(report.contains("run_copytrader_live_submit_gate"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }

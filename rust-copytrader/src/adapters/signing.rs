@@ -444,6 +444,17 @@ fn signing_env(material: &AuthMaterial) -> BTreeMap<String, String> {
         env.insert("FUNDER_ADDRESS".into(), funder.clone());
     }
 
+    for key in [
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ] {
+        env.insert(key.into(), String::new());
+    }
+
     env
 }
 

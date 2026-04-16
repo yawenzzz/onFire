@@ -7,11 +7,15 @@ use rust_copytrader::adapters::signing::{
     StdSigningCommandRunner, StdSigningCommandRunner as HeaderRunner, UnsignedOrderPayload,
     prepare_l2_auth_headers, prepare_signed_order,
 };
-use rust_copytrader::config::{ActivityMode, ExecutionAdapterConfig, LiveModeGate, RootEnvLoadError};
+use rust_copytrader::config::{
+    ActivityMode, CommandAdapterConfig, ExecutionAdapterConfig, LiveExecutionWiring, LiveModeGate,
+    RootEnvLoadError,
+};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +107,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         match arg.as_str() {
             "--root" => options.root = next_value(&mut iter, arg)?,
             "--latest-activity" => options.latest_activity = Some(next_value(&mut iter, arg)?),
-            "--selected-leader-env" => options.selected_leader_env = Some(next_value(&mut iter, arg)?),
+            "--selected-leader-env" => {
+                options.selected_leader_env = Some(next_value(&mut iter, arg)?)
+            }
             "--owner" => options.owner = Some(next_value(&mut iter, arg)?),
             "--order-type" => options.order_type = parse_order_type(&next_value(&mut iter, arg)?)?,
             "--expiration-secs" => {
@@ -169,9 +175,8 @@ fn run_live_submit_gate(options: &Options) -> Result<Vec<String>, String> {
 
     let leader_wallet = read_selected_leader_wallet(&selected_leader_env)?;
     let latest = read_latest_activity(&latest_activity_path)?;
-    let execution_config =
-        ExecutionAdapterConfig::from_root(&root).map_err(format_root_error)?;
-    let material = AuthMaterial::from_root(&root).map_err(format_root_error)?;
+    let execution_config = ExecutionAdapterConfig::from_root(&root).map_err(format_root_error)?;
+    let material = auth_material_with_signer_fallback(&root, &execution_config)?;
 
     let mut gate = LiveModeGate::for_mode(ActivityMode::LiveListen);
     gate.activity_source_verified = options.activity_source_verified;
@@ -195,11 +200,17 @@ fn run_live_submit_gate(options: &Options) -> Result<Vec<String>, String> {
         format!("activity_tx={}", latest.tx),
         format!("activity_timestamp={}", latest.timestamp),
         format!("activity_side={}", latest.side),
-        format!("activity_slug={}", latest.slug.as_deref().unwrap_or("unknown")),
+        format!(
+            "activity_slug={}",
+            latest.slug.as_deref().unwrap_or("unknown")
+        ),
         format!("activity_asset={}", latest.asset),
         format!("unsigned_maker_amount={}", unsigned.maker_amount),
         format!("unsigned_taker_amount={}", unsigned.taker_amount),
-        format!("gate_execution_surface_ready={}", gate.execution_surface_ready),
+        format!(
+            "gate_execution_surface_ready={}",
+            gate.execution_surface_ready
+        ),
     ];
 
     if let Some(reason) = gate.blocked_reason() {
@@ -211,11 +222,10 @@ fn run_live_submit_gate(options: &Options) -> Result<Vec<String>, String> {
 
     lines.push("live_gate_status=unlocked".to_string());
 
-    let wiring = execution_config
-        .live_execution_wiring()
-        .ok_or_else(|| "missing live execution wiring".to_string())?;
+    let wiring = rebased_live_execution_wiring(&execution_config)?;
     let l2_helper = execution_config
         .live_l2_header_helper()
+        .map(|command| rebase_repo_local_command(&command))
         .ok_or_else(|| "missing live l2 helper".to_string())?;
 
     let mut order_signer = CommandOrderSigner::new(
@@ -269,10 +279,8 @@ fn run_live_submit_gate(options: &Options) -> Result<Vec<String>, String> {
     )
     .map_err(|error| format!("failed to sign l2 headers: {error:?}"))?;
 
-    let submitter =
-        HttpSubmitter::from_execution_config(&execution_config).map_err(|error| format!(
-            "failed to build submitter from execution config: {error:?}"
-        ))?;
+    let submitter = HttpSubmitter::from_live_execution_wiring(&wiring)
+        .map_err(|error| format!("failed to build submitter from execution wiring: {error:?}"))?;
 
     if !options.allow_live_submit {
         let preview = submitter
@@ -292,7 +300,10 @@ fn run_live_submit_gate(options: &Options) -> Result<Vec<String>, String> {
         .map_err(|error| format!("live submit failed: {error:?}"))?;
 
     lines.push("live_submit_status=submitted".to_string());
-    lines.push(format!("submit_status_code={}", result.response.status_code));
+    lines.push(format!(
+        "submit_status_code={}",
+        result.response.status_code
+    ));
     lines.push(format!("submit_response_body={}", result.response.body));
     lines.push(format!("report_path={}", report_path.display()));
     write_report(&report_path, &lines)?;
@@ -332,12 +343,8 @@ fn decimal_to_fixed_6(value: &str) -> Result<String, String> {
     let negative = trimmed.starts_with('-');
     let trimmed = trimmed.trim_start_matches('-');
     let (whole, frac) = trimmed.split_once('.').unwrap_or((trimmed, ""));
-    let whole = whole
-        .chars()
-        .filter(|ch| *ch != ',')
-        .collect::<String>();
-    if !whole.chars().all(|ch| ch.is_ascii_digit()) || !frac.chars().all(|ch| ch.is_ascii_digit())
-    {
+    let whole = whole.chars().filter(|ch| *ch != ',').collect::<String>();
+    if !whole.chars().all(|ch| ch.is_ascii_digit()) || !frac.chars().all(|ch| ch.is_ascii_digit()) {
         return Err(format!("invalid decimal value: {value}"));
     }
     let mut frac = frac.to_string();
@@ -352,6 +359,183 @@ fn decimal_to_fixed_6(value: &str) -> Result<String, String> {
         Ok(format!("-{normalized}"))
     } else {
         Ok(normalized.to_string())
+    }
+}
+
+fn auth_material_with_signer_fallback(
+    root: &Path,
+    execution_config: &ExecutionAdapterConfig,
+) -> Result<AuthMaterial, String> {
+    match AuthMaterial::from_root(root) {
+        Ok(material) => Ok(material),
+        Err(RootEnvLoadError::MissingField(field)) if field == "POLY_ADDRESS" => {
+            let env_map = merged_env(root)?;
+            let poly_address = derive_signer_address_from_helper(execution_config, &env_map)?;
+            let api_key = required_env(&env_map, &["CLOB_API_KEY", "POLY_API_KEY"])?;
+            let passphrase = required_env(&env_map, &["CLOB_PASS_PHRASE", "POLY_PASSPHRASE"])?;
+            let private_key = required_env(&env_map, &["PRIVATE_KEY", "CLOB_PRIVATE_KEY"])?;
+            let signature_type = optional_env(&env_map, &["SIGNATURE_TYPE"])
+                .unwrap_or_else(|| "0".to_string())
+                .parse::<u8>()
+                .map_err(|_| "invalid SIGNATURE_TYPE".to_string())?;
+            let funder = optional_env(&env_map, &["FUNDER_ADDRESS", "FUNDER"]);
+            let api_secret = optional_env(&env_map, &["CLOB_SECRET", "POLY_API_SECRET"]);
+            let mut material = AuthMaterial::new(
+                poly_address,
+                api_key,
+                passphrase,
+                private_key,
+                signature_type,
+                funder,
+            );
+            if let Some(api_secret) = api_secret {
+                material = material.with_api_secret(api_secret);
+            }
+            Ok(material)
+        }
+        Err(error) => Err(format_root_error(error)),
+    }
+}
+
+fn derive_signer_address_from_helper(
+    execution_config: &ExecutionAdapterConfig,
+    env_map: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    let command = execution_config
+        .signing
+        .command_config()
+        .map(rebase_repo_local_command)
+        .ok_or_else(|| "missing signing command config".to_string())?;
+    let mut child = Command::new(&command.program)
+        .args(&command.args)
+        .envs(env_map.iter())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to execute signing helper: {error}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin
+            .write_all(
+                br#"{"maker":"0x0000000000000000000000000000000000000000","taker":"0x0000000000000000000000000000000000000000","tokenId":"1","makerAmount":"1","takerAmount":"1","side":"BUY","expiration":"1","nonce":"1","feeRateBps":"0"}"#,
+            )
+            .map_err(|error| format!("failed to write dummy signing payload: {error}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("failed to wait on signing helper: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "signing helper failed while deriving signer address: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("signing helper output was not utf-8: {error}"))?;
+    extract_field_value(&stdout, "signer")
+        .or_else(|| extract_field_value(&stdout, "maker"))
+        .ok_or_else(|| "failed to derive signer address from helper output".to_string())
+}
+
+fn rebased_live_execution_wiring(
+    execution_config: &ExecutionAdapterConfig,
+) -> Result<LiveExecutionWiring, String> {
+    let mut wiring = execution_config
+        .live_execution_wiring()
+        .ok_or_else(|| "missing live execution wiring".to_string())?;
+    wiring.signing = rebase_repo_local_command(&wiring.signing);
+    wiring.submit = rebase_repo_local_command(&wiring.submit);
+    Ok(wiring)
+}
+
+fn rebase_repo_local_command(command: &CommandAdapterConfig) -> CommandAdapterConfig {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cargo manifest dir should have repo root parent");
+    let mut rebased = command.clone();
+    rebased.program = preferred_python_program(&command.program);
+    rebased.args = command
+        .args
+        .iter()
+        .map(|arg| {
+            if arg.starts_with("scripts/") {
+                repo_root.join(arg).display().to_string()
+            } else {
+                arg.clone()
+            }
+        })
+        .collect();
+    rebased
+}
+
+fn preferred_python_program(program: &str) -> String {
+    if program != "python3" {
+        return program.to_string();
+    }
+    if let Ok(value) = env::var("PYTHON_BIN")
+        && !value.trim().is_empty()
+    {
+        return value;
+    }
+    if let Ok(home) = env::var("HOME") {
+        let conda = Path::new(&home).join("anaconda3/bin/python3");
+        if conda.exists() {
+            return conda.display().to_string();
+        }
+    }
+    program.to_string()
+}
+
+fn merged_env(root: &Path) -> Result<BTreeMap<String, String>, String> {
+    let mut env_map = env::vars().collect::<BTreeMap<_, _>>();
+    merge_env_file(&mut env_map, &root.join(".env"))?;
+    merge_env_file(&mut env_map, &root.join(".env.local"))?;
+    clear_proxy_env(&mut env_map);
+    Ok(env_map)
+}
+
+fn merge_env_file(env_map: &mut BTreeMap<String, String>, path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let body = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || !line.contains('=') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            env_map.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+    Ok(())
+}
+
+fn required_env(env_map: &BTreeMap<String, String>, keys: &[&str]) -> Result<String, String> {
+    optional_env(env_map, keys).ok_or_else(|| format!("missing field {}", keys[0]))
+}
+
+fn optional_env(env_map: &BTreeMap<String, String>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| env_map.get(*key))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn clear_proxy_env(env_map: &mut BTreeMap<String, String>) {
+    for key in [
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ] {
+        env_map.insert(key.to_string(), String::new());
     }
 }
 
@@ -375,8 +559,12 @@ fn read_selected_leader_wallet(path: &Path) -> Result<String, String> {
 fn read_latest_activity(path: &Path) -> Result<LatestActivity, String> {
     let body = fs::read_to_string(path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    let object = first_json_object(&body)
-        .ok_or_else(|| format!("failed to parse latest activity JSON from {}", path.display()))?;
+    let object = first_json_object(&body).ok_or_else(|| {
+        format!(
+            "failed to parse latest activity JSON from {}",
+            path.display()
+        )
+    })?;
     Ok(LatestActivity {
         tx: extract_field_value(&object, "transactionHash")
             .ok_or_else(|| "missing transactionHash in latest activity".to_string())?,
@@ -504,7 +692,10 @@ fn format_root_error(error: RootEnvLoadError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{LatestActivity, Options, decimal_to_fixed_6, parse_args, read_latest_activity, unsigned_order_from_activity};
+    use super::{
+        LatestActivity, Options, decimal_to_fixed_6, parse_args, read_latest_activity,
+        unsigned_order_from_activity,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};

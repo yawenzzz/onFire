@@ -12,11 +12,12 @@ use rust_copytrader::config::{
 };
 use rust_copytrader::domain::budget::LatencyBudget;
 use rust_copytrader::replay::fixture::ReplayFixture;
+use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() -> ExitCode {
@@ -166,9 +167,9 @@ fn render_live_helper_smoke_report(root: &Path) -> Result<String, RootEnvLoadErr
         return Ok(lines.join("\n"));
     };
 
-    let material = AuthMaterial::from_root(root)?;
     let signing_command = rebase_repo_local_command(&wiring.signing);
     let l2_helper_command = rebase_repo_local_command(&l2_helper);
+    let material = auth_material_with_signer_fallback(root, &signing_command)?;
     let mut order_signer = CommandOrderSigner::new(
         signing_command.program.clone(),
         signing_command.args.clone(),
@@ -647,11 +648,87 @@ fn format_root_env_error(error: &RootEnvLoadError) -> String {
     }
 }
 
+fn auth_material_with_signer_fallback(
+    root: &Path,
+    signing_command: &CommandAdapterConfig,
+) -> Result<AuthMaterial, RootEnvLoadError> {
+    match AuthMaterial::from_root(root) {
+        Ok(material) => Ok(material),
+        Err(RootEnvLoadError::MissingField(field)) if field == "POLY_ADDRESS" => {
+            let mut env_map = merged_env(root)?;
+            clear_proxy_env(&mut env_map);
+            let signer = derive_signer_address_from_helper(root, signing_command, &env_map)?;
+            env_map.insert("POLY_ADDRESS".into(), signer.clone());
+            env_map.insert("SIGNER_ADDRESS".into(), signer);
+            AuthMaterial::from_env_map(&env_map)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn derive_signer_address_from_helper(
+    root: &Path,
+    signing_command: &CommandAdapterConfig,
+    env_map: &BTreeMap<String, String>,
+) -> Result<String, RootEnvLoadError> {
+    let mut child = Command::new(&signing_command.program);
+    child
+        .args(&signing_command.args)
+        .envs(env_map.iter())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = child.spawn().map_err(|error| RootEnvLoadError::Io {
+        path: root.to_path_buf(),
+        error: format!("failed to execute signing helper: {error}"),
+    })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin
+            .write_all(
+                br#"{"maker":"0x0000000000000000000000000000000000000000","taker":"0x0000000000000000000000000000000000000000","tokenId":"1","makerAmount":"1","takerAmount":"1","side":"BUY","expiration":"1","nonce":"1","feeRateBps":"0"}"#,
+            )
+            .map_err(|error| RootEnvLoadError::Io {
+                path: root.to_path_buf(),
+                error: format!("failed to write dummy signing payload: {error}"),
+            })?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| RootEnvLoadError::Io {
+            path: root.to_path_buf(),
+            error: format!("failed to wait on signing helper: {error}"),
+        })?;
+    if !output.status.success() {
+        return Err(RootEnvLoadError::Io {
+            path: root.to_path_buf(),
+            error: format!(
+                "signing helper failed while deriving signer address: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        });
+    }
+    let stdout = String::from_utf8(output.stdout).map_err(|error| RootEnvLoadError::Io {
+        path: root.to_path_buf(),
+        error: format!("signing helper output was not utf-8: {error}"),
+    })?;
+    extract_json_field(&stdout, "signer")
+        .or_else(|| extract_json_field(&stdout, "maker"))
+        .ok_or_else(|| RootEnvLoadError::Io {
+            path: root.to_path_buf(),
+            error: "failed to derive signer address from helper output".to_string(),
+        })
+}
+
 fn rebase_repo_local_command(command: &CommandAdapterConfig) -> CommandAdapterConfig {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("cargo manifest dir should have repo root parent");
     let mut rebased = command.clone();
+    rebased.program = preferred_python_program(&command.program);
     rebased.args = command
         .args
         .iter()
@@ -664,6 +741,91 @@ fn rebase_repo_local_command(command: &CommandAdapterConfig) -> CommandAdapterCo
         })
         .collect();
     rebased
+}
+
+fn preferred_python_program(program: &str) -> String {
+    if program != "python3" {
+        return program.to_string();
+    }
+    if let Ok(value) = env::var("PYTHON_BIN")
+        && !value.trim().is_empty()
+    {
+        return value;
+    }
+    if let Ok(home) = env::var("HOME") {
+        let conda = Path::new(&home).join("anaconda3/bin/python3");
+        if conda.exists() {
+            return conda.display().to_string();
+        }
+    }
+    program.to_string()
+}
+
+fn merged_env(root: &Path) -> Result<BTreeMap<String, String>, RootEnvLoadError> {
+    let mut env_map = env::vars().collect::<BTreeMap<_, _>>();
+    merge_env_file(&mut env_map, &root.join(".env"))?;
+    merge_env_file(&mut env_map, &root.join(".env.local"))?;
+    Ok(env_map)
+}
+
+fn merge_env_file(
+    env_map: &mut BTreeMap<String, String>,
+    path: &Path,
+) -> Result<(), RootEnvLoadError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let body = fs::read_to_string(path).map_err(|error| RootEnvLoadError::Io {
+        path: path.to_path_buf(),
+        error: error.to_string(),
+    })?;
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || !line.contains('=') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            env_map.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+    Ok(())
+}
+
+fn clear_proxy_env(env_map: &mut BTreeMap<String, String>) {
+    for key in [
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ] {
+        env_map.insert(key.to_string(), String::new());
+    }
+}
+
+fn extract_json_field(object: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\":");
+    let start = object.find(&needle)?;
+    let rest = object[start + needle.len()..].trim_start();
+    if let Some(rest) = rest.strip_prefix('"') {
+        let mut escaped = false;
+        for (idx, ch) in rest.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => return Some(rest[..idx].to_string()),
+                _ => {}
+            }
+        }
+        None
+    } else {
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
+        Some(rest[..end].trim().to_string())
+    }
 }
 
 #[cfg(test)]
@@ -976,6 +1138,41 @@ mod tests {
         assert!(report.contains("l2_signature=l2sig:POST:/orders"));
         assert!(report.contains("submit_preview_program="));
         assert!(report.contains("scripts/submit_helper.py --json --curl-bin curl"));
+
+        fs::remove_dir_all(root).expect("temp root removed");
+    }
+
+    #[test]
+    fn helper_smoke_report_derives_signer_when_poly_address_is_missing() {
+        let root = unique_temp_root("helper-smoke-derived-signer");
+        fs::create_dir_all(&root).expect("temp root created");
+        let wrapper = write_stub_sdk(&root);
+        fs::write(
+            root.join(".env.local"),
+            format!(
+                concat!(
+                    "CLOB_API_KEY=api-key\n",
+                    "CLOB_SECRET=api-secret\n",
+                    "CLOB_PASS_PHRASE=passphrase\n",
+                    "PRIVATE_KEY=private-key\n",
+                    "SIGNATURE_TYPE=2\n",
+                    "FUNDER_ADDRESS=0xfunder-address\n",
+                    "RUST_COPYTRADER_SIGNING_PROGRAM={}\n",
+                    "RUST_COPYTRADER_SUBMIT_PROGRAM={}\n",
+                    "RUST_COPYTRADER_SUBMIT_ARGS=scripts/submit_helper.py --json --curl-bin curl\n",
+                    "CLOB_HOST=https://clob.polymarket.com\n",
+                ),
+                wrapper.display(),
+                wrapper.display(),
+            ),
+        )
+        .expect(".env.local written");
+
+        let report = render_live_helper_smoke_report(&root).expect("helper smoke should render");
+
+        assert!(report.contains("helper_smoke=ok"));
+        assert!(report.contains("order_signature=ordersig:12345:2"));
+        assert!(report.contains("l2_signature=l2sig:POST:/orders"));
 
         fs::remove_dir_all(root).expect("temp root removed");
     }

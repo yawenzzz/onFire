@@ -255,6 +255,8 @@ fn command_l2_header_signer_builds_secret_aware_env_bridge_and_headers() {
         command.env.get("CLOB_PASS_PHRASE").map(String::as_str),
         Some("passphrase")
     );
+    assert_eq!(command.env.get("ALL_PROXY").map(String::as_str), Some(""));
+    assert_eq!(command.env.get("https_proxy").map(String::as_str), Some(""));
     assert!(command.stdin.contains("\"method\":\"POST\""));
     assert!(command.stdin.contains("\"requestPath\":\"/orders\""));
     assert!(command.stdin.contains("\\\"owner\\\":\\\"owner-uuid\\\""));
@@ -358,6 +360,8 @@ fn command_order_signer_builds_realistic_env_bridge_and_parses_output() {
         command.env.get("SIGNATURE_TYPE").map(String::as_str),
         Some("2")
     );
+    assert_eq!(command.env.get("ALL_PROXY").map(String::as_str), Some(""));
+    assert_eq!(command.env.get("http_proxy").map(String::as_str), Some(""));
     assert!(command.stdin.contains("\"tokenId\":\"12345\""));
     assert!(command.stdin.contains("\"maker\":\"0xfunder-address\""));
     assert!(command.stdin.contains("\"signer\":\"0xpoly-address\""));

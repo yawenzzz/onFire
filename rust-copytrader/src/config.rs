@@ -338,22 +338,49 @@ impl ExecutionAdapterConfig {
         let submit_base_url = env_value(env, &["CLOB_BASE_URL", "CLOB_HOST"]);
         let connect_timeout_value = env_value(env, &["RUST_COPYTRADER_SUBMIT_CONNECT_TIMEOUT_MS"]);
         let max_time_value = env_value(env, &["RUST_COPYTRADER_SUBMIT_MAX_TIME_MS"]);
+        let helper_auth_present = env_value(env, &["PRIVATE_KEY", "CLOB_PRIVATE_KEY"]).is_some()
+            || env_value(env, &["CLOB_API_KEY", "POLY_API_KEY"]).is_some()
+            || env_value(env, &["CLOB_PASS_PHRASE", "POLY_PASSPHRASE"]).is_some();
         let live_requested = signing_program.is_some()
             || submit_program.is_some()
             || submit_base_url.is_some()
             || connect_timeout_value.is_some()
-            || max_time_value.is_some();
+            || max_time_value.is_some()
+            || helper_auth_present;
 
         if !live_requested {
             return Ok(Self::default());
         }
 
-        let signing_program = signing_program.ok_or_else(|| {
-            RootEnvLoadError::MissingField("RUST_COPYTRADER_SIGNING_PROGRAM".into())
-        })?;
-        let submit_program = submit_program.ok_or_else(|| {
-            RootEnvLoadError::MissingField("RUST_COPYTRADER_SUBMIT_PROGRAM".into())
-        })?;
+        let default_helper_mode = helper_auth_present
+            && signing_program.is_none()
+            && submit_program.is_none()
+            && signing_args.is_none()
+            && submit_args.is_none();
+        let signing_program = signing_program.unwrap_or_else(|| {
+            if default_helper_mode {
+                "python3".to_string()
+            } else {
+                String::new()
+            }
+        });
+        if signing_program.trim().is_empty() {
+            return Err(RootEnvLoadError::MissingField(
+                "RUST_COPYTRADER_SIGNING_PROGRAM".into(),
+            ));
+        }
+        let submit_program = submit_program.unwrap_or_else(|| {
+            if default_helper_mode {
+                "python3".to_string()
+            } else {
+                String::new()
+            }
+        });
+        if submit_program.trim().is_empty() {
+            return Err(RootEnvLoadError::MissingField(
+                "RUST_COPYTRADER_SUBMIT_PROGRAM".into(),
+            ));
+        }
         let submit_base_url =
             submit_base_url.unwrap_or_else(|| "https://clob.polymarket.com".to_string());
         let connect_timeout_ms = parse_u64_field(
@@ -377,7 +404,14 @@ impl ExecutionAdapterConfig {
             },
             submit: SubmitAdapterConfig::http_with_command(
                 submit_base_url,
-                CommandAdapterConfig::from_env(submit_program, submit_args),
+                if default_helper_mode {
+                    CommandAdapterConfig::from_env(
+                        submit_program,
+                        Some("scripts/submit_helper.py --json --curl-bin curl".to_string()),
+                    )
+                } else {
+                    CommandAdapterConfig::from_env(submit_program, submit_args)
+                },
             )
             .with_connect_timeout_ms(connect_timeout_ms)
             .with_max_time_ms(max_time_ms),

@@ -199,11 +199,8 @@ fn run_auto_guarded_loop(options: &Options) -> Result<(PathBuf, Option<String>),
             break;
         }
 
-        let watch_output = run_command(
-            &watch_bin,
-            &build_watch_args(options),
-            Some(Path::new(".")),
-        );
+        let watch_output =
+            run_command(&watch_bin, &build_watch_args(options), Some(Path::new(".")));
         let watch_text = match &watch_output {
             Ok(output) => decode_stdout("watch_copy_leader_activity", output)?,
             Err(error) => {
@@ -221,10 +218,7 @@ fn run_auto_guarded_loop(options: &Options) -> Result<(PathBuf, Option<String>),
 
         let guarded_output = run_command(
             &guarded_bin,
-            &[
-                "--root".to_string(),
-                options.root.clone(),
-            ],
+            &["--root".to_string(), options.root.clone()],
             Some(Path::new(".")),
         );
         let guarded_text = match &guarded_output {
@@ -270,7 +264,9 @@ fn run_auto_guarded_loop(options: &Options) -> Result<(PathBuf, Option<String>),
     }
 
     if let Some((stage, error)) = &failure {
-        report_sections.push(format!("flow_failure_stage={stage}\nflow_failure_reason={error}"));
+        report_sections.push(format!(
+            "flow_failure_stage={stage}\nflow_failure_reason={error}"
+        ));
     }
 
     fs::write(&report_path, report_sections.join("\n"))

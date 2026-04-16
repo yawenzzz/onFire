@@ -443,6 +443,52 @@ fn runtime_bootstrap_loads_live_execution_wiring_from_root_without_unlocking_liv
 }
 
 #[test]
+fn runtime_bootstrap_defaults_to_repo_local_helper_wiring_when_auth_material_is_present() {
+    let root = unique_temp_root("runtime-bootstrap-helper-defaults");
+    fs::create_dir_all(&root).expect("temp root created");
+    fs::write(
+        root.join(".env.local"),
+        concat!(
+            "POLY_ADDRESS=0xpoly-address\n",
+            "CLOB_API_KEY=api-key\n",
+            "CLOB_SECRET=api-secret\n",
+            "CLOB_PASS_PHRASE=passphrase\n",
+            "PRIVATE_KEY=private-key\n",
+            "CLOB_HOST=https://clob.polymarket.com\n",
+        ),
+    )
+    .expect(".env.local written");
+
+    let bootstrap = RuntimeBootstrap::from_root(
+        ActivityMode::LiveListen,
+        LiveModeGate::for_mode(ActivityMode::LiveListen),
+        &root,
+    )
+    .expect("bootstrap from root");
+
+    let wiring = bootstrap
+        .live_execution_wiring()
+        .expect("helper wiring expected");
+    assert_eq!(wiring.signing.program, "python3");
+    assert_eq!(
+        wiring.signing.args,
+        vec!["scripts/sign_order.py".to_string(), "--json".to_string()]
+    );
+    assert_eq!(wiring.submit.program, "python3");
+    assert_eq!(
+        wiring.submit.args,
+        vec![
+            "scripts/submit_helper.py".to_string(),
+            "--json".to_string(),
+            "--curl-bin".to_string(),
+            "curl".to_string()
+        ]
+    );
+
+    fs::remove_dir_all(root).expect("temp root removed");
+}
+
+#[test]
 fn replay_session_tracks_verification_timeout_metrics_and_snapshot_state() {
     let gate = LiveModeGate::for_mode(ActivityMode::Replay);
     let mut session = RuntimeSession::new(ActivityMode::Replay, gate);
