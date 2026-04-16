@@ -11,6 +11,7 @@ struct Options {
     discovery_dir: String,
     leaderboard_base_url: Option<String>,
     activity_base_url: Option<String>,
+    proxy: Option<String>,
     category: String,
     time_period: String,
     order_by: String,
@@ -33,6 +34,7 @@ impl Default for Options {
             discovery_dir: "../.omx/discovery".to_string(),
             leaderboard_base_url: None,
             activity_base_url: None,
+            proxy: env::var("POLYMARKET_CURL_PROXY").ok(),
             category: "OVERALL".to_string(),
             time_period: "DAY".to_string(),
             order_by: "PNL".to_string(),
@@ -85,7 +87,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--skip-activity] [--skip-discovery] [--discover-bin <path>] [--operator-bin <path>]"
+        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--skip-activity] [--skip-discovery] [--discover-bin <path>] [--operator-bin <path>]"
     );
 }
 
@@ -100,6 +102,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 options.leaderboard_base_url = Some(next_value(&mut iter, arg)?)
             }
             "--activity-base-url" => options.activity_base_url = Some(next_value(&mut iter, arg)?),
+            "--proxy" => options.proxy = Some(next_value(&mut iter, arg)?),
             "--category" => options.category = next_value(&mut iter, arg)?,
             "--time-period" => options.time_period = next_value(&mut iter, arg)?,
             "--order-by" => options.order_by = next_value(&mut iter, arg)?,
@@ -298,6 +301,10 @@ fn build_discover_args(options: &Options) -> Vec<String> {
         args.push("--activity-base-url".to_string());
         args.push(base_url.clone());
     }
+    if let Some(proxy) = &options.proxy {
+        args.push("--proxy".to_string());
+        args.push(proxy.clone());
+    }
     if options.skip_activity {
         args.push("--skip-activity".to_string());
     }
@@ -388,6 +395,8 @@ mod tests {
             "https://example.com/leaderboard".into(),
             "--activity-base-url".into(),
             "https://example.com/activity".into(),
+            "--proxy".into(),
+            "http://127.0.0.1:7897".into(),
             "--skip-activity".into(),
             "--skip-discovery".into(),
         ])
@@ -403,6 +412,7 @@ mod tests {
             options.activity_base_url.as_deref(),
             Some("https://example.com/activity")
         );
+        assert_eq!(options.proxy.as_deref(), Some("http://127.0.0.1:7897"));
         assert!(options.skip_activity);
         assert!(options.skip_discovery);
     }
@@ -427,6 +437,7 @@ mod tests {
         assert!(args.contains(&"2".to_string()));
         assert!(args.contains(&"--connect-timeout-ms".to_string()));
         assert!(args.contains(&"5000".to_string()));
+        assert!(!args.contains(&"--proxy".to_string()));
     }
 
     #[test]

@@ -20,6 +20,7 @@ class SecretSetupDocTests(unittest.TestCase):
         self.assertIn('run_copytrader_operator_flow', text)
         self.assertIn('POLYMARKET_LEADERBOARD_BASE_URL', text)
         self.assertIn('POLYMARKET_ACTIVITY_BASE_URL', text)
+        self.assertIn('POLYMARKET_CURL_PROXY', text)
         self.assertIn('selected-leader.env', text)
         self.assertIn('COPYTRADER_LEADER_WALLET', text)
         self.assertIn('--operator-demo', text)

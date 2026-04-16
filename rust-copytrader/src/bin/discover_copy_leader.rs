@@ -20,6 +20,7 @@ struct Options {
     activity_type: String,
     discovery_dir: String,
     curl_bin: String,
+    proxy: Option<String>,
     connect_timeout_ms: u64,
     max_time_ms: u64,
     skip_activity: bool,
@@ -41,6 +42,7 @@ impl Default for Options {
             activity_type: "TRADE".to_string(),
             discovery_dir: "../.omx/discovery".to_string(),
             curl_bin: "curl".to_string(),
+            proxy: env::var("POLYMARKET_CURL_PROXY").ok(),
             connect_timeout_ms: 1_500,
             max_time_ms: 8_000,
             skip_activity: false,
@@ -54,6 +56,13 @@ struct DiscoveryArtifacts {
     leaderboard_path: PathBuf,
     activity_path: Option<PathBuf>,
     selected_leader_env_path: PathBuf,
+    selected_rank: Option<String>,
+    selected_pnl: Option<String>,
+    selected_username: Option<String>,
+    latest_activity_timestamp: Option<String>,
+    latest_activity_side: Option<String>,
+    latest_activity_slug: Option<String>,
+    latest_activity_tx: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -76,8 +85,29 @@ fn main() -> ExitCode {
         Ok(artifacts) => {
             println!("selected_wallet={}", artifacts.selected_wallet);
             println!("leaderboard_path={}", artifacts.leaderboard_path.display());
+            if let Some(rank) = artifacts.selected_rank {
+                println!("selected_rank={rank}");
+            }
+            if let Some(pnl) = artifacts.selected_pnl {
+                println!("selected_pnl={pnl}");
+            }
+            if let Some(username) = artifacts.selected_username {
+                println!("selected_username={username}");
+            }
             if let Some(activity_path) = artifacts.activity_path {
                 println!("activity_path={}", activity_path.display());
+            }
+            if let Some(timestamp) = artifacts.latest_activity_timestamp {
+                println!("latest_activity_timestamp={timestamp}");
+            }
+            if let Some(side) = artifacts.latest_activity_side {
+                println!("latest_activity_side={side}");
+            }
+            if let Some(slug) = artifacts.latest_activity_slug {
+                println!("latest_activity_slug={slug}");
+            }
+            if let Some(tx) = artifacts.latest_activity_tx {
+                println!("latest_activity_tx={tx}");
             }
             println!(
                 "selected_leader_env_path={}",
@@ -94,7 +124,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: discover_copy_leader [--leaderboard-base-url <url>] [--activity-base-url <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--discovery-dir <path>] [--curl-bin <path>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--skip-activity]"
+        "usage: discover_copy_leader [--leaderboard-base-url <url>] [--activity-base-url <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--discovery-dir <path>] [--curl-bin <path>] [--proxy <url>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--skip-activity]"
     );
 }
 
@@ -114,6 +144,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--activity-type" => options.activity_type = next_value(&mut iter, arg)?,
             "--discovery-dir" => options.discovery_dir = next_value(&mut iter, arg)?,
             "--curl-bin" => options.curl_bin = next_value(&mut iter, arg)?,
+            "--proxy" => options.proxy = Some(next_value(&mut iter, arg)?),
             "--connect-timeout-ms" => {
                 options.connect_timeout_ms =
                     parse_u64(&next_value(&mut iter, arg)?, "connect-timeout-ms")?
@@ -165,6 +196,7 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
         &options.curl_bin,
         &build_curl_args(
             &leaderboard_url,
+            options.proxy.as_deref(),
             options.connect_timeout_ms,
             options.max_time_ms,
         ),
@@ -186,9 +218,10 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
                 leaderboard_path.display()
             )
         })?;
+    let leaderboard_summary = extract_object_containing(&leaderboard_body, &selected_wallet);
 
-    let activity_path = if options.skip_activity {
-        None
+    let (activity_path, activity_summary) = if options.skip_activity {
+        (None, None)
     } else {
         let activity_url = build_activity_url(
             &options.activity_base_url,
@@ -205,6 +238,7 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
             &options.curl_bin,
             &build_curl_args(
                 &activity_url,
+                options.proxy.as_deref(),
                 options.connect_timeout_ms,
                 options.max_time_ms,
             ),
@@ -215,7 +249,9 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
                 path.display()
             )
         })?;
-        Some(path)
+        let activity_body = String::from_utf8(activity_output.stdout)
+            .map_err(|error| format!("activity response was not utf-8: {error}"))?;
+        (Some(path), first_json_object(&activity_body))
     };
 
     let selected_leader_env_path = discovery_dir.join("selected-leader.env");
@@ -235,6 +271,27 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
         leaderboard_path,
         activity_path,
         selected_leader_env_path,
+        selected_rank: leaderboard_summary
+            .as_deref()
+            .and_then(|object| extract_field_value(object, "rank")),
+        selected_pnl: leaderboard_summary
+            .as_deref()
+            .and_then(|object| extract_field_value(object, "pnl")),
+        selected_username: leaderboard_summary
+            .as_deref()
+            .and_then(|object| extract_field_value(object, "userName")),
+        latest_activity_timestamp: activity_summary
+            .as_deref()
+            .and_then(|object| extract_field_value(object, "timestamp")),
+        latest_activity_side: activity_summary
+            .as_deref()
+            .and_then(|object| extract_field_value(object, "side")),
+        latest_activity_slug: activity_summary
+            .as_deref()
+            .and_then(|object| extract_field_value(object, "slug")),
+        latest_activity_tx: activity_summary
+            .as_deref()
+            .and_then(|object| extract_field_value(object, "transactionHash")),
     })
 }
 
@@ -260,8 +317,13 @@ fn build_activity_url(base_url: &str, wallet: &str, activity_type: &str, limit: 
     )
 }
 
-fn build_curl_args(url: &str, connect_timeout_ms: u64, max_time_ms: u64) -> Vec<String> {
-    vec![
+fn build_curl_args(
+    url: &str,
+    proxy: Option<&str>,
+    connect_timeout_ms: u64,
+    max_time_ms: u64,
+) -> Vec<String> {
+    let mut args = vec![
         "--silent".to_string(),
         "--show-error".to_string(),
         "--fail-with-body".to_string(),
@@ -274,7 +336,11 @@ fn build_curl_args(url: &str, connect_timeout_ms: u64, max_time_ms: u64) -> Vec<
         "-H".to_string(),
         "Accept: application/json".to_string(),
         url.to_string(),
-    ]
+    ];
+    if let Some(proxy) = proxy {
+        args.splice(3..3, ["--proxy".to_string(), proxy.to_string()]);
+    }
+    args
 }
 
 fn seconds_from_ms(value: u64) -> String {
@@ -338,6 +404,73 @@ fn extract_wallet_from_json(content: &str, index: usize) -> Option<String> {
     wallets.get(index).cloned()
 }
 
+fn extract_object_containing(content: &str, wallet: &str) -> Option<String> {
+    for field in ["proxyWallet", "wallet", "address", "user"] {
+        let needle = format!("\"{field}\":\"{wallet}\"");
+        if let Some(start) = content.find(&needle) {
+            return object_bounds(content, start)
+                .map(|(start, end)| content[start..=end].to_string());
+        }
+    }
+    None
+}
+
+fn first_json_object(content: &str) -> Option<String> {
+    let start = content.find('{')?;
+    object_bounds(content, start).map(|(start, end)| content[start..=end].to_string())
+}
+
+fn object_bounds(content: &str, anchor: usize) -> Option<(usize, usize)> {
+    let bytes = content.as_bytes();
+    let start = content[..=anchor].rfind('{')?;
+    let mut depth = 0_i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (idx, byte) in bytes.iter().enumerate().skip(start) {
+        match byte {
+            b'\\' if in_string && !escaped => {
+                escaped = true;
+                continue;
+            }
+            b'"' if !escaped => in_string = !in_string,
+            b'{' if !in_string => depth += 1,
+            b'}' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((start, idx));
+                }
+            }
+            _ => {}
+        }
+        escaped = false;
+    }
+    None
+}
+
+fn extract_field_value(object: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\":");
+    let start = object.find(&needle)?;
+    let rest = object[start + needle.len()..].trim_start();
+    if let Some(rest) = rest.strip_prefix('"') {
+        let mut escaped = false;
+        for (idx, ch) in rest.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => return Some(rest[..idx].to_string()),
+                _ => {}
+            }
+        }
+        None
+    } else {
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
+        Some(rest[..end].trim().to_string())
+    }
+}
+
 fn render_selected_leader_env(wallet: &str, leaderboard_path: &Path, index: usize) -> String {
     [
         format!("COPYTRADER_DISCOVERY_WALLET={wallet}"),
@@ -395,7 +528,8 @@ fn encode_component(value: &str) -> String {
 mod tests {
     use super::{
         LEADERBOARD_BASE_URL, Options, build_activity_url, build_leaderboard_url, execute,
-        extract_wallet_from_json, parse_args, render_selected_leader_env, seconds_from_ms,
+        extract_field_value, extract_object_containing, extract_wallet_from_json,
+        first_json_object, parse_args, render_selected_leader_env, seconds_from_ms,
         write_output_file,
     };
     use std::fs;
@@ -430,6 +564,8 @@ mod tests {
             "TRADE".into(),
             "--discovery-dir".into(),
             "/tmp/discovery".into(),
+            "--proxy".into(),
+            "http://127.0.0.1:7897".into(),
             "--skip-activity".into(),
         ])
         .expect("parse");
@@ -445,6 +581,7 @@ mod tests {
         assert_eq!(options.index, 2);
         assert_eq!(options.activity_type, "TRADE");
         assert_eq!(options.discovery_dir, "/tmp/discovery");
+        assert_eq!(options.proxy.as_deref(), Some("http://127.0.0.1:7897"));
         assert!(options.skip_activity);
     }
 
@@ -454,6 +591,12 @@ mod tests {
         let leaderboard_url = build_leaderboard_url(&options);
         let activity_url =
             build_activity_url("https://example.com/activity", "0xleader", "TRADE", 5);
+        let curl_args = super::build_curl_args(
+            "https://example.com",
+            Some("http://127.0.0.1:7897"),
+            1500,
+            8000,
+        );
 
         assert!(leaderboard_url.starts_with(LEADERBOARD_BASE_URL));
         assert!(leaderboard_url.contains("category=OVERALL"));
@@ -463,6 +606,8 @@ mod tests {
         assert!(activity_url.contains("user=0xleader"));
         assert!(activity_url.contains("type=TRADE"));
         assert!(activity_url.contains("limit=5"));
+        assert!(curl_args.contains(&"--proxy".to_string()));
+        assert!(curl_args.contains(&"http://127.0.0.1:7897".to_string()));
     }
 
     #[test]
@@ -476,9 +621,9 @@ mod tests {
                 "#!/usr/bin/env bash\n",
                 "url=\"${@: -1}\"\n",
                 "if [[ \"$url\" == *\"leaderboard\"* ]]; then\n",
-                "  printf '[{\"proxyWallet\":\"0xleader1\"},{\"proxyWallet\":\"0xleader2\"}]'\n",
+                "  printf '[{\"rank\":\"1\",\"proxyWallet\":\"0xleader1\",\"userName\":\"zero\",\"pnl\":111.0},{\"rank\":\"2\",\"proxyWallet\":\"0xleader2\",\"userName\":\"one\",\"pnl\":222.5}]'\n",
                 "else\n",
-                "  printf '[{\"proxyWallet\":\"0xleader2\",\"side\":\"BUY\"}]'\n",
+                "  printf '[{\"proxyWallet\":\"0xleader2\",\"side\":\"BUY\",\"timestamp\":12345,\"slug\":\"market-slug\",\"transactionHash\":\"0xfeed\"}]'\n",
                 "fi\n"
             ),
         )
@@ -500,6 +645,9 @@ mod tests {
         let artifacts = execute(&options).expect("execute should succeed");
 
         assert_eq!(artifacts.selected_wallet, "0xleader2");
+        assert_eq!(artifacts.selected_rank.as_deref(), Some("2"));
+        assert_eq!(artifacts.selected_username.as_deref(), Some("one"));
+        assert_eq!(artifacts.selected_pnl.as_deref(), Some("222.5"));
         assert!(artifacts.leaderboard_path.exists());
         assert!(
             artifacts
@@ -508,6 +656,16 @@ mod tests {
                 .expect("activity path")
                 .exists()
         );
+        assert_eq!(
+            artifacts.latest_activity_timestamp.as_deref(),
+            Some("12345")
+        );
+        assert_eq!(artifacts.latest_activity_side.as_deref(), Some("BUY"));
+        assert_eq!(
+            artifacts.latest_activity_slug.as_deref(),
+            Some("market-slug")
+        );
+        assert_eq!(artifacts.latest_activity_tx.as_deref(), Some("0xfeed"));
         assert!(artifacts.selected_leader_env_path.exists());
         let env = fs::read_to_string(&artifacts.selected_leader_env_path).expect("env file");
         assert!(env.contains("COPYTRADER_DISCOVERY_WALLET=0xleader2"));
@@ -526,6 +684,34 @@ mod tests {
         assert_eq!(
             extract_wallet_from_json(json, 1).as_deref(),
             Some("0xleader2")
+        );
+    }
+
+    #[test]
+    fn extract_object_and_field_value_pull_summary_fields() {
+        let leaderboard =
+            r#"[{"rank":"2","proxyWallet":"0xleader2","userName":"one","pnl":222.5}]"#;
+        let object = extract_object_containing(leaderboard, "0xleader2").expect("object");
+        assert_eq!(extract_field_value(&object, "rank").as_deref(), Some("2"));
+        assert_eq!(
+            extract_field_value(&object, "userName").as_deref(),
+            Some("one")
+        );
+        assert_eq!(
+            extract_field_value(&object, "pnl").as_deref(),
+            Some("222.5")
+        );
+
+        let activity =
+            r#"[{"timestamp":12345,"transactionHash":"0xfeed","slug":"market-slug","side":"BUY"}]"#;
+        let object = first_json_object(activity).expect("activity object");
+        assert_eq!(
+            extract_field_value(&object, "transactionHash").as_deref(),
+            Some("0xfeed")
+        );
+        assert_eq!(
+            extract_field_value(&object, "slug").as_deref(),
+            Some("market-slug")
         );
     }
 

@@ -161,6 +161,13 @@ cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery
 set -a && source ../.omx/discovery/selected-leader.env && set +a
 ```
 
+它还会直接打印真实 summary 字段，例如：
+- `selected_rank=...`
+- `selected_pnl=...`
+- `selected_username=...`
+- `latest_activity_side=...`
+- `latest_activity_slug=...`
+
 如果你想把这条 discovery + 选 leader + operator demo 直接串成一把，也可以：
 
 ```bash
@@ -173,6 +180,14 @@ cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.om
 ```bash
 export POLYMARKET_LEADERBOARD_BASE_URL=https://your-proxy.example/leaderboard
 export POLYMARKET_ACTIVITY_BASE_URL=https://your-proxy.example/activity
+cd rust-copytrader
+cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
+```
+
+如果 host 不变，只是需要显式代理，也可以：
+
+```bash
+export POLYMARKET_CURL_PROXY=http://127.0.0.1:7897
 cd rust-copytrader
 cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
 ```

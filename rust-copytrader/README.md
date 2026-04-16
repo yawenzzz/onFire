@@ -254,6 +254,12 @@ set -a && source ../.omx/discovery/selected-leader.env && set +a
 - 选出一个 leader wallet
 - 抓这个 wallet 的 activity 到 `.omx/discovery/activity-*.json`
 - 写 `.omx/discovery/selected-leader.env`
+- 并输出真实 summary，例如：
+  - `selected_rank=...`
+  - `selected_pnl=...`
+  - `selected_username=...`
+  - `latest_activity_side=...`
+  - `latest_activity_slug=...`
 
 如果你想把 discovery + 选 leader + operator demo 一把串起来，也可以：
 
@@ -266,6 +272,13 @@ cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.om
 ```bash
 POLYMARKET_LEADERBOARD_BASE_URL=https://your-proxy.example/leaderboard \
 POLYMARKET_ACTIVITY_BASE_URL=https://your-proxy.example/activity \
+cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
+```
+
+如果你只是要显式指定代理，而不是换 host，也可以：
+
+```bash
+POLYMARKET_CURL_PROXY=http://127.0.0.1:7897 \
 cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery
 ```
 

@@ -16,6 +16,7 @@ struct Options {
     username: Option<String>,
     output: Option<String>,
     curl_bin: String,
+    proxy: Option<String>,
     print_url: bool,
     print_curl: bool,
 }
@@ -32,6 +33,7 @@ impl Default for Options {
             username: None,
             output: None,
             curl_bin: "curl".to_string(),
+            proxy: env::var("POLYMARKET_CURL_PROXY").ok(),
             print_url: false,
             print_curl: false,
         }
@@ -99,7 +101,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: fetch_trader_leaderboard [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--user <wallet>] [--username <name>] [--output <path>] [--curl-bin <path>] [--print-url] [--print-curl]"
+        "usage: fetch_trader_leaderboard [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--user <wallet>] [--username <name>] [--output <path>] [--curl-bin <path>] [--proxy <url>] [--print-url] [--print-curl]"
     );
 }
 
@@ -117,6 +119,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--username" => options.username = Some(next_value(&mut iter, arg)?),
             "--output" => options.output = Some(next_value(&mut iter, arg)?),
             "--curl-bin" => options.curl_bin = next_value(&mut iter, arg)?,
+            "--proxy" => options.proxy = Some(next_value(&mut iter, arg)?),
             "--print-url" => options.print_url = true,
             "--print-curl" => options.print_curl = true,
             other => return Err(format!("unknown argument: {other}")),
@@ -171,7 +174,7 @@ fn build_url(options: &Options) -> String {
 }
 
 fn build_curl_args(options: &Options) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "--silent".to_string(),
         "--show-error".to_string(),
         "--fail-with-body".to_string(),
@@ -180,7 +183,11 @@ fn build_curl_args(options: &Options) -> Vec<String> {
         "-H".to_string(),
         "Accept: application/json".to_string(),
         build_url(options),
-    ]
+    ];
+    if let Some(proxy) = &options.proxy {
+        args.splice(3..3, ["--proxy".to_string(), proxy.clone()]);
+    }
+    args
 }
 
 #[derive(Debug)]
@@ -277,6 +284,13 @@ mod tests {
         assert!(args.contains(&"--fail-with-body".to_string()));
         assert!(args.contains(&"Accept: application/json".to_string()));
         assert!(args.contains(&"Mozilla/5.0".to_string()));
+    }
+
+    #[test]
+    fn parse_args_supports_proxy() {
+        let options =
+            parse_args(&["--proxy".into(), "http://127.0.0.1:7897".into()]).expect("parse");
+        assert_eq!(options.proxy.as_deref(), Some("http://127.0.0.1:7897"));
     }
 
     #[test]
