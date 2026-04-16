@@ -63,9 +63,14 @@ fn main() -> ExitCode {
     };
 
     match run_operator_flow(&options) {
-        Ok(report_path) => {
+        Ok((report_path, None)) => {
             println!("operator_flow_report_path={}", report_path.display());
             ExitCode::SUCCESS
+        }
+        Ok((report_path, Some(error))) => {
+            eprintln!("{error}");
+            eprintln!("operator_flow_report_path={}", report_path.display());
+            ExitCode::from(1)
         }
         Err(error) => {
             eprintln!("{error}");
@@ -132,55 +137,98 @@ fn parse_u64(value: &str, field: &str) -> Result<u64, String> {
         .map_err(|_| format!("invalid integer for {field}: {value}"))
 }
 
-fn run_operator_flow(options: &Options) -> Result<PathBuf, String> {
+fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), String> {
     let root = PathBuf::from(&options.root);
     let operator_dir = root.join(".omx").join("operator-demo");
     fs::create_dir_all(&operator_dir)
         .map_err(|error| format!("failed to create {}: {error}", operator_dir.display()))?;
+    let report_path = operator_report_path(&operator_dir)?;
 
-    let discover_output = if options.skip_discovery {
-        "skipped discovery step".to_string()
+    let discovery_result = if options.skip_discovery {
+        Ok("skipped discovery step".to_string())
     } else {
         let discover_bin =
             resolve_bin_path("discover_copy_leader", options.discover_bin.as_deref())
                 .map_err(|error| format!("failed to resolve discover_copy_leader: {error}"))?;
-        let output = run_command(
+        run_command(
             &discover_bin,
             &build_discover_args(options),
             Some(Path::new(".")),
-        )?;
-        String::from_utf8(output.stdout)
-            .map_err(|error| format!("discover_copy_leader stdout was not utf-8: {error}"))?
+        )
+        .and_then(|output| {
+            String::from_utf8(output.stdout)
+                .map_err(|error| format!("discover_copy_leader stdout was not utf-8: {error}"))
+        })
     };
 
-    let operator_bin = resolve_bin_path("rust-copytrader", options.operator_bin.as_deref())
-        .map_err(|error| format!("failed to resolve rust-copytrader operator binary: {error}"))?;
-    let operator_output = run_command(
-        &operator_bin,
-        &[
-            "--operator-demo".to_string(),
-            "--root".to_string(),
-            options.root.clone(),
-        ],
-        Some(Path::new(".")),
-    )?;
-    let operator_stdout = String::from_utf8(operator_output.stdout)
-        .map_err(|error| format!("operator demo stdout was not utf-8: {error}"))?;
+    let operator_result = resolve_bin_path("rust-copytrader", options.operator_bin.as_deref())
+        .map_err(|error| format!("failed to resolve rust-copytrader operator binary: {error}"))
+        .and_then(|operator_bin| {
+            run_command(
+                &operator_bin,
+                &[
+                    "--operator-demo".to_string(),
+                    "--root".to_string(),
+                    options.root.clone(),
+                ],
+                Some(Path::new(".")),
+            )
+        })
+        .and_then(|output| {
+            String::from_utf8(output.stdout)
+                .map_err(|error| format!("operator demo stdout was not utf-8: {error}"))
+        });
 
-    let report = format!(
-        "== discover_copy_leader ==\n{}\n== operator_demo ==\n{}",
-        discover_output.trim_end(),
-        operator_stdout.trim_end()
+    let report = build_flow_report(
+        discovery_result.as_deref(),
+        discovery_result.as_ref().err(),
+        operator_result.as_deref(),
+        operator_result.as_ref().err(),
     );
 
+    fs::write(&report_path, report)
+        .map_err(|error| format!("failed to write {}: {error}", report_path.display()))?;
+    let error = discovery_result.err().or_else(|| operator_result.err());
+    Ok((report_path, error))
+}
+
+fn build_flow_report(
+    discovery_output: Result<&str, &String>,
+    discovery_error: Option<&String>,
+    operator_output: Result<&str, &String>,
+    operator_error: Option<&String>,
+) -> String {
+    let discovery_section = match discovery_output {
+        Ok(output) => output.trim_end().to_string(),
+        Err(error) => format!("error={error}"),
+    };
+    let operator_section = match operator_output {
+        Ok(output) => output.trim_end().to_string(),
+        Err(error) => format!("error={error}"),
+    };
+
+    let mut report = format!(
+        "== discover_copy_leader ==\n{}\n== operator_demo ==\n{}",
+        discovery_section, operator_section
+    );
+    if let Some(error) = discovery_error {
+        report.push_str(&format!(
+            "\nflow_failure_stage=discover_copy_leader\nflow_failure_reason={error}"
+        ));
+    } else if let Some(error) = operator_error {
+        report.push_str(&format!(
+            "\nflow_failure_stage=operator_demo\nflow_failure_reason={error}"
+        ));
+    }
+    report
+}
+
+fn operator_report_path(operator_dir: &Path) -> Result<PathBuf, String> {
     let run_id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("system time error: {error}"))?
         .as_nanos();
-    let report_path = operator_dir.join(format!("discover-and-demo-{run_id}.txt"));
-    fs::write(&report_path, report)
-        .map_err(|error| format!("failed to write {}: {error}", report_path.display()))?;
-    Ok(report_path)
+    Ok(operator_dir.join(format!("discover-and-demo-{run_id}.txt")))
 }
 
 fn build_discover_args(options: &Options) -> Vec<String> {
@@ -353,7 +401,8 @@ mod tests {
         ])
         .expect("parse");
 
-        let report_path = run_operator_flow(&options).expect("flow should succeed");
+        let (report_path, error) = run_operator_flow(&options).expect("flow should succeed");
+        assert!(error.is_none());
         let report = fs::read_to_string(&report_path).expect("report exists");
 
         assert!(report.contains("== discover_copy_leader =="));
@@ -384,9 +433,45 @@ mod tests {
         ])
         .expect("parse");
 
-        let report_path = run_operator_flow(&options).expect("flow should succeed");
+        let (report_path, error) = run_operator_flow(&options).expect("flow should succeed");
+        assert!(error.is_none());
         let report = fs::read_to_string(&report_path).expect("report exists");
         assert!(report.contains("skipped discovery step"));
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn run_operator_flow_persists_failure_report_when_discovery_fails() {
+        let root = unique_temp_dir("failure");
+        fs::create_dir_all(root.join(".omx/operator-demo")).expect("operator dir created");
+
+        let discover = root.join("discover_copy_leader");
+        write_executable(
+            &discover,
+            "#!/usr/bin/env bash\necho 'discovery failed' >&2\nexit 1\n",
+        );
+        let operator = root.join("rust-copytrader");
+        write_executable(
+            &operator,
+            "#!/usr/bin/env bash\nprintf 'mode=operator-demo\\n'\n",
+        );
+
+        let options = parse_args(&[
+            "--root".into(),
+            root.display().to_string(),
+            "--discover-bin".into(),
+            discover.display().to_string(),
+            "--operator-bin".into(),
+            operator.display().to_string(),
+        ])
+        .expect("parse");
+
+        let (report_path, error) = run_operator_flow(&options).expect("flow should return report");
+        assert!(error.is_some());
+        let report = fs::read_to_string(&report_path).expect("report exists");
+        assert!(report.contains("flow_failure_stage=discover_copy_leader"));
+        assert!(report.contains("discover_copy_leader"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
