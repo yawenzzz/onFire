@@ -46,6 +46,82 @@ The script:
 
 It does not write `PRIVATE_KEY` into `.env.local`.
 
+## Repo-local Rust helper scripts
+The Rust copytrader live wiring expects repo-local command helpers rather than inline signing logic:
+
+- order signing helper: `scripts/sign_order.py --json`
+- L2 header helper: `scripts/sign_l2.py --json`
+- submit helper wrapper: `scripts/submit_helper.py --json --curl-bin curl`
+
+Both signing helpers read JSON from stdin, bridge the local `py-clob-client` install plus your existing env vars, and fail closed when the SDK or required secrets are missing. They provide the repo-local contract used by the Rust command adapters; they do **not** unlock live mode on their own.
+
+## Run the repo-local Rust helper smoke path
+Once `.env.local` (or shell env) contains the `CLOB_*`, `PRIVATE_KEY`, and optional proxy/funder fields, you can run the helper-driven smoke path directly from the repo root:
+
+```bash
+bash scripts/run_rust_helper_smoke.sh
+```
+
+This smoke script:
+- signs a sample order via `scripts/sign_order.py --json`
+- signs a sample L2 header payload via `scripts/sign_l2.py --json`
+- runs the Rust helper smoke mode (`cargo run -- --smoke-helper --root ..`) to prove the helper-driven command path is loaded, callable, and able to preview the final submit command
+
+It is still **fail-closed**:
+- missing env -> exits non-zero
+- helper import/setup failure -> exits non-zero
+- live mode remains blocked unless the separate `LiveModeGate` conditions are all green
+
+## Run the repo-local Rust runtime smoke path
+If you want a replay-backed runtime/operator artifact pass on top of the helper smoke, run:
+
+```bash
+bash scripts/run_rust_runtime_smoke.sh
+```
+
+This script calls:
+
+```bash
+cd rust-copytrader
+cargo run -- --smoke-runtime --root ..
+```
+
+It will:
+- execute the helper-driven command path
+- run a replay-backed runtime session
+- emit `session_outcome`, `runtime_mode`, and `last_submit_status`
+- print the generated snapshot/report artifact paths
+
+## Run the repo-local Rust operator demo
+如果你想把当前这条 operator-facing 主路一次性走完，可以直接运行：
+
+```bash
+bash scripts/run_rust_operator_demo.sh
+```
+
+这个脚本会调用：
+
+```bash
+cd rust-copytrader
+cargo run -- --operator-demo --root ..
+```
+
+它会把：
+- helper smoke
+- replay-backed runtime smoke
+- 最终 submit preview
+- Rust discovery 命令提示
+
+串成一份更完整的 operator demo 输出，同时仍保持 live mode blocked by default。
+它还会把完整 demo 文本落到：
+- `.omx/operator-demo/operator-demo-*.txt`
+- `.omx/operator-demo/latest.txt`
+
+它仍然是 **fail-closed** 的：
+- helper / runtime smoke 都只做本地验证
+- 仍然不会解锁 live mode
+- 也不会替你执行真实网络 submit
+
 ## Run the CLOB account-only view
 The account-only monitor path uses CLOB Level 2 auth. In practice that means you need:
 

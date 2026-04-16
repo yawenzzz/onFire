@@ -1,0 +1,228 @@
+use std::env;
+use std::process::{Command, ExitCode};
+
+const BASE_URL: &str = "https://data-api.polymarket.com/v1/leaderboard";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Options {
+    category: String,
+    time_period: String,
+    order_by: String,
+    limit: usize,
+    offset: usize,
+    user: Option<String>,
+    username: Option<String>,
+    curl_bin: String,
+    print_url: bool,
+    print_curl: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            category: "OVERALL".to_string(),
+            time_period: "DAY".to_string(),
+            order_by: "PNL".to_string(),
+            limit: 25,
+            offset: 0,
+            user: None,
+            username: None,
+            curl_bin: "curl".to_string(),
+            print_url: false,
+            print_curl: false,
+        }
+    }
+}
+
+fn main() -> ExitCode {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        print_usage();
+        return ExitCode::SUCCESS;
+    }
+    let options = match parse_args(&args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}");
+            print_usage();
+            return ExitCode::from(2);
+        }
+    };
+
+    let url = build_url(&options);
+    if options.print_url {
+        println!("{url}");
+        return ExitCode::SUCCESS;
+    }
+    if options.print_curl {
+        println!(
+            "{} {}",
+            options.curl_bin,
+            shell_join(&build_curl_args(&options))
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    let status = Command::new(&options.curl_bin)
+        .args(build_curl_args(&options))
+        .status();
+
+    match status {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Err(error) => {
+            eprintln!("failed to execute {}: {error}", options.curl_bin);
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn print_usage() {
+    println!(
+        "usage: fetch_trader_leaderboard [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--user <wallet>] [--username <name>] [--curl-bin <path>] [--print-url] [--print-curl]"
+    );
+}
+
+fn parse_args(args: &[String]) -> Result<Options, String> {
+    let mut options = Options::default();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--category" => options.category = next_value(&mut iter, arg)?,
+            "--time-period" => options.time_period = next_value(&mut iter, arg)?,
+            "--order-by" => options.order_by = next_value(&mut iter, arg)?,
+            "--limit" => options.limit = parse_usize(&next_value(&mut iter, arg)?, "limit")?,
+            "--offset" => options.offset = parse_usize(&next_value(&mut iter, arg)?, "offset")?,
+            "--user" => options.user = Some(next_value(&mut iter, arg)?),
+            "--username" => options.username = Some(next_value(&mut iter, arg)?),
+            "--curl-bin" => options.curl_bin = next_value(&mut iter, arg)?,
+            "--print-url" => options.print_url = true,
+            "--print-curl" => options.print_curl = true,
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    Ok(options)
+}
+
+fn next_value<'a, I>(iter: &mut I, flag: &str) -> Result<String, String>
+where
+    I: Iterator<Item = &'a String>,
+{
+    iter.next()
+        .cloned()
+        .ok_or_else(|| format!("missing value for {flag}"))
+}
+
+fn parse_usize(value: &str, field: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map_err(|_| format!("invalid integer for {field}: {value}"))
+}
+
+fn encode_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn build_url(options: &Options) -> String {
+    let mut params = vec![
+        format!("category={}", encode_component(&options.category)),
+        format!("timePeriod={}", encode_component(&options.time_period)),
+        format!("orderBy={}", encode_component(&options.order_by)),
+        format!("limit={}", options.limit),
+        format!("offset={}", options.offset),
+    ];
+    if let Some(user) = &options.user {
+        params.push(format!("user={}", encode_component(user)));
+    }
+    if let Some(username) = &options.username {
+        params.push(format!("userName={}", encode_component(username)));
+    }
+    format!("{BASE_URL}?{}", params.join("&"))
+}
+
+fn build_curl_args(options: &Options) -> Vec<String> {
+    vec![
+        "--silent".to_string(),
+        "--show-error".to_string(),
+        "--fail-with-body".to_string(),
+        "-A".to_string(),
+        "Mozilla/5.0".to_string(),
+        "-H".to_string(),
+        "Accept: application/json".to_string(),
+        build_url(options),
+    ]
+}
+
+fn shell_join(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| {
+            if arg
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || "-_./:=?&%".contains(ch))
+            {
+                arg.clone()
+            } else {
+                format!("'{}'", arg.replace('\'', "'\"'\"'"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Options, build_curl_args, build_url, parse_args};
+
+    #[test]
+    fn parses_and_builds_leaderboard_url() {
+        let options = parse_args(&[
+            "--category".into(),
+            "OVERALL".into(),
+            "--time-period".into(),
+            "WEEK".into(),
+            "--order-by".into(),
+            "VOL".into(),
+            "--limit".into(),
+            "10".into(),
+            "--offset".into(),
+            "20".into(),
+            "--username".into(),
+            "alice".into(),
+        ])
+        .expect("args parse");
+
+        let url = build_url(&options);
+
+        assert!(url.contains("category=OVERALL"));
+        assert!(url.contains("timePeriod=WEEK"));
+        assert!(url.contains("orderBy=VOL"));
+        assert!(url.contains("limit=10"));
+        assert!(url.contains("offset=20"));
+        assert!(url.contains("userName=alice"));
+    }
+
+    #[test]
+    fn curl_args_use_json_accept_and_user_agent() {
+        let args = build_curl_args(&Options::default());
+
+        assert!(args.contains(&"--fail-with-body".to_string()));
+        assert!(args.contains(&"Accept: application/json".to_string()));
+        assert!(args.contains(&"Mozilla/5.0".to_string()));
+    }
+
+    #[test]
+    fn parse_args_supports_print_flags() {
+        let options = parse_args(&["--print-url".into(), "--print-curl".into()]).expect("parse");
+        assert!(options.print_url);
+        assert!(options.print_curl);
+    }
+}
