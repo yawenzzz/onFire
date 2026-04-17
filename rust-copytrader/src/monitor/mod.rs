@@ -15,6 +15,7 @@ use self::snapshot::{Mode, UiSnapshot};
 use self::state::MonState;
 use std::io;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, RwLock};
@@ -188,6 +189,7 @@ pub fn spawn_monitor(cfg: MonitorCfg, mode: Mode) -> io::Result<MonitorRuntime> 
         )
         .ok();
         let mut last_ui_ms = now_ms_u64();
+        let mut last_proc_sample_ms = 0u64;
 
         while !stop_for_thread.load(Ordering::Relaxed) {
             match rx.recv_timeout(Duration::from_millis(50)) {
@@ -219,6 +221,12 @@ pub fn spawn_monitor(cfg: MonitorCfg, mode: Mode) -> io::Result<MonitorRuntime> 
                 let lag_ms =
                     now_ms.saturating_sub(last_ui_ms.saturating_add(cfg_for_thread.ui_refresh_ms));
                 state.record_loop_lag(now_ms, lag_ms);
+                if now_ms.saturating_sub(last_proc_sample_ms) >= 5_000 {
+                    if let Some((rss_mb, open_fds, threads)) = sample_process_stats() {
+                        state.set_proc_stats(rss_mb, open_fds, threads);
+                    }
+                    last_proc_sample_ms = now_ms;
+                }
                 let snapshot_value = state.build_snapshot(
                     now_ms,
                     dropped.load(Ordering::Relaxed),
@@ -343,4 +351,30 @@ pub fn now_ms_u64() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn sample_process_stats() -> Option<(u64, u64, u64)> {
+    let pid = std::process::id().to_string();
+    let rss_kb = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|text| text.split_whitespace().next()?.parse::<u64>().ok())
+        .unwrap_or(0);
+    let threads = Command::new("ps")
+        .args(["-M", "-p", &pid])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|text| text.lines().skip(1).count().max(1) as u64)
+        .unwrap_or(0);
+    let open_fds = std::fs::read_dir("/proc/self/fd")
+        .or_else(|_| std::fs::read_dir("/dev/fd"))
+        .ok()
+        .map(|entries| entries.filter_map(Result::ok).count() as u64)
+        .unwrap_or(0);
+    Some((rss_kb / 1024, open_fds, threads))
 }

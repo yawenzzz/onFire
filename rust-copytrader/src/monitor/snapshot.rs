@@ -108,6 +108,17 @@ pub struct SelectedLeaderView {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrackedActivityView {
+    pub tx: String,
+    pub side: String,
+    pub slug: String,
+    pub asset: String,
+    pub usdc_size: i64,
+    pub event_age_ms: u64,
+    pub event_ts_ms: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LeaderView {
     pub leader: String,
     pub activity_p95_ms: u64,
@@ -199,6 +210,7 @@ pub struct UiSnapshot {
     pub proc: ProcView,
     pub feeds: FeedView,
     pub selected_leader: SelectedLeaderView,
+    pub tracked_activity: TrackedActivityView,
     pub leaders: Vec<LeaderView>,
     pub books: Vec<BookViewUi>,
     pub signals: Vec<SignalView>,

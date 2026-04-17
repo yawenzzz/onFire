@@ -92,6 +92,9 @@ cargo run --bin run_copytrader_monitor_v1 -- \
   - monitor 自己这条循环的延迟
 - `mon_drop`
   - monitor channel 丢事件数量
+- `rss / fds / threads`
+  - 当前 monitor 进程的轻量进程视图
+  - 这版是 best-effort 采样，不保证像专业 profiler 一样精准
 
 ---
 
@@ -132,7 +135,31 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 
 ---
 
-### 4.4 leaders
+### 4.4 tracked activity
+这块回答的是：
+
+> **这个 smart-money 钱包最近一笔公开 activity 到底是什么**
+
+字段：
+
+- `tx`
+  - 最近一笔 activity 的交易哈希
+- `side`
+  - `BUY / SELL`
+- `slug`
+  - 对应市场 slug
+- `asset`
+  - 对应 asset id
+- `usdc`
+  - 这笔 activity 的 USDC 规模
+- `event_age`
+  - 这笔 activity 离现在多久
+
+这块是最直接的“实时追踪”面。
+
+---
+
+### 4.5 leaders
 这块回答的是：
 
 > **这个 leader 最近活动新不新、对账慢不慢、持仓大不大**
@@ -154,7 +181,7 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 
 ---
 
-### 4.5 books
+### 4.6 books
 这块看当前 monitor 用来估算可执行性的 book 视图。
 
 当前这版很多是 synthetic book，所以重点是：
@@ -169,7 +196,7 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 
 ---
 
-### 4.6 signals
+### 4.7 signals
 这块看目标仓位的方向和新鲜度。
 
 - `raw`
@@ -185,7 +212,7 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 
 ---
 
-### 4.7 position targeting
+### 4.8 position targeting
 这是这次新增的重要区块。
 
 字段：
@@ -216,7 +243,7 @@ blocker_summary=zero_target:188,tail_lt24h:91,neg_risk:79,low_copyable_liquidity
 
 ---
 
-### 4.8 execution
+### 4.9 execution
 这块不是实时 user ws 成交真相，而是当前 operator / guarded artifact 的执行摘要。
 
 重点看：
@@ -228,7 +255,7 @@ blocker_summary=zero_target:188,tail_lt24h:91,neg_risk:79,low_copyable_liquidity
 
 ---
 
-### 4.9 risk
+### 4.10 risk
 这块是当前 leader 持仓画像。
 
 字段：
@@ -245,9 +272,9 @@ blocker_summary=zero_target:188,tail_lt24h:91,neg_risk:79,low_copyable_liquidity
 
 那说明当前这条 leader 的结构并不适合直接复制。
 
----
+--- 
 
-### 4.10 alerts
+### 4.11 alerts
 这里就是系统当前判出来的 WARN / CRIT。
 
 例如：

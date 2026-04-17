@@ -3,7 +3,8 @@ use super::hist::{RollingHistogram, RollingRms};
 use super::rolling::RollingCounter;
 use super::snapshot::{
     AlertView, BookViewUi, ExecView, FeedChannelView, FeedHttpView, FeedView, Health, LeaderView,
-    Mode, PositionTargetingView, ProcView, RiskView, SelectedLeaderView, SignalView, UiSnapshot,
+    Mode, PositionTargetingView, ProcView, RiskView, SelectedLeaderView, SignalView,
+    TrackedActivityView, UiSnapshot,
 };
 use super::{MonitorCfg, now_ms_u64};
 use std::collections::{BTreeMap, VecDeque};
@@ -248,6 +249,17 @@ struct SelectedLeaderMon {
     active_pool: String,
 }
 
+#[derive(Debug, Clone, Default)]
+struct TrackedActivityMon {
+    tx: String,
+    side: String,
+    slug: String,
+    asset: String,
+    usdc_size: i64,
+    event_age_ms: u64,
+    event_ts_ms: i64,
+}
+
 #[derive(Debug, Clone)]
 struct SignalMon {
     status: String,
@@ -350,6 +362,7 @@ pub struct MonState {
     risk: RiskState,
     position_targeting: PositionTargetingMon,
     selected_leader: SelectedLeaderMon,
+    tracked_activity: TrackedActivityMon,
     alerts: Vec<AlertView>,
     logs: VecDeque<String>,
 }
@@ -367,6 +380,7 @@ impl MonState {
             risk: RiskState::new(),
             position_targeting: PositionTargetingMon::default(),
             selected_leader: SelectedLeaderMon::default(),
+            tracked_activity: TrackedActivityMon::default(),
             alerts: Vec::new(),
             logs: VecDeque::new(),
             cfg,
@@ -453,6 +467,7 @@ impl MonState {
                 leader,
                 asset,
                 side,
+                usdc_size,
                 event_ts_ms,
                 recv_ts_ms,
                 tx_hash,
@@ -466,6 +481,15 @@ impl MonState {
                 leader_mon.last_tx = Some(tx_hash.clone());
                 leader_mon.last_side = Some(side.as_str().to_string());
                 leader_mon.last_slug = slug.clone();
+                self.tracked_activity = TrackedActivityMon {
+                    tx: tx_hash.clone(),
+                    side: side.as_str().to_string(),
+                    slug: slug.unwrap_or_default(),
+                    asset: asset.clone(),
+                    usdc_size,
+                    event_age_ms: age_ms,
+                    event_ts_ms,
+                };
                 self.push_log(format!(
                     "leader {leader} activity {} {} {}",
                     side.as_str(),
@@ -741,12 +765,15 @@ impl MonState {
         let exec = self.exec.view(now_ms);
         let risk = self.risk.current.clone();
         let recent_logs = self.logs.iter().cloned().collect::<Vec<_>>();
+        let ready = !self.selected_leader.wallet.is_empty()
+            && leaders.iter().any(|leader| leader.positions_count > 0)
+            && (!self.cfg.live_mode || self.feeds.user_ws.connected);
 
         let mut snapshot = UiSnapshot {
             now_ms: now_ms as i64,
             health: Health::Ok,
             mode: self.mode,
-            ready: !leaders.is_empty(),
+            ready,
             proc,
             feeds,
             selected_leader: SelectedLeaderView {
@@ -757,6 +784,15 @@ impl MonState {
                 review_status: self.selected_leader.review_status.clone(),
                 core_pool: self.selected_leader.core_pool.clone(),
                 active_pool: self.selected_leader.active_pool.clone(),
+            },
+            tracked_activity: TrackedActivityView {
+                tx: self.tracked_activity.tx.clone(),
+                side: self.tracked_activity.side.clone(),
+                slug: self.tracked_activity.slug.clone(),
+                asset: self.tracked_activity.asset.clone(),
+                usdc_size: self.tracked_activity.usdc_size,
+                event_age_ms: self.tracked_activity.event_age_ms,
+                event_ts_ms: self.tracked_activity.event_ts_ms,
             },
             leaders,
             books,

@@ -35,6 +35,11 @@ pub fn render(snapshot: &UiSnapshot) -> String {
         snapshot.proc.exec_q_depth,
         snapshot.ready
     );
+    let _ = writeln!(
+        out,
+        "rss={}MB  fds={}  threads={}",
+        snapshot.proc.rss_mb, snapshot.proc.open_fds, snapshot.proc.threads
+    );
     out.push('\n');
 
     section_header(&mut out, "feeds");
@@ -103,6 +108,24 @@ pub fn render(snapshot: &UiSnapshot) -> String {
         empty_as_none(&snapshot.selected_leader.source),
         empty_as_none(&snapshot.selected_leader.core_pool),
         empty_as_none(&snapshot.selected_leader.active_pool),
+    );
+    out.push('\n');
+
+    section_header(&mut out, "tracked activity");
+    let _ = writeln!(
+        out,
+        "  tx={} side={} slug={}",
+        empty_as_none(&snapshot.tracked_activity.tx),
+        empty_as_none(&snapshot.tracked_activity.side),
+        empty_as_none(&snapshot.tracked_activity.slug),
+    );
+    let _ = writeln!(
+        out,
+        "  asset={} usdc={:.2} event_age={}ms event_ts={}",
+        empty_as_none(&snapshot.tracked_activity.asset),
+        usdc(snapshot.tracked_activity.usdc_size),
+        snapshot.tracked_activity.event_age_ms,
+        snapshot.tracked_activity.event_ts_ms,
     );
     out.push('\n');
 
@@ -283,16 +306,34 @@ pm_proc_uptime_sec {}
 pm_proc_monitor_dropped_total {}
 # TYPE pm_proc_main_loop_lag_p95_ms gauge
 pm_proc_main_loop_lag_p95_ms {}
+# TYPE pm_proc_rss_mb gauge
+pm_proc_rss_mb {}
+# TYPE pm_proc_open_fds gauge
+pm_proc_open_fds {}
+# TYPE pm_proc_threads gauge
+pm_proc_threads {}
+# TYPE pm_proc_monitor_queue_depth gauge
+pm_proc_monitor_queue_depth {}
+# TYPE pm_proc_strategy_queue_depth gauge
+pm_proc_strategy_queue_depth {}
 # TYPE pm_feed_ws_last_msg_age_ms gauge
 pm_feed_ws_last_msg_age_ms{{channel="market"}} {}
 pm_feed_ws_last_msg_age_ms{{channel="user"}} {}
 # TYPE pm_feed_http_latency_p95_ms gauge
 pm_feed_http_latency_p95_ms{{svc="data"}} {}
 pm_feed_http_latency_p95_ms{{svc="clob"}} {}
+# TYPE pm_leader_activity_event_age_p95_ms gauge
+pm_leader_activity_event_age_p95_ms {}
+# TYPE pm_leader_reconcile_latency_p95_ms gauge
+pm_leader_reconcile_latency_p95_ms {}
+# TYPE pm_book_age_p95_ms gauge
+pm_book_age_p95_ms {}
 # TYPE pm_leader_positions_count gauge
 pm_leader_positions_count {}
 # TYPE pm_exec_copy_gap_bps_p95 gauge
 pm_exec_copy_gap_bps_p95 {}
+# TYPE pm_exec_fee_adj_slip_bps_p95 gauge
+pm_exec_fee_adj_slip_bps_p95 {}
 # TYPE pm_track_error_rmse_bps_1m gauge
 pm_track_error_rmse_bps_1m {}
 # TYPE pm_risk_deployed_usdc gauge
@@ -301,6 +342,8 @@ pm_risk_deployed_usdc {}
 pm_risk_tail_lt24h_usdc {}
 # TYPE pm_risk_neg_risk_usdc gauge
 pm_risk_neg_risk_usdc {}
+# TYPE pm_risk_follow_ratio_bps gauge
+pm_risk_follow_ratio_bps {}
 # TYPE pm_position_targeting_target_count gauge
 pm_position_targeting_target_count {}
 # TYPE pm_position_targeting_delta_count gauge
@@ -311,6 +354,11 @@ pm_position_targeting_blocked_asset_count {}
         snapshot.proc.uptime_sec,
         snapshot.proc.monitor_dropped_total,
         snapshot.proc.loop_lag_p95_ms,
+        snapshot.proc.rss_mb,
+        snapshot.proc.open_fds,
+        snapshot.proc.threads,
+        snapshot.proc.monitor_q_depth,
+        snapshot.proc.exec_q_depth,
         snapshot.feeds.market_ws.last_msg_age_ms,
         snapshot.feeds.user_ws.last_msg_age_ms,
         snapshot.feeds.data_api.latency_p95_ms,
@@ -318,13 +366,26 @@ pm_position_targeting_blocked_asset_count {}
         snapshot
             .leaders
             .first()
+            .map(|leader| leader.activity_p95_ms)
+            .unwrap_or(0),
+        snapshot
+            .leaders
+            .first()
+            .map(|leader| leader.reconcile_p95_ms)
+            .unwrap_or(0),
+        snapshot.books.first().map(|book| book.age_ms).unwrap_or(0),
+        snapshot
+            .leaders
+            .first()
             .map(|leader| leader.positions_count)
             .unwrap_or(0),
         snapshot.exec.copy_gap_p95_bps,
+        snapshot.exec.fee_adj_slip_p95_bps,
         snapshot.risk.rmse_1m_bps,
         snapshot.risk.deployed_usdc,
         snapshot.risk.tail_24h_usdc,
         snapshot.risk.neg_risk_usdc,
+        snapshot.risk.follow_ratio_bps,
         snapshot.position_targeting.target_count,
         snapshot.position_targeting.delta_count,
         snapshot.position_targeting.blocked_asset_count,

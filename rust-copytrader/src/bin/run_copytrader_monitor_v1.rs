@@ -853,6 +853,8 @@ mod tests {
         assert!(frame.contains("market-a"));
         assert!(frame.contains("selected leader"));
         assert!(frame.contains("category=TECH"));
+        assert!(frame.contains("tracked activity"));
+        assert!(frame.contains("asset=asset-1"));
         assert!(frame.contains("position targeting"));
         assert!(frame.contains("blocker_summary="));
         assert!(frame.contains("target_count=1 delta_count=0"));
