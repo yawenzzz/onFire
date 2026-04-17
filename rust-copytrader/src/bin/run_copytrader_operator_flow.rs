@@ -63,7 +63,7 @@ impl Default for Options {
             skip_activity: false,
             skip_discovery: false,
             skip_guarded_cycle: false,
-            position_targeting_demo: false,
+            position_targeting_demo: true,
             live_submit_gate: false,
             allow_live_submit: false,
             discover_bin: None,
@@ -111,7 +111,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--watch-poll-count <n>] [--watch-poll-interval-ms <n>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--skip-activity] [--skip-discovery] [--skip-guarded-cycle] [--position-targeting-demo] [--live-submit-gate] [--allow-live-submit] [--discover-bin <path>] [--watch-bin <path>] [--guarded-bin <path>] [--position-targeting-bin <path>] [--live-submit-bin <path>] [--operator-bin <path>]"
+        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--watch-poll-count <n>] [--watch-poll-interval-ms <n>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--skip-activity] [--skip-discovery] [--skip-guarded-cycle] [--position-targeting-demo] [--skip-position-targeting-demo] [--live-submit-gate] [--allow-live-submit] [--discover-bin <path>] [--watch-bin <path>] [--guarded-bin <path>] [--position-targeting-bin <path>] [--live-submit-bin <path>] [--operator-bin <path>]"
     );
 }
 
@@ -159,6 +159,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--skip-discovery" => options.skip_discovery = true,
             "--skip-guarded-cycle" => options.skip_guarded_cycle = true,
             "--position-targeting-demo" => options.position_targeting_demo = true,
+            "--skip-position-targeting-demo" => options.position_targeting_demo = false,
             "--live-submit-gate" => options.live_submit_gate = true,
             "--allow-live-submit" => options.allow_live_submit = true,
             "--discover-bin" => options.discover_bin = Some(next_value(&mut iter, arg)?),
@@ -835,6 +836,7 @@ mod tests {
             "--root".into(),
             root.display().to_string(),
             "--skip-discovery".into(),
+            "--skip-position-targeting-demo".into(),
             "--operator-bin".into(),
             operator.display().to_string(),
         ])
@@ -1022,6 +1024,11 @@ mod tests {
             &live_submit,
             "#!/usr/bin/env bash\necho 'live submit failed' >&2\nexit 1\n",
         );
+        let position_targeting = root.join("run_position_targeting_demo");
+        write_executable(
+            &position_targeting,
+            "#!/usr/bin/env bash\nprintf 'mode=position-targeting-demo\\ntarget_count=2\\n'\n",
+        );
         let operator = root.join("rust-copytrader");
         write_executable(
             &operator,
@@ -1039,6 +1046,8 @@ mod tests {
             "1".into(),
             "--guarded-bin".into(),
             guarded.display().to_string(),
+            "--position-targeting-bin".into(),
+            position_targeting.display().to_string(),
             "--live-submit-bin".into(),
             live_submit.display().to_string(),
             "--live-submit-gate".into(),

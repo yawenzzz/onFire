@@ -188,7 +188,14 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
         cfg: &cfg,
     });
 
-    let report_path = write_report(&root, &wallet, &positions, spot_value, &output)?;
+    let report_path = write_report(
+        &root,
+        &wallet,
+        &leader_state,
+        &positions,
+        &output,
+        &selected_env,
+    )?;
 
     let mut lines = vec![
         "mode=position-targeting-demo".to_string(),
@@ -377,9 +384,10 @@ fn now_ms() -> i64 {
 fn write_report(
     root: &Path,
     wallet: &str,
+    leader_state: &rust_copytrader::domain::position_targeting::LeaderState,
     positions: &[rust_copytrader::domain::position_targeting::LeaderPosition],
-    spot_value: i64,
     output: &rust_copytrader::domain::position_targeting::SizingOutput,
+    selected_env: &Path,
 ) -> Result<PathBuf, String> {
     let report_dir = root.join(".omx/position-targeting");
     fs::create_dir_all(&report_dir)
@@ -393,8 +401,24 @@ fn write_report(
     ));
     let mut lines = vec![
         format!("wallet={wallet}"),
+        format!(
+            "selected_leader_rank={}",
+            read_optional_env_value(selected_env, &["COPYTRADER_SELECTED_RANK"])
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        format!(
+            "selected_leader_review_status={}",
+            read_optional_env_value(selected_env, &["COPYTRADER_SELECTED_REVIEW_STATUS"])
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        format!(
+            "selected_leader_core_pool_count={}",
+            read_optional_env_value(selected_env, &["COPYTRADER_CORE_POOL_COUNT"])
+                .unwrap_or_else(|| "none".to_string())
+        ),
         format!("leader_position_count={}", positions.len()),
-        format!("leader_spot_value_usdc={spot_value}"),
+        format!("leader_spot_value_usdc={}", leader_state.value.spot_value),
+        format!("leader_ewma_value_usdc={}", leader_state.value.ewma_value),
         format!("target_count={}", output.targets.len()),
         format!("delta_count={}", output.deltas.len()),
     ];
@@ -486,6 +510,14 @@ mod tests {
         assert!(joined.contains("target_count=1"));
         assert!(joined.contains("delta_count=1"));
         assert!(joined.contains("report_path="));
+
+        let report_path = joined
+            .lines()
+            .find_map(|line| line.strip_prefix("report_path="))
+            .expect("report path");
+        let report = fs::read_to_string(report_path).expect("report exists");
+        assert!(report.contains("leader_ewma_value_usdc=55000000"));
+        assert!(report.contains("selected_leader_review_status=stable"));
 
         fs::remove_dir_all(root).expect("temp root removed");
     }
