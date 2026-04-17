@@ -369,6 +369,18 @@ blocker_summary=zero_target:188,tail_lt24h:91,neg_risk:79,low_copyable_liquidity
 
 > **有仓位，但当前规则认为不该跟。**
 
+如果你看到：
+
+- `leader_pos=0`
+- `algo_target=0`
+- `algo_delta=0`
+- `reason=asset_missing_in_positions_snapshot`
+
+意思不是“没算”，而是：
+
+> 最新这笔 activity 对应的 asset，当前不在缓存 positions 快照里。  
+> 所以 monitor 会明确给你一个保守结果：当前仓位/目标/增量都按 0 展示，并且把原因写出来。
+
 ---
 
 ## 6. 这版 monitor v1 还没做完的部分

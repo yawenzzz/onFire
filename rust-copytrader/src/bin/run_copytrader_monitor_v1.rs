@@ -565,6 +565,18 @@ fn run_position_cycle(
                 .cloned()
                 .unwrap_or_else(|| "none".to_string()),
         });
+    } else if let Some(focus_asset) = focus_asset {
+        runtime.handle.emit(MonEvent::TrackedActivityProjection {
+            asset: focus_asset.to_string(),
+            current_position_value_usdc: 0,
+            current_position_size: 0,
+            current_avg_price_ppm: 0,
+            algo_target_risk_usdc: 0,
+            algo_delta_risk_usdc: 0,
+            algo_confidence_bps: 0,
+            algo_tte_bucket: "none".to_string(),
+            algo_reason: "asset_missing_in_positions_snapshot".to_string(),
+        });
     }
 
     if let Some(asset) = values
