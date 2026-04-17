@@ -484,14 +484,22 @@ fn load_candidate_data(
             markets.insert(slug.clone(), market.clone());
             continue;
         }
-        let body = fetch_simple_json(&build_market_url(&options.market_base_url, &slug), options)?;
         let path = markets_dir.join(format!("{}.json", sanitize_for_filename(&slug)));
-        write_output_file(&path, body.as_bytes()).map_err(|error| {
-            format!(
-                "failed to write market artifact {}: {error}",
-                path.display()
-            )
-        })?;
+        let body = if path.exists() {
+            fs::read_to_string(&path).map_err(|error| {
+                format!("failed to read market artifact {}: {error}", path.display())
+            })?
+        } else {
+            let body =
+                fetch_simple_json(&build_market_url(&options.market_base_url, &slug), options)?;
+            write_output_file(&path, body.as_bytes()).map_err(|error| {
+                format!(
+                    "failed to write market artifact {}: {error}",
+                    path.display()
+                )
+            })?;
+            body
+        };
         if let Some(market) = parse_market_record(&body, &slug) {
             market_cache.insert(slug.clone(), market.clone());
             markets.insert(slug, market);

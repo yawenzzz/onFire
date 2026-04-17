@@ -221,8 +221,11 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
             )
         })?;
     }
+    let discovery_ready = discovery_result.is_ok() || options.skip_discovery;
 
-    let watch_result = if options.watch_poll_count == 0 {
+    let watch_result = if !discovery_ready {
+        Ok("skipped watcher step because discovery failed".to_string())
+    } else if options.watch_poll_count == 0 {
         Ok("skipped watcher step".to_string())
     } else {
         let watch_bin =
@@ -238,7 +241,9 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
         )
     };
 
-    let guarded_result = if options.skip_guarded_cycle || options.watch_poll_count == 0 {
+    let guarded_result = if !discovery_ready {
+        Ok("skipped guarded cycle because discovery failed".to_string())
+    } else if options.skip_guarded_cycle || options.watch_poll_count == 0 {
         Ok("skipped guarded cycle".to_string())
     } else {
         let guarded_bin = resolve_bin_path(
@@ -258,7 +263,9 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
         })
     };
 
-    let live_submit_result = if options.live_submit_gate
+    let live_submit_result = if !discovery_ready {
+        Ok("skipped live submit gate because discovery failed".to_string())
+    } else if options.live_submit_gate
         && !options.skip_guarded_cycle
         && options.watch_poll_count > 0
     {
@@ -281,23 +288,27 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
         Ok("skipped live submit gate".to_string())
     };
 
-    let operator_result = resolve_bin_path("rust-copytrader", options.operator_bin.as_deref())
-        .map_err(|error| format!("failed to resolve rust-copytrader operator binary: {error}"))
-        .and_then(|operator_bin| {
-            run_command(
-                &operator_bin,
-                &[
-                    "--operator-demo".to_string(),
-                    "--root".to_string(),
-                    options.root.clone(),
-                ],
-                Some(Path::new(".")),
-            )
-        })
-        .and_then(|output| {
-            String::from_utf8(output.stdout)
-                .map_err(|error| format!("operator demo stdout was not utf-8: {error}"))
-        });
+    let operator_result = if !discovery_ready {
+        Ok("skipped operator demo because discovery failed".to_string())
+    } else {
+        resolve_bin_path("rust-copytrader", options.operator_bin.as_deref())
+            .map_err(|error| format!("failed to resolve rust-copytrader operator binary: {error}"))
+            .and_then(|operator_bin| {
+                run_command(
+                    &operator_bin,
+                    &[
+                        "--operator-demo".to_string(),
+                        "--root".to_string(),
+                        options.root.clone(),
+                    ],
+                    Some(Path::new(".")),
+                )
+            })
+            .and_then(|output| {
+                String::from_utf8(output.stdout)
+                    .map_err(|error| format!("operator demo stdout was not utf-8: {error}"))
+            })
+    };
 
     let report = build_flow_report([
         (
@@ -829,6 +840,8 @@ mod tests {
         let report = fs::read_to_string(&report_path).expect("report exists");
         assert!(report.contains("flow_failure_stage=discover_copy_leader"));
         assert!(report.contains("discover_copy_leader"));
+        assert!(report.contains("skipped watcher step because discovery failed"));
+        assert!(report.contains("skipped operator demo because discovery failed"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
