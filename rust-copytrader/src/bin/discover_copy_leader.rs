@@ -273,6 +273,11 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
 
     let discovery_dir = PathBuf::from(&options.discovery_dir);
     let markets_dir = discovery_dir.join("markets");
+    let report_path = discovery_dir.join(format!(
+        "wallet-filter-v1-{}.txt",
+        sanitize_for_filename(&options.category.to_lowercase())
+    ));
+    let latest_report_path = discovery_dir.join("wallet-filter-v1-report.txt");
     fs::create_dir_all(&discovery_dir)
         .map_err(|error| format!("failed to create {}: {error}", discovery_dir.display()))?;
     fs::create_dir_all(&markets_dir)
@@ -342,8 +347,8 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
             &cards,
             &format!("wallet_filter_v1:{}", categories.join(",")),
         );
-        let report_path = discovery_dir.join("wallet-filter-v1-report.txt");
         let _ = write_output_file(&report_path, report.as_bytes());
+        let _ = write_output_file(&latest_report_path, report.as_bytes());
         let selected_leader_env_path = discovery_dir.join("selected-leader.env");
         let _ = fs::remove_file(&selected_leader_env_path);
         let rejection_summary = cards
@@ -377,16 +382,19 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
         .map(|paths| paths.month_pnl_path.clone())
         .ok_or_else(|| "selected leaderboard artifact missing".to_string())?;
 
-    let report_path = discovery_dir.join("wallet-filter-v1-report.txt");
     let report_source = format!(
         "wallet_filter_v1:{}#{}",
         selected.seed.category, options.index
     );
-    write_output_file(
-        &report_path,
-        render_wallet_filter_report(&selection, &report_source).as_bytes(),
-    )
-    .map_err(|error| format!("failed to write {}: {error}", report_path.display()))?;
+    let report_body = render_wallet_filter_report(&selection, &report_source);
+    write_output_file(&report_path, report_body.as_bytes())
+        .map_err(|error| format!("failed to write {}: {error}", report_path.display()))?;
+    write_output_file(&latest_report_path, report_body.as_bytes()).map_err(|error| {
+        format!(
+            "failed to write latest report {}: {error}",
+            latest_report_path.display()
+        )
+    })?;
 
     let selected_leader_env_path = discovery_dir.join("selected-leader.env");
     write_output_file(
@@ -991,6 +999,11 @@ mod tests {
         assert!(artifacts.value_path.exists());
         assert!(artifacts.traded_path.exists());
         assert!(artifacts.filter_report_path.exists());
+        assert!(
+            artifacts
+                .filter_report_path
+                .ends_with("wallet-filter-v1-sports.txt")
+        );
         assert!(artifacts.selected_leader_env_path.exists());
         let report = fs::read_to_string(&artifacts.filter_report_path).expect("report");
         assert!(report.contains("wallet_filter_strategy=wallet_filter_v1"));
@@ -1056,6 +1069,7 @@ mod tests {
         let error = execute(&options).expect_err("all candidates should be rejected");
         assert!(error.contains("wallet_filter_v1 rejected every candidate"));
         assert!(!discovery_dir.join("selected-leader.env").exists());
+        assert!(discovery_dir.join("wallet-filter-v1-sports.txt").exists());
         let report = fs::read_to_string(discovery_dir.join("wallet-filter-v1-report.txt"))
             .expect("report should exist");
         assert!(report.contains("selected_wallet=none"));
@@ -1162,6 +1176,11 @@ mod tests {
         let artifacts = execute(&options).expect("execute should succeed from cache");
         assert_eq!(artifacts.selected_wallet, "0xgood");
         assert!(artifacts.selected_leader_env_path.exists());
+        assert!(
+            artifacts
+                .filter_report_path
+                .ends_with("wallet-filter-v1-sports.txt")
+        );
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
