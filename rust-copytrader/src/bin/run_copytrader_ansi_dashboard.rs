@@ -114,6 +114,13 @@ fn render_dashboard(root: &Path) -> Result<String, String> {
         root.join(".omx/discovery/wallet-filter-v1-summary.txt"),
     ));
     let selected = load_key_values(&Some(root.join(".omx/discovery/selected-leader.env")));
+    let latest_activity = load_latest_activity(
+        root,
+        selected_value(
+            &selected,
+            &["COPYTRADER_DISCOVERY_WALLET", "COPYTRADER_LEADER_WALLET"],
+        ),
+    );
     let operator = load_key_values(&pick_operator_report(root));
     let position = load_key_values(&pick_latest_matching(
         &root.join(".omx/position-targeting"),
@@ -231,6 +238,47 @@ fn render_dashboard(root: &Path) -> Result<String, String> {
                     plain(
                         selected
                             .get("COPYTRADER_ACTIVE_POOL_WALLETS")
+                            .map(String::as_str)
+                            .unwrap_or("none"),
+                    ),
+                ),
+            ],
+        ),
+        section(
+            "tracked activity",
+            &[
+                kv(
+                    "tx",
+                    plain(
+                        latest_activity
+                            .get("transactionHash")
+                            .map(String::as_str)
+                            .unwrap_or("none"),
+                    ),
+                ),
+                kv(
+                    "side",
+                    color_status(
+                        latest_activity
+                            .get("side")
+                            .map(String::as_str)
+                            .unwrap_or("none"),
+                    ),
+                ),
+                kv(
+                    "slug",
+                    plain(
+                        latest_activity
+                            .get("slug")
+                            .map(String::as_str)
+                            .unwrap_or("none"),
+                    ),
+                ),
+                kv(
+                    "timestamp",
+                    plain(
+                        latest_activity
+                            .get("timestamp")
                             .map(String::as_str)
                             .unwrap_or("none"),
                     ),
@@ -443,6 +491,84 @@ fn pick_operator_report(root: &Path) -> Option<PathBuf> {
     )
 }
 
+fn load_latest_activity(root: &Path, wallet: &str) -> BTreeMap<String, String> {
+    if wallet == "none" {
+        return BTreeMap::new();
+    }
+    let path = root
+        .join(".omx/live-activity")
+        .join(wallet)
+        .join("latest-activity.json");
+    let Ok(body) = fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
+    let object = first_json_object(&body);
+    [
+        "transactionHash",
+        "side",
+        "slug",
+        "timestamp",
+        "asset",
+        "usdcSize",
+    ]
+    .into_iter()
+    .filter_map(|field| extract_json_field(&object, field).map(|value| (field.to_string(), value)))
+    .collect()
+}
+
+fn first_json_object(content: &str) -> String {
+    let start = match content.find('{') {
+        Some(start) => start,
+        None => return String::new(),
+    };
+    let mut depth = 0_i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (idx, byte) in content.as_bytes().iter().enumerate().skip(start) {
+        match byte {
+            b'\\' if in_string && !escaped => {
+                escaped = true;
+                continue;
+            }
+            b'"' if !escaped => in_string = !in_string,
+            b'{' if !in_string => depth += 1,
+            b'}' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return content[start..=idx].to_string();
+                }
+            }
+            _ => {}
+        }
+        escaped = false;
+    }
+    String::new()
+}
+
+fn extract_json_field(object: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\":");
+    let start = object.find(&needle)?;
+    let rest = object[start + needle.len()..].trim_start();
+    if let Some(rest) = rest.strip_prefix('"') {
+        let mut escaped = false;
+        for (idx, ch) in rest.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => return Some(rest[..idx].to_string()),
+                _ => {}
+            }
+        }
+        None
+    } else {
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
+        Some(rest[..end].trim().to_string())
+    }
+}
+
 fn pick_latest_matching(dir: &Path, prefix: &str, suffix: &str) -> Option<PathBuf> {
     let entries = fs::read_dir(dir).ok()?;
     entries
@@ -518,6 +644,12 @@ mod tests {
             ),
         )
         .expect("selected env written");
+        fs::create_dir_all(root.join(".omx/live-activity/0xleader")).expect("activity dir created");
+        fs::write(
+            root.join(".omx/live-activity/0xleader/latest-activity.json"),
+            "[{\"transactionHash\":\"0xtx\",\"side\":\"BUY\",\"slug\":\"market-a\",\"timestamp\":1776303488}]",
+        )
+        .expect("latest activity written");
         fs::write(
             root.join(".omx/discovery/wallet-filter-v1-summary.txt"),
             concat!(
@@ -564,9 +696,11 @@ mod tests {
         assert!(rendered.contains("copytrader ansi dashboard"));
         assert!(rendered.contains("smart-money summary"));
         assert!(rendered.contains("selected leader"));
+        assert!(rendered.contains("tracked activity"));
         assert!(rendered.contains("position targeting"));
         assert!(rendered.contains("watchlist_candidates"));
         assert!(rendered.contains("target_count"));
+        assert!(rendered.contains("0xtx"));
         assert!(rendered.contains("\x1b[2J\x1b[H"));
 
         fs::remove_dir_all(root).expect("temp root removed");

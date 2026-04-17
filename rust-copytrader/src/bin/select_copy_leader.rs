@@ -10,9 +10,18 @@ struct Options {
     leaderboard: Option<String>,
     activity: Option<String>,
     report: Option<String>,
+    summary: Option<String>,
     index: usize,
     output: Option<String>,
     print_wallet: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct SummaryMetadata {
+    category: Option<String>,
+    review_status: Option<String>,
+    review_reasons: Option<String>,
+    score: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -65,7 +74,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: select_copy_leader [--wallet <wallet> | --leaderboard <path> | --activity <path> | --report <path>] [--index <n>] [--output <path>] [--print-wallet]"
+        "usage: select_copy_leader [--wallet <wallet> | --leaderboard <path> | --activity <path> | --report <path> | --summary <path>] [--index <n>] [--output <path>] [--print-wallet]"
     );
 }
 
@@ -78,6 +87,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--leaderboard" => options.leaderboard = Some(next_value(&mut iter, arg)?),
             "--activity" => options.activity = Some(next_value(&mut iter, arg)?),
             "--report" => options.report = Some(next_value(&mut iter, arg)?),
+            "--summary" => options.summary = Some(next_value(&mut iter, arg)?),
             "--index" => options.index = parse_usize(&next_value(&mut iter, arg)?, "index")?,
             "--output" => options.output = Some(next_value(&mut iter, arg)?),
             "--print-wallet" => options.print_wallet = true,
@@ -88,15 +98,18 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let source_count = usize::from(options.wallet.is_some())
         + usize::from(options.leaderboard.is_some())
         + usize::from(options.activity.is_some())
-        + usize::from(options.report.is_some());
+        + usize::from(options.report.is_some())
+        + usize::from(options.summary.is_some());
     if source_count == 0 {
         return Err(
-            "missing required --wallet, --leaderboard, --activity, or --report".to_string(),
+            "missing required --wallet, --leaderboard, --activity, --report, or --summary"
+                .to_string(),
         );
     }
     if source_count > 1 {
         return Err(
-            "use exactly one of --wallet, --leaderboard, --activity, or --report".to_string(),
+            "use exactly one of --wallet, --leaderboard, --activity, --report, or --summary"
+                .to_string(),
         );
     }
 
@@ -144,6 +157,18 @@ fn resolve_wallet(options: &Options) -> Result<String, String> {
             .filter(|value| looks_like_wallet(value))
             .filter(|value| !value.is_empty())
             .ok_or_else(|| format!("failed to extract selected_wallet from {report_path}"));
+    }
+
+    if let Some(summary_path) = &options.summary {
+        let content = fs::read_to_string(summary_path)
+            .map_err(|error| format!("failed to read {summary_path}: {error}"))?;
+        return content
+            .lines()
+            .find_map(|line| line.strip_prefix("best_watchlist_wallet="))
+            .map(|value| value.trim().to_string())
+            .filter(|value| looks_like_wallet(value))
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("failed to extract best_watchlist_wallet from {summary_path}"));
     }
 
     let activity_path = options
@@ -202,19 +227,73 @@ fn render_env_output(wallet: &str, options: &Options) -> String {
         format!("leaderboard:{}#{}", path, options.index)
     } else if let Some(path) = &options.report {
         format!("wallet_filter_report:{}", path)
+    } else if let Some(path) = &options.summary {
+        format!("wallet_filter_summary:{}#best_watchlist_wallet", path)
     } else if let Some(path) = &options.activity {
         format!("activity:{}#{}", path, options.index)
     } else {
         "wallet".to_string()
     };
 
-    [
+    let mut lines = vec![
         format!("COPYTRADER_DISCOVERY_WALLET={wallet}"),
         format!("COPYTRADER_LEADER_WALLET={wallet}"),
         format!("COPYTRADER_SELECTED_FROM={source}"),
-    ]
-    .join("\n")
-        + "\n"
+    ];
+    if let Some(summary_path) = &options.summary
+        && let Ok(metadata) = read_summary_metadata(summary_path)
+    {
+        if let Some(category) = metadata.category {
+            lines.push(format!("COPYTRADER_SELECTED_CATEGORY={category}"));
+        }
+        if let Some(score) = metadata.score {
+            lines.push(format!("COPYTRADER_SELECTED_SCORE={score}"));
+        }
+        if let Some(review_status) = metadata.review_status {
+            lines.push(format!("COPYTRADER_SELECTED_REVIEW_STATUS={review_status}"));
+        }
+        if let Some(review_reasons) = metadata.review_reasons {
+            lines.push(format!(
+                "COPYTRADER_SELECTED_REVIEW_REASONS={review_reasons}"
+            ));
+        }
+    }
+    lines.join("\n") + "\n"
+}
+
+fn read_summary_metadata(path: &str) -> Result<SummaryMetadata, String> {
+    let content =
+        fs::read_to_string(path).map_err(|error| format!("failed to read {path}: {error}"))?;
+    let mut metadata = SummaryMetadata {
+        category: content
+            .lines()
+            .find_map(|line| line.strip_prefix("best_watchlist_category="))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty() && value != "none"),
+        review_reasons: content
+            .lines()
+            .find_map(|line| line.strip_prefix("best_watchlist_reasons="))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        ..SummaryMetadata::default()
+    };
+
+    if let Some(category) = metadata.category.as_ref()
+        && let Some(entry) = content
+            .lines()
+            .find_map(|line| line.strip_prefix("watchlist_candidates="))
+            .and_then(|line| {
+                line.split(',')
+                    .find(|entry| entry.starts_with(category))
+                    .map(str::to_string)
+            })
+    {
+        let mut parts = entry.split(':');
+        let _ = parts.next();
+        metadata.review_status = parts.next().map(str::to_string);
+        metadata.score = parts.next().map(str::to_string);
+    }
+    Ok(metadata)
 }
 
 fn write_output_file(path: &str, bytes: &[u8]) -> io::Result<()> {
@@ -229,7 +308,8 @@ fn write_output_file(path: &str, bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_wallet_from_json, parse_args, render_env_output, resolve_wallet, write_output_file,
+        extract_wallet_from_json, parse_args, read_summary_metadata, render_env_output,
+        resolve_wallet, write_output_file,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -270,6 +350,56 @@ mod tests {
             parse_args(&["--report".into(), report.display().to_string()]).expect("parse");
 
         assert_eq!(resolve_wallet(&options).expect("wallet"), "0xleader-smart");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn resolve_wallet_reads_wallet_filter_summary_best_watchlist_wallet() {
+        let root = unique_temp_dir("summary");
+        fs::create_dir_all(&root).expect("temp dir created");
+        let summary = root.join("wallet-filter-v1-summary.txt");
+        fs::write(
+            &summary,
+            "best_watchlist_wallet=0xwatchlist\nbest_watchlist_category=TECH\n",
+        )
+        .expect("summary written");
+
+        let options =
+            parse_args(&["--summary".into(), summary.display().to_string()]).expect("parse");
+
+        assert_eq!(resolve_wallet(&options).expect("wallet"), "0xwatchlist");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn render_env_output_promotes_summary_metadata_for_watchlist_wallet() {
+        let root = unique_temp_dir("summary-env");
+        fs::create_dir_all(&root).expect("temp dir created");
+        let summary = root.join("wallet-filter-v1-summary.txt");
+        fs::write(
+            &summary,
+            concat!(
+                "best_watchlist_wallet=0xwatchlist\n",
+                "best_watchlist_category=TECH\n",
+                "best_watchlist_reasons=none\n",
+                "watchlist_candidates=TECH:stable:84,POLITICS:downgrade:59\n",
+            ),
+        )
+        .expect("summary written");
+
+        let options =
+            parse_args(&["--summary".into(), summary.display().to_string()]).expect("parse");
+        let rendered = render_env_output("0xwatchlist", &options);
+        let metadata = read_summary_metadata(&summary.display().to_string()).expect("metadata");
+
+        assert_eq!(metadata.category.as_deref(), Some("TECH"));
+        assert_eq!(metadata.review_status.as_deref(), Some("stable"));
+        assert_eq!(metadata.score.as_deref(), Some("84"));
+        assert!(rendered.contains("COPYTRADER_SELECTED_CATEGORY=TECH"));
+        assert!(rendered.contains("COPYTRADER_SELECTED_REVIEW_STATUS=stable"));
+        assert!(rendered.contains("COPYTRADER_SELECTED_SCORE=84"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }

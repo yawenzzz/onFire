@@ -748,9 +748,28 @@ cargo run --bin run_copytrader_ansi_dashboard -- --root ..
 
 - smart-money summary
 - selected leader
+- tracked activity
 - operator lane
 - position targeting
 - auto-guarded 最新报告
+
+其中 `tracked activity` 会优先读取：
+
+- `.omx/live-activity/<wallet>/latest-activity.json`
+
+所以如果你已经选中了一个活跃钱包，并且想让 ANSI 里看到它最新一笔活动，最短操作就是：
+
+```bash
+cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1:7897 --poll-count 1
+cargo run --bin run_copytrader_ansi_dashboard -- --root .. --once
+```
+
+这样面板里会直接显示：
+
+- `tx`
+- `side`
+- `slug`
+- `timestamp`
 
 如果你只想看一帧，不要持续刷新：
 
