@@ -405,6 +405,10 @@ fn render_operator_demo_report(root: &Path) -> Result<String, RootEnvLoadError> 
     );
     lines.push("smart_wallet_filter_hint=discover_copy_leader 严格按 rust-copytrader/wallet_filter_v1.md 做 smart money 筛选".to_string());
     lines.push(
+        "scan_copy_leader_categories_hint=cd rust-copytrader && cargo run --bin scan_copy_leader_categories -- --discovery-dir ../.omx/discovery --categories SPECIALIST --proxy http://127.0.0.1:7897 --limit 1"
+            .to_string(),
+    );
+    lines.push(
         "run_copytrader_operator_flow_hint=cd rust-copytrader && cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery --live-submit-gate"
             .to_string(),
     );
@@ -1278,6 +1282,7 @@ mod tests {
         assert!(report.contains("activity_selection_hint=cd rust-copytrader && cargo run --bin select_copy_leader -- --activity ../.omx/discovery/activity-0xpoly-address-trade.json --output ../.omx/discovery/selected-leader.env"));
         assert!(report.contains("discover_copy_leader_hint=cd rust-copytrader && cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery --category SPECIALIST"));
         assert!(report.contains("smart_wallet_filter_hint=discover_copy_leader 严格按 rust-copytrader/wallet_filter_v1.md 做 smart money 筛选"));
+        assert!(report.contains("scan_copy_leader_categories_hint=cd rust-copytrader && cargo run --bin scan_copy_leader_categories -- --discovery-dir ../.omx/discovery --categories SPECIALIST --proxy http://127.0.0.1:7897 --limit 1"));
         assert!(report.contains("run_copytrader_operator_flow_hint=cd rust-copytrader && cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery --live-submit-gate"));
         assert!(report.contains("watch_copy_leader_activity_hint=cd rust-copytrader && cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1:7897 --poll-count 1"));
         assert!(report.contains("run_copytrader_guarded_cycle_hint=cd rust-copytrader && cargo run --bin run_copytrader_guarded_cycle -- --root .."));

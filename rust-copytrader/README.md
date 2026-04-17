@@ -303,6 +303,56 @@ cat ../.omx/discovery/wallet-filter-v1-report.txt
 - unique markets / traded markets
 - 以及被踢掉的原因
 
+### 7.1b 如果你想一口气扫多个类别
+
+如果你不是只看一个类别，而是想看：
+
+- `SPORTS`
+- `POLITICS`
+- `CRYPTO`
+- 或整个 `SPECIALIST`
+
+那就直接跑：
+
+```bash
+cd ~/onFire/rust-copytrader
+cargo run --bin scan_copy_leader_categories -- \
+  --discovery-dir ../.omx/discovery \
+  --categories SPECIALIST \
+  --proxy http://127.0.0.1:7897 \
+  --limit 1 \
+  --connect-timeout-ms 5000 \
+  --max-time-ms 12000
+```
+
+这个命令会：
+- 按类别调用 `discover_copy_leader`
+- 保留每个类别自己的 report
+- 再生成一份总汇总：
+  - `.omx/discovery/wallet-filter-v1-summary.txt`
+
+你最该先看：
+
+```bash
+cat ../.omx/discovery/wallet-filter-v1-summary.txt
+```
+
+它会告诉你：
+- 哪些 category 直接被拒了
+- 哪些 category 通过了
+- 每个 category 对应的 report 路径
+
+比如会看到这种结构：
+
+```text
+== category SPORTS ==
+status=rejected
+error=...
+report_path=../.omx/discovery/wallet-filter-v1-sports.txt
+```
+
+所以现在不是只能“逐个手工试 category”，而是已经有了**批量扫 smart-money category 池**的入口。
+
 ### 7.2 你也可以分开跑
 
 抓榜：
