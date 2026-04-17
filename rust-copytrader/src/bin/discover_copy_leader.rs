@@ -346,9 +346,25 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
         let _ = write_output_file(&report_path, report.as_bytes());
         let selected_leader_env_path = discovery_dir.join("selected-leader.env");
         let _ = fs::remove_file(&selected_leader_env_path);
+        let rejection_summary = cards
+            .iter()
+            .max_by_key(|candidate| candidate.score_total)
+            .map(|candidate| {
+                format!(
+                    " top_rejected_wallet={} top_rejection_reasons={}",
+                    candidate.seed.wallet,
+                    if candidate.rejection_reasons.is_empty() {
+                        "none".to_string()
+                    } else {
+                        candidate.rejection_reasons.join(",")
+                    }
+                )
+            })
+            .unwrap_or_default();
         format!(
-            "wallet_filter_v1 rejected every candidate; see {}",
-            report_path.display()
+            "wallet_filter_v1 rejected every candidate; see {}{}",
+            report_path.display(),
+            rejection_summary
         )
     })?;
 
