@@ -135,6 +135,12 @@ pub struct WalletPoolEntry {
     pub current_value: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewDecision {
+    pub status: &'static str,
+    pub reasons: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct HoldLot {
     timestamp: u64,
@@ -585,12 +591,18 @@ pub fn render_selected_leader_env(selection: &WalletSelection, source: &str) -> 
     let metrics = &selected.metrics;
     let core_pool = core_pool(selection);
     let active_pool = active_pool(selection);
+    let review = review_decision(metrics);
     let mut lines = vec![
         format!("COPYTRADER_DISCOVERY_WALLET={}", selected.seed.wallet),
         format!("COPYTRADER_LEADER_WALLET={}", selected.seed.wallet),
         format!("COPYTRADER_SELECTED_FROM={source}"),
         format!("COPYTRADER_SELECTED_CATEGORY={}", selected.seed.category),
         format!("COPYTRADER_SELECTED_SCORE={}", selected.score_total),
+        format!("COPYTRADER_SELECTED_REVIEW_STATUS={}", review.status),
+        format!(
+            "COPYTRADER_SELECTED_REVIEW_REASONS={}",
+            render_reasons(&review.reasons)
+        ),
         format!("COPYTRADER_CORE_POOL_COUNT={}", core_pool.len()),
         format!(
             "COPYTRADER_CORE_POOL_WALLETS={}",
@@ -722,6 +734,7 @@ pub fn render_selected_leader_env(selection: &WalletSelection, source: &str) -> 
 pub fn render_wallet_filter_report(selection: &WalletSelection, source_label: &str) -> String {
     let core_pool = core_pool(selection);
     let active_pool = active_pool(selection);
+    let selected_review = review_decision(&selection.selected.metrics);
     let mut lines = vec![
         "wallet_filter_strategy=wallet_filter_v1".to_string(),
         format!("wallet_filter_source={source_label}"),
@@ -729,6 +742,11 @@ pub fn render_wallet_filter_report(selection: &WalletSelection, source_label: &s
         format!("selected_wallet={}", selection.selected.seed.wallet),
         format!("selected_category={}", selection.selected.seed.category),
         format!("selected_score={}", selection.selected.score_total),
+        format!("selected_review_status={}", selected_review.status),
+        format!(
+            "selected_review_reasons={}",
+            render_reasons(&selected_review.reasons)
+        ),
         format!("core_pool_count={}", core_pool.len()),
         format!("core_pool_wallets={}", render_pool_wallets(&core_pool)),
         format!("active_pool_count={}", active_pool.len()),
@@ -780,6 +798,12 @@ fn render_candidate_sections(selected_wallet: &str, candidates: &[WalletScoreCar
         lines.push(format!("non_maker_score={}", candidate.non_maker_score));
         lines.push(format!("copyable_score={}", candidate.copyable_score));
         lines.push(format!("simplicity_score={}", candidate.simplicity_score));
+        let review = review_decision(&candidate.metrics);
+        lines.push(format!("review_status={}", review.status));
+        lines.push(format!(
+            "review_reasons={}",
+            render_reasons(&review.reasons)
+        ));
         lines.push(format!(
             "week_rank={}",
             format_optional_u64(candidate.seed.week_rank)
@@ -895,6 +919,43 @@ fn render_pool_wallets(pool: &[WalletPoolEntry]) -> String {
         .map(|entry| format!("{}:{}", entry.wallet, entry.score_total))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+pub fn review_decision(metrics: &WalletMetrics) -> ReviewDecision {
+    let mut reasons = Vec::new();
+    if metrics.maker_rebate_count > 0 {
+        reasons.push("maker_rebate_detected".to_string());
+    }
+    if metrics.tail24_ratio > 0.15 {
+        reasons.push("tail24_above_15pct".to_string());
+    }
+    if metrics.median_hold_secs.unwrap_or(0) < 12 * 60 * 60 {
+        reasons.push("median_hold_below_12h".to_string());
+    }
+    if metrics.category_purity < 0.50 {
+        reasons.push("category_purity_below_50pct".to_string());
+    }
+    if metrics.neg_risk_share > 0.20 {
+        reasons.push("neg_risk_share_above_20pct".to_string());
+    }
+
+    let status = if reasons.is_empty() {
+        "stable"
+    } else if metrics.maker_rebate_count > 0 || metrics.neg_risk_share > 0.20 {
+        "blacklist"
+    } else {
+        "downgrade"
+    };
+
+    ReviewDecision { status, reasons }
+}
+
+fn render_reasons(reasons: &[String]) -> String {
+    if reasons.is_empty() {
+        "none".to_string()
+    } else {
+        reasons.join(",")
+    }
 }
 
 pub fn now_unix_secs() -> u64 {
@@ -1259,7 +1320,7 @@ mod tests {
         enrich_market_record_from_event, evaluate_candidate, parse_activity_records,
         parse_iso8601_timestamp, parse_leaderboard_entries, parse_market_record,
         parse_position_records, parse_total_value, parse_traded_count, render_selected_leader_env,
-        resolve_category_scope,
+        resolve_category_scope, review_decision,
     };
     use std::collections::BTreeMap;
 
@@ -1497,11 +1558,73 @@ mod tests {
         let active = active_pool(&selection);
         assert!(env.contains("COPYTRADER_SELECTED_CATEGORY=SPORTS"));
         assert!(env.contains("COPYTRADER_SELECTED_SCORE=95"));
+        assert!(env.contains("COPYTRADER_SELECTED_REVIEW_STATUS=stable"));
         assert!(env.contains("COPYTRADER_CORE_POOL_COUNT=1"));
         assert!(env.contains("COPYTRADER_ACTIVE_POOL_COUNT=1"));
         assert_eq!(core.len(), 1);
         assert_eq!(active.len(), 1);
         assert_eq!(core[0].wallet, "0xwallet");
+    }
+
+    #[test]
+    fn review_decision_blacklists_maker_and_downgrades_tail_risk() {
+        let blacklist = review_decision(&super::WalletMetrics {
+            traded_markets: 30,
+            current_value: 10.0,
+            current_value_to_month_vol: 0.1,
+            maker_rebate_count: 1,
+            flip60_ratio: 0.0,
+            median_hold_secs: Some(48 * 3600),
+            p75_hold_secs: Some(72 * 3600),
+            tail24_ratio: 0.0,
+            tail72_ratio: 0.0,
+            neg_risk_share: 0.0,
+            copyable_ratio: 1.0,
+            category_purity: 1.0,
+            unique_markets_90d: 10,
+            total_net_buy_usdc: 100.0,
+            latest_trade: LatestTradeSummary {
+                timestamp: None,
+                side: None,
+                slug: None,
+                tx: None,
+            },
+        });
+        assert_eq!(blacklist.status, "blacklist");
+        assert!(
+            blacklist
+                .reasons
+                .contains(&"maker_rebate_detected".to_string())
+        );
+
+        let downgrade = review_decision(&super::WalletMetrics {
+            traded_markets: 30,
+            current_value: 10.0,
+            current_value_to_month_vol: 0.1,
+            maker_rebate_count: 0,
+            flip60_ratio: 0.0,
+            median_hold_secs: Some(48 * 3600),
+            p75_hold_secs: Some(72 * 3600),
+            tail24_ratio: 0.16,
+            tail72_ratio: 0.2,
+            neg_risk_share: 0.0,
+            copyable_ratio: 1.0,
+            category_purity: 1.0,
+            unique_markets_90d: 10,
+            total_net_buy_usdc: 100.0,
+            latest_trade: LatestTradeSummary {
+                timestamp: None,
+                side: None,
+                slug: None,
+                tx: None,
+            },
+        });
+        assert_eq!(downgrade.status, "downgrade");
+        assert!(
+            downgrade
+                .reasons
+                .contains(&"tail24_above_15pct".to_string())
+        );
     }
 
     #[test]

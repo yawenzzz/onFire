@@ -325,6 +325,15 @@ cat wallet_filter_metrics_explained.md
 
 里面已经把 `score_total`、`maker_rebate_count`、`tail24`、`copyable_ratio`、`rejection_reasons` 这些指标全部翻成人话了。
 
+另外现在 report 里还会多出：
+
+- `review_status`
+- `review_reasons`
+
+这两个字段不是“这轮筛选过不过”，而是：
+
+> **如果一个钱包已经进了你的长期观察池，现在是不是该降级 / 拉黑。**
+
 ### 7.1b 如果你想一口气扫多个类别
 
 如果你不是只看一个类别，而是想看：

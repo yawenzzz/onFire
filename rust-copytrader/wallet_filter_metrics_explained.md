@@ -162,6 +162,71 @@ rejection_reasons=maker_rebate_detected,tail24_above_10pct,tail72_above_25pct,un
 
 ---
 
+## `review_status`
+这个不是“当前这轮筛选过不过”，而是：
+
+> **如果一个钱包已经进了你的长期观察池，现在它该继续观察、降级，还是直接拉黑。**
+
+当前会出现三种值：
+
+- `stable`
+  - 没触发池子维护红旗
+- `downgrade`
+  - 触发了池子维护红旗，但还没到明确做市/结构失真那种强拉黑程度
+- `blacklist`
+  - 直接建议拉黑
+
+注意：
+
+> `review_status` 和 `status` 不是一回事。  
+> `status` 是这轮 strict `wallet_filter_v1` 的结果；  
+> `review_status` 是给你做“长期池子维护”的。
+
+所以会出现一种情况：
+
+- `status=rejected`
+- 但 `review_status=stable`
+
+这不矛盾。  
+意思是：
+
+> 它没通过你当前最严格的“入池门槛”，  
+> 但如果它本来已经在观察池里，也不一定到了立刻拉黑的程度。
+
+---
+
+## `review_reasons`
+这个字段解释：
+
+> `review_status` 为什么会变成 `downgrade` 或 `blacklist`
+
+当前这版的 review 规则主要对应 `wallet_filter_v1.md` 里“每周重算一次分数，触发降级/拉黑”的那段。
+
+目前会出现这些 review reason：
+
+- `maker_rebate_detected`
+  - 出现做市返佣，直接强红旗
+- `tail24_above_15pct`
+  - 尾盘风险上升到 15% 以上
+- `median_hold_below_12h`
+  - 持有期明显变短
+- `category_purity_below_50pct`
+  - 类别纯度掉得太厉害
+- `neg_risk_share_above_20pct`
+  - 结构仓位占比太高
+
+如果是：
+
+```text
+review_reasons=none
+```
+
+就表示：
+
+> 按当前这版池子维护规则，它没有触发额外的降级/拉黑信号。
+
+---
+
 ## `core_pool_count`
 核心池数量。
 
