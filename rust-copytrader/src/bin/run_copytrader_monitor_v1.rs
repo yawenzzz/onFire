@@ -505,7 +505,10 @@ fn run_position_cycle(
         blocker_summary: blocker_summary.clone(),
     });
 
-    if let Some(asset) = values.get("target[0].asset") {
+    if let Some(asset) = values
+        .get("target[0].slug")
+        .or_else(|| values.get("target[0].asset"))
+    {
         let total_target = values
             .get("diagnostic_total_target_risk_usdc")
             .and_then(|value| value.parse::<i64>().ok())
@@ -851,7 +854,7 @@ mod tests {
         let position = root.join("run_position_targeting_demo");
         write_executable(
             &position,
-            "#!/bin/sh\nprintf 'leader_position_count=1\nleader_spot_value_usdc=5500000\ntarget_count=1\ndelta_count=0\ndiagnostic_total_target_risk_usdc=2000000\ndiagnostic_stale_asset_count=1\ndiagnostic_blocked_asset_count=1\ndiagnostic_blocker_summary=zero_target:1,tail_lt24h:1\ntarget[0].asset=asset-1\n'\n",
+            "#!/bin/sh\nprintf 'leader_position_count=1\nleader_spot_value_usdc=5500000\ntarget_count=1\ndelta_count=0\ndiagnostic_total_target_risk_usdc=2000000\ndiagnostic_stale_asset_count=1\ndiagnostic_blocked_asset_count=1\ndiagnostic_blocker_summary=zero_target:1,tail_lt24h:1\ntarget[0].asset=asset-1\ntarget[0].slug=market-a\n'\n",
         );
 
         let options = super::Options {
@@ -884,6 +887,7 @@ mod tests {
         assert!(frame.contains("category=TECH"));
         assert!(frame.contains("tracked activity"));
         assert!(frame.contains("asset=asset-1"));
+        assert!(frame.contains("SKIP risk_cap"));
         assert!(frame.contains("position targeting"));
         assert!(frame.contains("blocker_summary="));
         assert!(frame.contains("target_count=1 delta_count=0"));

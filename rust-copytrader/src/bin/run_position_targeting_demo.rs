@@ -190,6 +190,7 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
     });
 
     let blocker_summary = summarize_blockers(&positions, &metas, &output, &cfg, sizing_now_ms);
+    let asset_labels = asset_labels(&positions);
     let report_path = write_report(
         &root,
         &wallet,
@@ -198,6 +199,7 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
         &output,
         &selected_env,
         &blocker_summary,
+        &asset_labels,
     )?;
 
     let mut lines = vec![
@@ -244,6 +246,9 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
     ];
     for (index, target) in output.targets.iter().enumerate().take(5) {
         lines.push(format!("target[{index}].asset={}", target.asset.0));
+        if let Some(label) = asset_labels.get(&target.asset) {
+            lines.push(format!("target[{index}].slug={label}"));
+        }
         lines.push(format!(
             "target[{index}].risk_usdc={}",
             target.signed_target_risk_usdc
@@ -256,6 +261,9 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
     }
     for (index, delta) in output.deltas.iter().enumerate().take(5) {
         lines.push(format!("delta[{index}].asset={}", delta.asset.0));
+        if let Some(label) = asset_labels.get(&delta.asset) {
+            lines.push(format!("delta[{index}].slug={label}"));
+        }
         lines.push(format!(
             "delta[{index}].target_risk_usdc={}",
             delta.target_risk_usdc
@@ -431,6 +439,17 @@ fn summarize_blockers(
     }
 }
 
+fn asset_labels(
+    positions: &[rust_copytrader::domain::position_targeting::LeaderPosition],
+) -> HashMap<AssetId, String> {
+    let mut out = HashMap::new();
+    for position in positions {
+        out.entry(position.asset.clone())
+            .or_insert_with(|| position.slug.clone());
+    }
+    out
+}
+
 fn read_env_value(path: &Path, keys: &[&str]) -> Result<String, String> {
     read_optional_env_value(path, keys)
         .ok_or_else(|| format!("missing one of {} in {}", keys.join(","), path.display()))
@@ -466,6 +485,7 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_report(
     root: &Path,
     wallet: &str,
@@ -474,6 +494,7 @@ fn write_report(
     output: &rust_copytrader::domain::position_targeting::SizingOutput,
     selected_env: &Path,
     blocker_summary: &str,
+    asset_labels: &HashMap<AssetId, String>,
 ) -> Result<PathBuf, String> {
     let report_dir = root.join(".omx/position-targeting");
     fs::create_dir_all(&report_dir)
@@ -522,9 +543,17 @@ fn write_report(
         format!("diagnostic_blocker_summary={}", blocker_summary),
     ];
     for target in output.targets.iter().take(10) {
+        let label = asset_labels
+            .get(&target.asset)
+            .map(String::as_str)
+            .unwrap_or("");
         lines.push(format!(
-            "target asset={} risk_usdc={} confidence_bps={} stale={}",
-            target.asset.0, target.signed_target_risk_usdc, target.confidence_bps, target.stale
+            "target asset={} slug={} risk_usdc={} confidence_bps={} stale={}",
+            target.asset.0,
+            label,
+            target.signed_target_risk_usdc,
+            target.confidence_bps,
+            target.stale
         ));
     }
     fs::write(&report_path, lines.join("\n"))
@@ -609,6 +638,7 @@ mod tests {
         assert!(joined.contains("target_count=1"));
         assert!(joined.contains("delta_count=1"));
         assert!(joined.contains("diagnostic_blocker_summary=none_detected"));
+        assert!(joined.contains("target[0].slug=market-1"));
         assert!(joined.contains("report_path="));
 
         let report_path = joined
@@ -619,6 +649,7 @@ mod tests {
         assert!(report.contains("leader_ewma_value_usdc=55000000"));
         assert!(report.contains("selected_leader_review_status=stable"));
         assert!(report.contains("diagnostic_blocker_summary=none_detected"));
+        assert!(report.contains("slug=market-1"));
 
         fs::remove_dir_all(root).expect("temp root removed");
     }
