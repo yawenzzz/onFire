@@ -420,12 +420,8 @@ fn load_candidate_data(
         "activity-{}-90d.json",
         sanitize_for_filename(&seed.wallet)
     ));
-    let activities_body = fetch_activity_history(options, &seed.wallet, now_ts)?;
-    write_output_file(&activity_path, activities_body.as_bytes()).map_err(|error| {
-        format!(
-            "failed to write activity artifact {}: {error}",
-            activity_path.display()
-        )
+    let activities_body = load_or_fetch_json(&activity_path, || {
+        fetch_activity_history(options, &seed.wallet, now_ts)
     })?;
     let activities = parse_activity_records(&activities_body);
 
@@ -433,14 +429,10 @@ fn load_candidate_data(
         "positions-{}.json",
         sanitize_for_filename(&seed.wallet)
     ));
-    let positions_body = fetch_simple_json(
-        &build_positions_url(&options.positions_base_url, &seed.wallet),
-        options,
-    )?;
-    write_output_file(&positions_path, positions_body.as_bytes()).map_err(|error| {
-        format!(
-            "failed to write positions artifact {}: {error}",
-            positions_path.display()
+    let positions_body = load_or_fetch_json(&positions_path, || {
+        fetch_simple_json(
+            &build_positions_url(&options.positions_base_url, &seed.wallet),
+            options,
         )
     })?;
     let positions = parse_position_records(&positions_body);
@@ -449,14 +441,10 @@ fn load_candidate_data(
         "value-{}.json",
         sanitize_for_filename(&seed.wallet)
     ));
-    let value_body = fetch_simple_json(
-        &build_value_url(&options.value_base_url, &seed.wallet),
-        options,
-    )?;
-    write_output_file(&value_path, value_body.as_bytes()).map_err(|error| {
-        format!(
-            "failed to write value artifact {}: {error}",
-            value_path.display()
+    let value_body = load_or_fetch_json(&value_path, || {
+        fetch_simple_json(
+            &build_value_url(&options.value_base_url, &seed.wallet),
+            options,
         )
     })?;
     let total_value = parse_total_value(&value_body);
@@ -465,14 +453,10 @@ fn load_candidate_data(
         "traded-{}.json",
         sanitize_for_filename(&seed.wallet)
     ));
-    let traded_body = fetch_simple_json(
-        &build_traded_url(&options.traded_base_url, &seed.wallet),
-        options,
-    )?;
-    write_output_file(&traded_path, traded_body.as_bytes()).map_err(|error| {
-        format!(
-            "failed to write traded artifact {}: {error}",
-            traded_path.display()
+    let traded_body = load_or_fetch_json(&traded_path, || {
+        fetch_simple_json(
+            &build_traded_url(&options.traded_base_url, &seed.wallet),
+            options,
         )
     })?;
     let traded_markets = parse_traded_count(&traded_body).unwrap_or(0);
@@ -517,6 +501,21 @@ fn load_candidate_data(
         value_path,
         traded_path,
     })
+}
+
+fn load_or_fetch_json(
+    path: &Path,
+    fetch: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    if path.exists() {
+        return fs::read_to_string(path).map_err(|error| {
+            format!("failed to read cached artifact {}: {error}", path.display())
+        });
+    }
+    let body = fetch()?;
+    write_output_file(path, body.as_bytes())
+        .map_err(|error| format!("failed to write artifact {}: {error}", path.display()))?;
+    Ok(body)
 }
 
 fn collect_market_slugs(
@@ -1044,6 +1043,109 @@ mod tests {
         let report = fs::read_to_string(discovery_dir.join("wallet-filter-v1-report.txt"))
             .expect("report should exist");
         assert!(report.contains("selected_wallet=none"));
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn execute_reuses_cached_profile_artifacts_without_refetching() {
+        let root = unique_temp_dir("cached-profile");
+        let discovery_dir = root.join("discovery");
+        fs::create_dir_all(&discovery_dir).expect("discovery dir created");
+
+        fs::write(
+            discovery_dir.join("activity-0xgood-90d.json"),
+            concat!(
+                "[",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770000000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg1\",\"asset\":\"a1\",\"side\":\"BUY\",\"slug\":\"market-1\",\"conditionId\":\"c1\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770086400,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg2\",\"asset\":\"a1\",\"side\":\"SELL\",\"slug\":\"market-1\",\"conditionId\":\"c1\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770100000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg3\",\"asset\":\"a2\",\"side\":\"BUY\",\"slug\":\"market-2\",\"conditionId\":\"c2\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770300000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg4\",\"asset\":\"a2\",\"side\":\"SELL\",\"slug\":\"market-2\",\"conditionId\":\"c2\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770310000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg5\",\"asset\":\"a3\",\"side\":\"BUY\",\"slug\":\"market-3\",\"conditionId\":\"c3\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770500000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg6\",\"asset\":\"a3\",\"side\":\"SELL\",\"slug\":\"market-3\",\"conditionId\":\"c3\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770510000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg7\",\"asset\":\"a4\",\"side\":\"BUY\",\"slug\":\"market-4\",\"conditionId\":\"c4\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770700000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg8\",\"asset\":\"a4\",\"side\":\"SELL\",\"slug\":\"market-4\",\"conditionId\":\"c4\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770710000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg9\",\"asset\":\"a5\",\"side\":\"BUY\",\"slug\":\"market-5\",\"conditionId\":\"c5\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770900000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg10\",\"asset\":\"a5\",\"side\":\"SELL\",\"slug\":\"market-5\",\"conditionId\":\"c5\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770910000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg11\",\"asset\":\"a6\",\"side\":\"BUY\",\"slug\":\"market-6\",\"conditionId\":\"c6\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1771100000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg12\",\"asset\":\"a6\",\"side\":\"SELL\",\"slug\":\"market-6\",\"conditionId\":\"c6\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1771110000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg13\",\"asset\":\"a7\",\"side\":\"BUY\",\"slug\":\"market-7\",\"conditionId\":\"c7\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1771300000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg14\",\"asset\":\"a7\",\"side\":\"SELL\",\"slug\":\"market-7\",\"conditionId\":\"c7\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1771310000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg15\",\"asset\":\"a8\",\"side\":\"BUY\",\"slug\":\"market-8\",\"conditionId\":\"c8\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1771500000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg16\",\"asset\":\"a8\",\"side\":\"SELL\",\"slug\":\"market-8\",\"conditionId\":\"c8\"}",
+                "]"
+            ),
+        )
+        .expect("activity cached");
+        fs::write(
+            discovery_dir.join("positions-0xgood.json"),
+            "[{\"proxyWallet\":\"0xgood\",\"asset\":\"a1\",\"conditionId\":\"c1\",\"slug\":\"market-1\",\"currentValue\":500,\"endDate\":\"2026-12-31T00:00:00Z\",\"negativeRisk\":false}]",
+        )
+        .expect("positions cached");
+        fs::write(
+            discovery_dir.join("value-0xgood.json"),
+            "[{\"user\":\"0xgood\",\"value\":500}]",
+        )
+        .expect("value cached");
+        fs::write(
+            discovery_dir.join("traded-0xgood.json"),
+            "{\"user\":\"0xgood\",\"traded\":25}",
+        )
+        .expect("traded cached");
+
+        let markets_dir = discovery_dir.join("markets");
+        fs::create_dir_all(&markets_dir).expect("markets dir created");
+        for slug in [
+            "market-1", "market-2", "market-3", "market-4", "market-5", "market-6", "market-7",
+            "market-8",
+        ] {
+            fs::write(
+                markets_dir.join(format!("{slug}.json")),
+                format!(
+                    "{{\"slug\":\"{slug}\",\"conditionId\":\"c\",\"category\":\"SPORTS\",\"endDate\":\"2026-12-31T00:00:00Z\",\"acceptingOrders\":true,\"enableOrderBook\":true,\"liquidityClob\":90000,\"volume24hrClob\":50000,\"negRisk\":false}}"
+                ),
+            )
+            .expect("market cached");
+        }
+
+        let curl_stub = root.join("curl-stub.sh");
+        fs::write(
+            &curl_stub,
+            concat!(
+                "#!/usr/bin/env bash\n",
+                "url=\"${@: -1}\"\n",
+                "if [[ \"$url\" == *\"leaderboard\"* && \"$url\" == *\"category=SPORTS\"* && \"$url\" == *\"timePeriod=WEEK\"* && \"$url\" == *\"orderBy=PNL\"* ]]; then\n",
+                "  printf '[{\"rank\":\"1\",\"proxyWallet\":\"0xgood\",\"userName\":\"good\",\"vol\":10000,\"pnl\":800}]'\n",
+                "elif [[ \"$url\" == *\"leaderboard\"* && \"$url\" == *\"category=SPORTS\"* && \"$url\" == *\"timePeriod=MONTH\"* && \"$url\" == *\"orderBy=PNL\"* ]]; then\n",
+                "  printf '[{\"rank\":\"2\",\"proxyWallet\":\"0xgood\",\"userName\":\"good\",\"vol\":20000,\"pnl\":1600}]'\n",
+                "elif [[ \"$url\" == *\"leaderboard\"* && \"$url\" == *\"category=SPORTS\"* && \"$url\" == *\"timePeriod=ALL\"* && \"$url\" == *\"orderBy=PNL\"* ]]; then\n",
+                "  printf '[{\"rank\":\"5\",\"proxyWallet\":\"0xgood\",\"userName\":\"good\",\"vol\":40000,\"pnl\":5000}]'\n",
+                "elif [[ \"$url\" == *\"leaderboard\"* && \"$url\" == *\"category=SPORTS\"* && \"$url\" == *\"timePeriod=MONTH\"* && \"$url\" == *\"orderBy=VOL\"* ]]; then\n",
+                "  printf '[]'\n",
+                "else\n",
+                "  echo \"unexpected non-cached fetch: $url\" >&2\n",
+                "  exit 1\n",
+                "fi\n"
+            ),
+        )
+        .expect("stub written");
+        let mut perms = fs::metadata(&curl_stub).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&curl_stub, perms).expect("perms");
+
+        let options = parse_args(&[
+            "--curl-bin".into(),
+            curl_stub.display().to_string(),
+            "--discovery-dir".into(),
+            discovery_dir.display().to_string(),
+            "--category".into(),
+            "SPORTS".into(),
+        ])
+        .expect("parse");
+
+        let artifacts = execute(&options).expect("execute should succeed from cache");
+        assert_eq!(artifacts.selected_wallet, "0xgood");
+        assert!(artifacts.selected_leader_env_path.exists());
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
