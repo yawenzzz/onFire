@@ -260,6 +260,31 @@ fn render_summary(results: &[CategoryScanResult]) -> String {
                 Reverse(result.top_rejected_score.unwrap_or(i64::MIN)),
             )
         });
+    let watchlist_candidates = rejected
+        .iter()
+        .filter(|result| result.review_status.as_deref() != Some("blacklist"))
+        .collect::<Vec<_>>();
+    let mut watchlist_candidates = watchlist_candidates;
+    watchlist_candidates.sort_by_key(|result| {
+        (
+            result.review_status.as_deref() != Some("stable"),
+            result.rejection_reason_count(),
+            Reverse(result.top_rejected_score.unwrap_or(i64::MIN)),
+        )
+    });
+    let watchlist_candidates_rendered = watchlist_candidates
+        .iter()
+        .take(3)
+        .map(|result| {
+            format!(
+                "{}:{}:{}",
+                result.category,
+                result.review_status.as_deref().unwrap_or("unknown"),
+                result.top_rejected_score.unwrap_or(i64::MIN)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     let mut rejected_ranked = rejected.to_vec();
     rejected_ranked.sort_by_key(|result| {
         (
@@ -349,6 +374,15 @@ fn render_summary(results: &[CategoryScanResult]) -> String {
             best_watchlist
                 .and_then(|result| result.review_reasons.as_deref())
                 .unwrap_or("none")
+        ),
+        format!("watchlist_candidate_count={}", watchlist_candidates.len()),
+        format!(
+            "watchlist_candidates={}",
+            if watchlist_candidates_rendered.is_empty() {
+                "none".to_string()
+            } else {
+                watchlist_candidates_rendered
+            }
         ),
         format!(
             "closest_rejected_categories={}",
@@ -572,7 +606,7 @@ mod tests {
                 "  printf 'selected_wallet=0xgood\\nselected_score=88\\n'\n",
                 "  printf 'wallet_filter_strategy=wallet_filter_v1\\nselected_wallet=0xgood\\nreview_status=stable\\nreview_reasons=none\\n' > \"$dir/wallet-filter-v1-sports.txt\"\n",
                 "else\n",
-                "  printf 'wallet_filter_strategy=wallet_filter_v1\\nselected_wallet=none\\nreview_status=stable\\nreview_reasons=none\\nrejection_reasons=maker_rebate_detected\\nscore_total=77\\n' > \"$dir/wallet-filter-v1-crypto.txt\"\n",
+                "  printf 'wallet_filter_strategy=wallet_filter_v1\\nselected_wallet=none\\nreview_status=stable\\nreview_reasons=none\\n== candidate 0 ==\\nscore_total=77\\nrejection_reasons=maker_rebate_detected\\n' > \"$dir/wallet-filter-v1-crypto.txt\"\n",
                 "  echo 'wallet_filter_v1 rejected every candidate' >&2\n",
                 "  exit 1\n",
                 "fi\n"
@@ -601,7 +635,9 @@ mod tests {
         assert!(summary.contains("best_rejected_reason_count=0"));
         assert!(summary.contains("best_watchlist_category=CRYPTO"));
         assert!(summary.contains("best_watchlist_reasons=none"));
-        assert!(summary.contains("closest_rejected_categories=CRYPTO:0:-9223372036854775808"));
+        assert!(summary.contains("watchlist_candidate_count=1"));
+        assert!(summary.contains("watchlist_candidates=CRYPTO:stable:77"));
+        assert!(summary.contains("closest_rejected_categories=CRYPTO:0:77"));
         assert!(summary.contains("== category SPORTS =="));
         assert!(summary.contains("status=passed"));
         assert!(summary.contains("== category CRYPTO =="));
