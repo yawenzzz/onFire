@@ -1,4 +1,5 @@
 use rust_copytrader::adapters::positions::parse_leader_positions_payload;
+use rust_copytrader::monitor::event::SkipReason;
 use rust_copytrader::monitor::event::{MonEvent, Svc};
 use rust_copytrader::monitor::screen;
 use rust_copytrader::monitor::snapshot::{Health, Mode};
@@ -457,6 +458,26 @@ fn run_position_cycle(
     let stdout = String::from_utf8(output.stdout)
         .map_err(|error| format!("position targeting stdout was not utf-8: {error}"))?;
     let values = parse_key_values(&stdout);
+    let target_count = values
+        .get("target_count")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let delta_count = values
+        .get("delta_count")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let stale_asset_count = values
+        .get("diagnostic_stale_asset_count")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let blocked_asset_count = values
+        .get("diagnostic_blocked_asset_count")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let blocker_summary = values
+        .get("diagnostic_blocker_summary")
+        .cloned()
+        .unwrap_or_else(|| "none".to_string());
 
     let positions_count = values
         .get("leader_position_count")
@@ -477,26 +498,11 @@ fn run_position_cycle(
     });
 
     runtime.handle.emit(MonEvent::PositionDiagnostics {
-        target_count: values
-            .get("target_count")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0),
-        delta_count: values
-            .get("delta_count")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0),
-        stale_asset_count: values
-            .get("diagnostic_stale_asset_count")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0),
-        blocked_asset_count: values
-            .get("diagnostic_blocked_asset_count")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0),
-        blocker_summary: values
-            .get("diagnostic_blocker_summary")
-            .cloned()
-            .unwrap_or_else(|| "none".to_string()),
+        target_count,
+        delta_count,
+        stale_asset_count,
+        blocked_asset_count,
+        blocker_summary: blocker_summary.clone(),
     });
 
     if let Some(asset) = values.get("target[0].asset") {
@@ -504,14 +510,22 @@ fn run_position_cycle(
             .get("diagnostic_total_target_risk_usdc")
             .and_then(|value| value.parse::<i64>().ok())
             .unwrap_or(0);
-        runtime.handle.emit(MonEvent::SignalPlanned {
-            asset: asset.clone(),
-            leaders: 1,
-            fresh_ms: 0,
-            agree_bps: 10_000,
-            raw_target_usdc: total_target,
-            final_target_usdc: total_target,
-        });
+        if delta_count == 0 && blocker_summary != "none" && blocker_summary != "none_detected" {
+            runtime.handle.emit(MonEvent::SignalSkipped {
+                asset: asset.clone(),
+                reason: parse_skip_reason(&blocker_summary),
+                fresh_ms: 0,
+            });
+        } else {
+            runtime.handle.emit(MonEvent::SignalPlanned {
+                asset: asset.clone(),
+                leaders: 1,
+                fresh_ms: 0,
+                agree_bps: 10_000,
+                raw_target_usdc: total_target,
+                final_target_usdc: total_target,
+            });
+        }
     }
 
     let discovery_dir = root.join(".omx/discovery");
@@ -666,6 +680,21 @@ fn parse_key_values(content: &str) -> BTreeMap<String, String> {
         .filter_map(|line| line.split_once('='))
         .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
         .collect()
+}
+
+fn parse_skip_reason(summary: &str) -> SkipReason {
+    let reason = summary.split(',').next().unwrap_or_default();
+    let key = reason.split(':').next().unwrap_or_default();
+    match key {
+        "stale_target" => SkipReason::StaleSignal,
+        "tail_lt24h" | "tail_lt72h" => SkipReason::TailWindow,
+        "neg_risk" => SkipReason::NegRiskBlocked,
+        "closed_or_book_off" => SkipReason::StaleBook,
+        "low_copyable_liquidity" => SkipReason::NoLiquidity,
+        "zero_target" | "projected_to_zero" => SkipReason::RiskCap,
+        "below_min_effective_order" => SkipReason::CashCap,
+        _ => SkipReason::NoLiquidity,
+    }
 }
 
 fn sanitize_for_filename(value: &str) -> String {
@@ -858,6 +887,7 @@ mod tests {
         assert!(frame.contains("position targeting"));
         assert!(frame.contains("blocker_summary="));
         assert!(frame.contains("target_count=1 delta_count=0"));
+        assert!(frame.contains("SKIP"));
         assert!(root.join(".omx/monitor/latest.txt").exists());
         assert!(root.join(".omx/monitor/metrics.txt").exists());
         assert!(root.join(".omx/monitor/health.json").exists());

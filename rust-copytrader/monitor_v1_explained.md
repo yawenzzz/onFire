@@ -213,6 +213,19 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 - `SKIP ...`
   - 说明该资产被规则跳过了
 
+如果当前：
+
+- `target_count > 0`
+- 但 `delta_count = 0`
+
+monitor 现在会尽量把主 blocker 直接映射成一条 `SKIP` 信号，比如：
+
+- `SKIP tail_window`
+- `SKIP no_liquidity`
+- `SKIP risk_cap`
+
+所以你不需要只盯 `position targeting` 区块，`signals` 区块本身现在也会直接告诉你“这一轮为什么没法跟”。
+
 ---
 
 ### 4.8 position targeting
