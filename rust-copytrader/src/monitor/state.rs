@@ -827,7 +827,6 @@ impl MonState {
         let (health, alerts) =
             super::alert::evaluate(&snapshot, &self.cfg.thresholds, self.cfg.live_mode);
         snapshot.health = health;
-        snapshot.ready = snapshot.ready && snapshot.health != Health::Crit;
         snapshot.alerts = alerts;
         snapshot
     }

@@ -54,6 +54,19 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 3. 周期性运行 `run_position_targeting_demo`
 4. 把结果汇总成 ANSI / JSONL / `healthz` / `readyz` / `metrics`
 
+这里再强调一个语义：
+
+- `health`
+  - 表示当前信号/执行/数据质量是不是在恶化
+- `ready`
+  - 表示 monitor 所需前置条件是不是已经具备
+
+所以：
+
+> **`HEALTH=CRIT` 不一定等于 `ready=false`。**
+
+如果只是信号质量烂了、activity 太旧、或者 book 太差，monitor 仍然可能是 ready 的，只是会明确告诉你“不健康”。
+
 ---
 
 ## 3. 哪些数据是真实的，哪些是推导的
