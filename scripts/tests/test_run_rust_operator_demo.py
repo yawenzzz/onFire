@@ -48,6 +48,7 @@ class RunRustOperatorDemoScriptTest(unittest.TestCase):
                 sys.stdout.write("run_copytrader_guarded_cycle_hint=cd rust-copytrader && cargo run --bin run_copytrader_guarded_cycle -- --root ..\\n")
                 sys.stdout.write("run_copytrader_auto_guarded_loop_hint=cd rust-copytrader && cargo run --bin run_copytrader_auto_guarded_loop -- --root .. --proxy http://127.0.0.1:7897 --watch-poll-count 1 --loop-count 1 --live-submit-gate\\n")
                 sys.stdout.write("run_copytrader_live_submit_gate_hint=cd rust-copytrader && cargo run --bin run_copytrader_live_submit_gate -- --root .. --activity-source-verified --activity-under-budget --activity-capability-detected --positions-under-budget\\n")
+                sys.stdout.write("run_position_targeting_demo_hint=cd rust-copytrader && cargo run --bin run_position_targeting_demo -- --root ..\\n")
                 sys.stdout.write("leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a\\n")
                 """
             ),
@@ -92,6 +93,7 @@ class RunRustOperatorDemoScriptTest(unittest.TestCase):
             self.assertIn("run_copytrader_guarded_cycle_hint=", result.stdout)
             self.assertIn("run_copytrader_auto_guarded_loop_hint=", result.stdout)
             self.assertIn("run_copytrader_live_submit_gate_hint=", result.stdout)
+            self.assertIn("run_position_targeting_demo_hint=", result.stdout)
             self.assertIn("leader_selection_source_hint=", result.stdout)
 
     def test_run_rust_operator_demo_fails_closed_without_required_env(self):

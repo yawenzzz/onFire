@@ -698,6 +698,37 @@ cargo run --bin run_copytrader_live_submit_gate -- --root .. --activity-source-v
 cargo run --bin run_copytrader_live_submit_gate -- --root .. --activity-source-verified --activity-under-budget --activity-capability-detected --positions-under-budget --allow-live-submit
 ```
 
+### 15.4b Position targeting demo
+
+如果你想直接看：
+
+- 选中的 leader
+- positions / value
+- 仓位目标引擎算出来的 target / delta
+
+可以直接跑：
+
+```bash
+cargo run --bin run_position_targeting_demo -- --root ..
+```
+
+它会读取：
+- `.omx/discovery/selected-leader.env`
+- `.omx/discovery/positions-<wallet>.json`
+- `.omx/discovery/value-<wallet>.json`
+- `.omx/discovery/markets/*.json`
+
+然后输出：
+- `leader_position_count`
+- `leader_spot_value_usdc`
+- `leader_ewma_value_usdc`
+- `target_count`
+- `delta_count`
+- `diagnostic_total_target_risk_usdc`
+
+并且把报告落到：
+- `.omx/position-targeting/position-targeting-*.txt`
+
 ### 15.5 One-command operator flow
 
 ```bash
