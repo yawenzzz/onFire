@@ -27,6 +27,66 @@
 
 ---
 
+# 1.1 这些指标的数据到底从哪来
+
+先说结论：
+
+> **当前这版 `wallet_filter_v1` 不是去 Polygon 链上直接查“谁是做市商”。**
+
+现在用的数据源主要是：
+
+- Polymarket leaderboard
+- Polymarket `/activity`
+- Polymarket `/positions`
+- Polymarket `/value`
+- Polymarket `/traded`
+- Polymarket / Gamma 的 market metadata
+
+也就是说，当前判断逻辑是：
+
+> **API 行为特征判断**
+
+不是：
+
+> **链上地址取证 / Polygon 原生资金流分析**
+
+所以像下面这些判断：
+
+- `maker_rebate_count`
+- `flip60`
+- `current_value_to_month_vol`
+- `tail24`
+- `tail72`
+
+都是根据 **Polymarket 公开接口返回的交易行为** 算出来的，
+不是直接扫 Polygon 上的合约交互日志。
+
+### 当前“做市嫌疑”最强信号是什么
+
+最硬的一条就是：
+
+- `/activity` 里出现 `type = MAKER_REBATE`
+
+这在当前实现里会直接转成：
+
+- `maker_rebate_count > 0`
+- 然后触发：
+  - `maker_rebate_detected`
+
+### 当前还不是做的事情
+
+现在**没有**直接做这些链上增强判断：
+
+- Polygon 上挂单 / 撤单模式分析
+- EOA / proxy / funding route 的链上追踪
+- LP / 做市机器人的链上调用模式聚类
+- 资金流入流出图谱
+- 与 Polymarket 合约的更细粒度交互画像
+
+如果以后要做“链上增强版 smart-money 识别”，那会是 **wallet_filter_v2 / operator-enhanced** 方向，不是当前这版 `wallet_filter_v1` 的实现范围。
+
+---
+
 # 2. 一条候选结果怎么读
 
 例子：
@@ -616,4 +676,3 @@ rejection_reasons=maker_rebate_detected,tail24_above_10pct,tail72_above_25pct,un
 所以在 `wallet_filter_v1` 里，它的结论就是：
 
 > **值得研究，但不值得直接复制。**
-
