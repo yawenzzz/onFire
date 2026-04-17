@@ -26,6 +26,8 @@ use std::time::Duration;
 pub struct MonitorThresholds {
     pub main_loop_lag_warn_ms: u64,
     pub main_loop_lag_crit_ms: u64,
+    pub activity_event_age_warn_ms: u64,
+    pub activity_event_age_crit_ms: u64,
     pub market_ws_age_warn_ms: u64,
     pub market_ws_age_crit_ms: u64,
     pub user_ws_age_warn_ms: u64,
@@ -50,6 +52,8 @@ impl Default for MonitorThresholds {
         Self {
             main_loop_lag_warn_ms: 100,
             main_loop_lag_crit_ms: 300,
+            activity_event_age_warn_ms: 3_000,
+            activity_event_age_crit_ms: 10_000,
             market_ws_age_warn_ms: 3_000,
             market_ws_age_crit_ms: 10_000,
             user_ws_age_warn_ms: 5_000,

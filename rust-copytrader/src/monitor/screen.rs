@@ -80,6 +80,19 @@ pub fn render(snapshot: &UiSnapshot) -> String {
     );
     let _ = writeln!(
         out,
+        "  gamma_api: p95={}ms  429_1m={}  5xx_1m={}  rl_fill={}%{}",
+        snapshot.feeds.gamma_api.latency_p95_ms,
+        snapshot.feeds.gamma_api.status_429_1m,
+        snapshot.feeds.gamma_api.status_5xx_1m,
+        snapshot.feeds.gamma_api.rl_fill_ratio_bps / 100,
+        if snapshot.feeds.gamma_api.backoff_active {
+            " backoff"
+        } else {
+            ""
+        },
+    );
+    let _ = writeln!(
+        out,
         "  clob_api : p95={}ms  429_1m={}  5xx_1m={}  rl_fill={}%{}",
         snapshot.feeds.clob_api.latency_p95_ms,
         snapshot.feeds.clob_api.status_429_1m,
@@ -321,6 +334,7 @@ pm_feed_ws_last_msg_age_ms{{channel="market"}} {}
 pm_feed_ws_last_msg_age_ms{{channel="user"}} {}
 # TYPE pm_feed_http_latency_p95_ms gauge
 pm_feed_http_latency_p95_ms{{svc="data"}} {}
+pm_feed_http_latency_p95_ms{{svc="gamma"}} {}
 pm_feed_http_latency_p95_ms{{svc="clob"}} {}
 # TYPE pm_leader_activity_event_age_p95_ms gauge
 pm_leader_activity_event_age_p95_ms {}
@@ -362,6 +376,7 @@ pm_position_targeting_blocked_asset_count {}
         snapshot.feeds.market_ws.last_msg_age_ms,
         snapshot.feeds.user_ws.last_msg_age_ms,
         snapshot.feeds.data_api.latency_p95_ms,
+        snapshot.feeds.gamma_api.latency_p95_ms,
         snapshot.feeds.clob_api.latency_p95_ms,
         snapshot
             .leaders

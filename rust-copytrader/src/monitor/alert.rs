@@ -76,6 +76,82 @@ pub fn evaluate(
         );
     }
 
+    if let Some(leader) = snapshot.leaders.first() {
+        if leader.activity_p95_ms > thresholds.activity_event_age_crit_ms {
+            escalate(
+                &mut health,
+                &mut alerts,
+                Health::Crit,
+                "activity_event_age_high",
+                format!(
+                    "leader activity p95 {}ms > {}ms",
+                    leader.activity_p95_ms, thresholds.activity_event_age_crit_ms
+                ),
+            );
+        } else if leader.activity_p95_ms > thresholds.activity_event_age_warn_ms {
+            escalate(
+                &mut health,
+                &mut alerts,
+                Health::Warn,
+                "activity_event_age_high",
+                format!(
+                    "leader activity p95 {}ms > {}ms",
+                    leader.activity_p95_ms, thresholds.activity_event_age_warn_ms
+                ),
+            );
+        }
+
+        if leader.reconcile_p95_ms > thresholds.reconcile_crit_ms {
+            escalate(
+                &mut health,
+                &mut alerts,
+                Health::Crit,
+                "positions_slow",
+                format!(
+                    "leader reconcile p95 {}ms > {}ms",
+                    leader.reconcile_p95_ms, thresholds.reconcile_crit_ms
+                ),
+            );
+        } else if leader.reconcile_p95_ms > thresholds.reconcile_warn_ms {
+            escalate(
+                &mut health,
+                &mut alerts,
+                Health::Warn,
+                "positions_slow",
+                format!(
+                    "leader reconcile p95 {}ms > {}ms",
+                    leader.reconcile_p95_ms, thresholds.reconcile_warn_ms
+                ),
+            );
+        }
+    }
+
+    if let Some(book) = snapshot.books.first() {
+        if book.age_ms > thresholds.book_age_crit_ms {
+            escalate(
+                &mut health,
+                &mut alerts,
+                Health::Crit,
+                "book_stale",
+                format!(
+                    "book age {}ms > {}ms",
+                    book.age_ms, thresholds.book_age_crit_ms
+                ),
+            );
+        } else if book.age_ms > thresholds.book_age_warn_ms {
+            escalate(
+                &mut health,
+                &mut alerts,
+                Health::Warn,
+                "book_stale",
+                format!(
+                    "book age {}ms > {}ms",
+                    book.age_ms, thresholds.book_age_warn_ms
+                ),
+            );
+        }
+    }
+
     if snapshot.exec.copy_gap_p95_bps > thresholds.copy_gap_crit_bps {
         escalate(
             &mut health,
@@ -197,4 +273,46 @@ fn escalate(
         key: key.to_string(),
         message,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::evaluate;
+    use crate::monitor::MonitorThresholds;
+    use crate::monitor::snapshot::{
+        BookViewUi, FeedView, Health, LeaderView, PositionTargetingView, ProcView, RiskView,
+        SelectedLeaderView, TrackedActivityView, UiSnapshot,
+    };
+
+    #[test]
+    fn evaluate_flags_activity_reconcile_and_book_staleness() {
+        let snapshot = UiSnapshot {
+            proc: ProcView::default(),
+            feeds: FeedView::default(),
+            selected_leader: SelectedLeaderView::default(),
+            tracked_activity: TrackedActivityView::default(),
+            leaders: vec![LeaderView {
+                activity_p95_ms: 12_000,
+                reconcile_p95_ms: 3_500,
+                ..LeaderView::default()
+            }],
+            books: vec![BookViewUi {
+                age_ms: 3_100,
+                ..BookViewUi::default()
+            }],
+            position_targeting: PositionTargetingView::default(),
+            risk: RiskView::default(),
+            ..UiSnapshot::default()
+        };
+
+        let (health, alerts) = evaluate(&snapshot, &MonitorThresholds::default(), false);
+        assert_eq!(health, Health::Crit);
+        let keys = alerts
+            .into_iter()
+            .map(|alert| alert.key)
+            .collect::<Vec<_>>();
+        assert!(keys.contains(&"activity_event_age_high".to_string()));
+        assert!(keys.contains(&"positions_slow".to_string()));
+        assert!(keys.contains(&"book_stale".to_string()));
+    }
 }

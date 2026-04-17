@@ -105,6 +105,9 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 
 - `data_api p95`
   - activity / positions / value 相关请求耗时
+- `gamma_api p95`
+  - 当前 monitor 侧看到的 gamma 相关依赖视图
+  - 这版通常还是 0，因为 monitor 还没把 gamma 拉取链完全接成独立实时 lane
 - `429_1m`
   - 最近一分钟是否被限流
 - `market_ws / user_ws`
@@ -281,8 +284,24 @@ blocker_summary=zero_target:188,tail_lt24h:91,neg_risk:79,low_copyable_liquidity
 
 - `neg_risk_exposure_present`
 - `copy_gap_wide`
+- `activity_event_age_high`
+- `positions_slow`
+- `book_stale`
 - `main_loop_lag`
 - `market_ws_stale`
+
+如果你看到：
+
+- `HEALTH=CRIT`
+- 但交易链本身没有炸
+
+那通常说明是 monitor 认为：
+
+- activity 太旧
+- reconcile 太慢
+- 或 book 质量太差
+
+不是说程序已经 crash。
 
 ---
 
