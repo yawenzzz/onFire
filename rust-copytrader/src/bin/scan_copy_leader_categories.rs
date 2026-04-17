@@ -26,6 +26,8 @@ struct CategoryScanResult {
     top_rejected_score: Option<i64>,
     top_rejected_wallet: Option<String>,
     top_rejection_reasons: Option<String>,
+    review_status: Option<String>,
+    review_reasons: Option<String>,
     section: String,
 }
 
@@ -204,6 +206,8 @@ fn run_scan(options: &Options) -> Result<(PathBuf, bool), String> {
             parse_first_candidate_score(&section).and_then(|value| value.parse().ok());
         let top_rejected_wallet = parse_key_from_error(&section, "top_rejected_wallet=");
         let top_rejection_reasons = parse_key_from_error(&section, "top_rejection_reasons=");
+        let review_status = parse_key_from_section(&section, "review_status");
+        let review_reasons = parse_key_from_section(&section, "review_reasons");
         results.push(CategoryScanResult {
             category: category.clone(),
             status: if section.contains("\nstatus=passed\n") {
@@ -216,6 +220,8 @@ fn run_scan(options: &Options) -> Result<(PathBuf, bool), String> {
             top_rejected_score,
             top_rejected_wallet,
             top_rejection_reasons,
+            review_status,
+            review_reasons,
             section: section.clone(),
         });
         sections.push(section);
@@ -245,6 +251,15 @@ fn render_summary(results: &[CategoryScanResult]) -> String {
             Reverse(result.top_rejected_score.unwrap_or(i64::MIN)),
         )
     });
+    let best_watchlist = rejected
+        .iter()
+        .filter(|result| result.review_status.as_deref() == Some("stable"))
+        .min_by_key(|result| {
+            (
+                result.rejection_reason_count(),
+                Reverse(result.top_rejected_score.unwrap_or(i64::MIN)),
+            )
+        });
     let mut rejected_ranked = rejected.to_vec();
     rejected_ranked.sort_by_key(|result| {
         (
@@ -311,6 +326,29 @@ fn render_summary(results: &[CategoryScanResult]) -> String {
             best_reject
                 .map(|result| result.rejection_reason_count().to_string())
                 .unwrap_or_else(|| "none".to_string())
+        ),
+        format!(
+            "best_watchlist_category={}",
+            best_watchlist
+                .map(|result| result.category.as_str())
+                .unwrap_or("none")
+        ),
+        format!(
+            "best_watchlist_wallet={}",
+            best_watchlist
+                .and_then(|result| {
+                    result
+                        .top_rejected_wallet
+                        .as_deref()
+                        .or(result.selected_wallet.as_deref())
+                })
+                .unwrap_or("none")
+        ),
+        format!(
+            "best_watchlist_reasons={}",
+            best_watchlist
+                .and_then(|result| result.review_reasons.as_deref())
+                .unwrap_or("none")
         ),
         format!(
             "closest_rejected_categories={}",
@@ -532,9 +570,9 @@ mod tests {
                 "mkdir -p \"$dir\"\n",
                 "if [[ \"$category\" == \"SPORTS\" ]]; then\n",
                 "  printf 'selected_wallet=0xgood\\nselected_score=88\\n'\n",
-                "  printf 'wallet_filter_strategy=wallet_filter_v1\\nselected_wallet=0xgood\\n' > \"$dir/wallet-filter-v1-sports.txt\"\n",
+                "  printf 'wallet_filter_strategy=wallet_filter_v1\\nselected_wallet=0xgood\\nreview_status=stable\\nreview_reasons=none\\n' > \"$dir/wallet-filter-v1-sports.txt\"\n",
                 "else\n",
-                "  printf 'wallet_filter_strategy=wallet_filter_v1\\nselected_wallet=none\\nrejection_reasons=maker_rebate_detected\\n' > \"$dir/wallet-filter-v1-crypto.txt\"\n",
+                "  printf 'wallet_filter_strategy=wallet_filter_v1\\nselected_wallet=none\\nreview_status=stable\\nreview_reasons=none\\nrejection_reasons=maker_rebate_detected\\nscore_total=77\\n' > \"$dir/wallet-filter-v1-crypto.txt\"\n",
                 "  echo 'wallet_filter_v1 rejected every candidate' >&2\n",
                 "  exit 1\n",
                 "fi\n"
@@ -561,6 +599,8 @@ mod tests {
         assert!(summary.contains("best_rejected_category=CRYPTO"));
         assert!(summary.contains("best_rejected_wallet=none"));
         assert!(summary.contains("best_rejected_reason_count=0"));
+        assert!(summary.contains("best_watchlist_category=CRYPTO"));
+        assert!(summary.contains("best_watchlist_reasons=none"));
         assert!(summary.contains("closest_rejected_categories=CRYPTO:0:-9223372036854775808"));
         assert!(summary.contains("== category SPORTS =="));
         assert!(summary.contains("status=passed"));
