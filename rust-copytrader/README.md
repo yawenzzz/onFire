@@ -373,6 +373,20 @@ cat ../.omx/discovery/wallet-filter-v1-summary.txt
 - 哪些 category 通过了
 - 每个 category 对应的 report 路径
 
+而且 summary 现在还会直接给你这几组聚合指标：
+
+- `best_rejected_*`
+  - strict 下最接近通过的类别
+- `best_watchlist_*`
+  - strict 没过，但最值得继续盯的观察对象
+- `watchlist_candidates`
+  - 当前最值得盯的前几条 watchlist lane
+- `closest_rejected_categories`
+  - 当前最接近过 strict gate 的前几条 lane
+
+也就是说：
+> 现在不只是“扫完以后给你一堆 report”，而是已经会直接把最该关注的类别排出来。
+
 比如会看到这种结构：
 
 ```text
