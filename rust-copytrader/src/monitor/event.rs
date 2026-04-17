@@ -143,6 +143,15 @@ pub enum MonEvent {
         kind: String,
         recv_ts_ms: i64,
     },
+    LeaderSelected {
+        wallet: String,
+        source: String,
+        category: String,
+        score: String,
+        review_status: String,
+        core_pool: String,
+        active_pool: String,
+    },
     ActivityHit {
         leader: String,
         asset: String,

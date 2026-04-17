@@ -3,7 +3,7 @@ use super::hist::{RollingHistogram, RollingRms};
 use super::rolling::RollingCounter;
 use super::snapshot::{
     AlertView, BookViewUi, ExecView, FeedChannelView, FeedHttpView, FeedView, Health, LeaderView,
-    Mode, ProcView, RiskView, SignalView, UiSnapshot,
+    Mode, ProcView, RiskView, SelectedLeaderView, SignalView, UiSnapshot,
 };
 use super::{MonitorCfg, now_ms_u64};
 use std::collections::{BTreeMap, VecDeque};
@@ -237,6 +237,17 @@ impl AssetMon {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct SelectedLeaderMon {
+    wallet: String,
+    source: String,
+    category: String,
+    score: String,
+    review_status: String,
+    core_pool: String,
+    active_pool: String,
+}
+
 #[derive(Debug, Clone)]
 struct SignalMon {
     status: String,
@@ -328,6 +339,7 @@ pub struct MonState {
     signals: BTreeMap<String, SignalMon>,
     exec: ExecState,
     risk: RiskState,
+    selected_leader: SelectedLeaderMon,
     alerts: Vec<AlertView>,
     logs: VecDeque<String>,
 }
@@ -343,6 +355,7 @@ impl MonState {
             signals: BTreeMap::new(),
             exec: ExecState::new(),
             risk: RiskState::new(),
+            selected_leader: SelectedLeaderMon::default(),
             alerts: Vec::new(),
             logs: VecDeque::new(),
             cfg,
@@ -373,6 +386,25 @@ impl MonState {
     pub fn apply(&mut self, ev: MonEvent) {
         let now_ms = now_ms_u64();
         match ev {
+            MonEvent::LeaderSelected {
+                wallet,
+                source,
+                category,
+                score,
+                review_status,
+                core_pool,
+                active_pool,
+            } => {
+                self.selected_leader = SelectedLeaderMon {
+                    wallet,
+                    source,
+                    category,
+                    score,
+                    review_status,
+                    core_pool,
+                    active_pool,
+                };
+            }
             MonEvent::HttpDone {
                 svc,
                 status,
@@ -691,6 +723,15 @@ impl MonState {
             ready: !leaders.is_empty(),
             proc,
             feeds,
+            selected_leader: SelectedLeaderView {
+                wallet: self.selected_leader.wallet.clone(),
+                source: self.selected_leader.source.clone(),
+                category: self.selected_leader.category.clone(),
+                score: self.selected_leader.score.clone(),
+                review_status: self.selected_leader.review_status.clone(),
+                core_pool: self.selected_leader.core_pool.clone(),
+                active_pool: self.selected_leader.active_pool.clone(),
+            },
             leaders,
             books,
             signals,

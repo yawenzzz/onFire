@@ -97,6 +97,17 @@ pub struct FeedView {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SelectedLeaderView {
+    pub wallet: String,
+    pub source: String,
+    pub category: String,
+    pub score: String,
+    pub review_status: String,
+    pub core_pool: String,
+    pub active_pool: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LeaderView {
     pub leader: String,
     pub activity_p95_ms: u64,
@@ -178,6 +189,7 @@ pub struct UiSnapshot {
     pub ready: bool,
     pub proc: ProcView,
     pub feeds: FeedView,
+    pub selected_leader: SelectedLeaderView,
     pub leaders: Vec<LeaderView>,
     pub books: Vec<BookViewUi>,
     pub signals: Vec<SignalView>,

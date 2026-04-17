@@ -226,6 +226,8 @@ fn run_monitor(options: &Options) -> Result<String, String> {
         select_leader(&select_bin, &summary_path, &selected_env)?;
     }
 
+    emit_selected_leader(&runtime, &selected_env)?;
+
     let mut last_seen_tx = None::<String>;
     let mut last_operator_signature = None::<String>;
     let mut last_reconcile_ms = 0u64;
@@ -286,6 +288,45 @@ fn select_leader(select_bin: &Path, summary_path: &Path, output_path: &Path) -> 
         output_path.display().to_string(),
     ];
     run_command(select_bin, &args, Some(Path::new("."))).map(|_| ())
+}
+
+fn emit_selected_leader(runtime: &MonitorRuntime, selected_env: &Path) -> Result<(), String> {
+    let values = parse_key_values(
+        &fs::read_to_string(selected_env)
+            .map_err(|error| format!("failed to read {}: {error}", selected_env.display()))?,
+    );
+    runtime.handle.emit(MonEvent::LeaderSelected {
+        wallet: values
+            .get("COPYTRADER_DISCOVERY_WALLET")
+            .or_else(|| values.get("COPYTRADER_LEADER_WALLET"))
+            .cloned()
+            .unwrap_or_else(|| "none".to_string()),
+        source: values
+            .get("COPYTRADER_SELECTED_FROM")
+            .cloned()
+            .unwrap_or_else(|| "none".to_string()),
+        category: values
+            .get("COPYTRADER_SELECTED_CATEGORY")
+            .cloned()
+            .unwrap_or_else(|| "none".to_string()),
+        score: values
+            .get("COPYTRADER_SELECTED_SCORE")
+            .cloned()
+            .unwrap_or_else(|| "none".to_string()),
+        review_status: values
+            .get("COPYTRADER_SELECTED_REVIEW_STATUS")
+            .cloned()
+            .unwrap_or_else(|| "none".to_string()),
+        core_pool: values
+            .get("COPYTRADER_CORE_POOL_WALLETS")
+            .cloned()
+            .unwrap_or_else(|| "none".to_string()),
+        active_pool: values
+            .get("COPYTRADER_ACTIVE_POOL_WALLETS")
+            .cloned()
+            .unwrap_or_else(|| "none".to_string()),
+    });
+    Ok(())
 }
 
 fn load_selected_wallet(path: &Path) -> Result<String, String> {

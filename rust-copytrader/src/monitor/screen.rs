@@ -88,6 +88,24 @@ pub fn render(snapshot: &UiSnapshot) -> String {
     );
     out.push('\n');
 
+    section_header(&mut out, "selected leader");
+    let _ = writeln!(
+        out,
+        "  wallet={} category={} score={} review={}",
+        empty_as_none(&snapshot.selected_leader.wallet),
+        empty_as_none(&snapshot.selected_leader.category),
+        empty_as_none(&snapshot.selected_leader.score),
+        empty_as_none(&snapshot.selected_leader.review_status),
+    );
+    let _ = writeln!(
+        out,
+        "  source={} core_pool={} active_pool={}",
+        empty_as_none(&snapshot.selected_leader.source),
+        empty_as_none(&snapshot.selected_leader.core_pool),
+        empty_as_none(&snapshot.selected_leader.active_pool),
+    );
+    out.push('\n');
+
     section_header(&mut out, "leaders");
     if snapshot.leaders.is_empty() {
         let _ = writeln!(out, "  none");
@@ -297,4 +315,8 @@ fn escape_json(value: &str) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
+}
+
+fn empty_as_none(value: &str) -> &str {
+    if value.is_empty() { "none" } else { value }
 }
