@@ -146,6 +146,15 @@ pub struct SignalView {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PositionTargetingView {
+    pub target_count: u64,
+    pub delta_count: u64,
+    pub stale_asset_count: u64,
+    pub blocked_asset_count: u64,
+    pub blocker_summary: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExecView {
     pub activity_to_intent_p95_ms: u64,
     pub intent_to_post_p95_ms: u64,
@@ -193,6 +202,7 @@ pub struct UiSnapshot {
     pub leaders: Vec<LeaderView>,
     pub books: Vec<BookViewUi>,
     pub signals: Vec<SignalView>,
+    pub position_targeting: PositionTargetingView,
     pub exec: ExecView,
     pub risk: RiskView,
     pub alerts: Vec<AlertView>,

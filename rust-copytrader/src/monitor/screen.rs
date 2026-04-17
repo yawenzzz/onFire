@@ -185,6 +185,22 @@ pub fn render(snapshot: &UiSnapshot) -> String {
     }
     out.push('\n');
 
+    section_header(&mut out, "position targeting");
+    let _ = writeln!(
+        out,
+        "  target_count={} delta_count={} stale_assets={} blocked_assets={}",
+        snapshot.position_targeting.target_count,
+        snapshot.position_targeting.delta_count,
+        snapshot.position_targeting.stale_asset_count,
+        snapshot.position_targeting.blocked_asset_count,
+    );
+    let _ = writeln!(
+        out,
+        "  blocker_summary={}",
+        empty_as_none(&snapshot.position_targeting.blocker_summary),
+    );
+    out.push('\n');
+
     section_header(&mut out, "execution");
     let _ = writeln!(
         out,
@@ -261,7 +277,37 @@ pub fn render_health_json(snapshot: &UiSnapshot) -> String {
 
 pub fn render_metrics(snapshot: &UiSnapshot) -> String {
     format!(
-        "# TYPE pm_proc_uptime_sec gauge\npm_proc_uptime_sec {}\n# TYPE pm_proc_monitor_dropped_total counter\npm_proc_monitor_dropped_total {}\n# TYPE pm_proc_main_loop_lag_p95_ms gauge\npm_proc_main_loop_lag_p95_ms {}\n# TYPE pm_feed_ws_last_msg_age_ms gauge\npm_feed_ws_last_msg_age_ms{{channel=\"market\"}} {}\npm_feed_ws_last_msg_age_ms{{channel=\"user\"}} {}\n# TYPE pm_feed_http_latency_p95_ms gauge\npm_feed_http_latency_p95_ms{{svc=\"data\"}} {}\npm_feed_http_latency_p95_ms{{svc=\"clob\"}} {}\n# TYPE pm_leader_positions_count gauge\npm_leader_positions_count {}\n# TYPE pm_exec_copy_gap_bps_p95 gauge\npm_exec_copy_gap_bps_p95 {}\n# TYPE pm_track_error_rmse_bps_1m gauge\npm_track_error_rmse_bps_1m {}\n# TYPE pm_risk_deployed_usdc gauge\npm_risk_deployed_usdc {}\n# TYPE pm_risk_tail_lt24h_usdc gauge\npm_risk_tail_lt24h_usdc {}\n# TYPE pm_risk_neg_risk_usdc gauge\npm_risk_neg_risk_usdc {}\n",
+        r#"# TYPE pm_proc_uptime_sec gauge
+pm_proc_uptime_sec {}
+# TYPE pm_proc_monitor_dropped_total counter
+pm_proc_monitor_dropped_total {}
+# TYPE pm_proc_main_loop_lag_p95_ms gauge
+pm_proc_main_loop_lag_p95_ms {}
+# TYPE pm_feed_ws_last_msg_age_ms gauge
+pm_feed_ws_last_msg_age_ms{{channel="market"}} {}
+pm_feed_ws_last_msg_age_ms{{channel="user"}} {}
+# TYPE pm_feed_http_latency_p95_ms gauge
+pm_feed_http_latency_p95_ms{{svc="data"}} {}
+pm_feed_http_latency_p95_ms{{svc="clob"}} {}
+# TYPE pm_leader_positions_count gauge
+pm_leader_positions_count {}
+# TYPE pm_exec_copy_gap_bps_p95 gauge
+pm_exec_copy_gap_bps_p95 {}
+# TYPE pm_track_error_rmse_bps_1m gauge
+pm_track_error_rmse_bps_1m {}
+# TYPE pm_risk_deployed_usdc gauge
+pm_risk_deployed_usdc {}
+# TYPE pm_risk_tail_lt24h_usdc gauge
+pm_risk_tail_lt24h_usdc {}
+# TYPE pm_risk_neg_risk_usdc gauge
+pm_risk_neg_risk_usdc {}
+# TYPE pm_position_targeting_target_count gauge
+pm_position_targeting_target_count {}
+# TYPE pm_position_targeting_delta_count gauge
+pm_position_targeting_delta_count {}
+# TYPE pm_position_targeting_blocked_asset_count gauge
+pm_position_targeting_blocked_asset_count {}
+"#,
         snapshot.proc.uptime_sec,
         snapshot.proc.monitor_dropped_total,
         snapshot.proc.loop_lag_p95_ms,
@@ -279,6 +325,9 @@ pub fn render_metrics(snapshot: &UiSnapshot) -> String {
         snapshot.risk.deployed_usdc,
         snapshot.risk.tail_24h_usdc,
         snapshot.risk.neg_risk_usdc,
+        snapshot.position_targeting.target_count,
+        snapshot.position_targeting.delta_count,
+        snapshot.position_targeting.blocked_asset_count,
     )
 }
 

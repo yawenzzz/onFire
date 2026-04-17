@@ -6,7 +6,7 @@ use rust_copytrader::domain::position_targeting::{
     StrategyConfig, compute_targets,
 };
 use rust_copytrader::wallet_filter::parse_market_record;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -178,8 +178,9 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
     let books = build_synthetic_books(&positions, &metas);
     let own_positions = HashMap::<AssetId, OwnPosition>::new();
     let cfg = StrategyConfig::default();
+    let sizing_now_ms = now_ms();
     let output = compute_targets(&SizingInput {
-        now_ms: now_ms(),
+        now_ms: sizing_now_ms,
         equity_usdc: options.equity_usdc,
         leaders: std::slice::from_ref(&leader_state),
         books: &books,
@@ -188,6 +189,7 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
         cfg: &cfg,
     });
 
+    let blocker_summary = summarize_blockers(&positions, &metas, &output, &cfg, sizing_now_ms);
     let report_path = write_report(
         &root,
         &wallet,
@@ -195,6 +197,7 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
         &positions,
         &output,
         &selected_env,
+        &blocker_summary,
     )?;
 
     let mut lines = vec![
@@ -228,6 +231,15 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
             "diagnostic_total_target_risk_usdc={}",
             output.diagnostics.total_target_risk_usdc
         ),
+        format!(
+            "diagnostic_stale_asset_count={}",
+            output.diagnostics.stale_assets.len()
+        ),
+        format!(
+            "diagnostic_blocked_asset_count={}",
+            output.diagnostics.blocked_assets.len()
+        ),
+        format!("diagnostic_blocker_summary={}", blocker_summary),
         format!("report_path={}", report_path.display()),
     ];
     for (index, target) in output.targets.iter().enumerate().take(5) {
@@ -346,6 +358,79 @@ fn build_synthetic_books(
     books
 }
 
+fn summarize_blockers(
+    positions: &[rust_copytrader::domain::position_targeting::LeaderPosition],
+    metas: &HashMap<AssetId, MarketMeta>,
+    output: &rust_copytrader::domain::position_targeting::SizingOutput,
+    cfg: &StrategyConfig,
+    now_ms: i64,
+) -> String {
+    let mut counts = BTreeMap::<String, usize>::new();
+    let delta_assets = output
+        .deltas
+        .iter()
+        .map(|delta| delta.asset.clone())
+        .collect::<HashSet<_>>();
+    for target in &output.targets {
+        let Some(meta) = metas.get(&target.asset) else {
+            *counts.entry("missing_meta".to_string()).or_default() += 1;
+            continue;
+        };
+        let has_delta = delta_assets.contains(&target.asset);
+        let tte = meta.end_ts_ms.saturating_sub(now_ms);
+        if !meta.accepting_orders || !meta.enable_order_book {
+            *counts.entry("closed_or_book_off".to_string()).or_default() += 1;
+        }
+        if tte < cfg.no_new_position_before_ms {
+            *counts.entry("tail_lt24h".to_string()).or_default() += 1;
+        } else if tte < cfg.reduce_size_before_ms {
+            *counts.entry("tail_lt72h".to_string()).or_default() += 1;
+        }
+        if meta.neg_risk {
+            *counts.entry("neg_risk".to_string()).or_default() += 1;
+        }
+        if meta.liquidity_clob < cfg.min_copyable_liquidity_usdc
+            || meta.volume_24h_clob < cfg.min_copyable_volume_usdc
+        {
+            *counts
+                .entry("low_copyable_liquidity".to_string())
+                .or_default() += 1;
+        }
+        if target.signed_target_risk_usdc == 0 {
+            *counts.entry("zero_target".to_string()).or_default() += 1;
+        } else if !has_delta {
+            *counts
+                .entry("below_min_effective_order".to_string())
+                .or_default() += 1;
+        }
+        if target.stale {
+            *counts.entry("stale_target".to_string()).or_default() += 1;
+        }
+    }
+    for (_, reason) in &output.diagnostics.blocked_assets {
+        *counts.entry(reason.clone()).or_default() += 1;
+    }
+    let mut entries = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    if entries.is_empty() {
+        if positions.is_empty() {
+            "none".to_string()
+        } else {
+            "none_detected".to_string()
+        }
+    } else {
+        entries
+            .into_iter()
+            .take(6)
+            .map(|(reason, count)| format!("{reason}:{count}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
 fn read_env_value(path: &Path, keys: &[&str]) -> Result<String, String> {
     read_optional_env_value(path, keys)
         .ok_or_else(|| format!("missing one of {} in {}", keys.join(","), path.display()))
@@ -388,6 +473,7 @@ fn write_report(
     positions: &[rust_copytrader::domain::position_targeting::LeaderPosition],
     output: &rust_copytrader::domain::position_targeting::SizingOutput,
     selected_env: &Path,
+    blocker_summary: &str,
 ) -> Result<PathBuf, String> {
     let report_dir = root.join(".omx/position-targeting");
     fs::create_dir_all(&report_dir)
@@ -421,6 +507,19 @@ fn write_report(
         format!("leader_ewma_value_usdc={}", leader_state.value.ewma_value),
         format!("target_count={}", output.targets.len()),
         format!("delta_count={}", output.deltas.len()),
+        format!(
+            "diagnostic_stale_asset_count={}",
+            output.diagnostics.stale_assets.len()
+        ),
+        format!(
+            "diagnostic_blocked_asset_count={}",
+            output.diagnostics.blocked_assets.len()
+        ),
+        format!(
+            "diagnostic_total_target_risk_usdc={}",
+            output.diagnostics.total_target_risk_usdc
+        ),
+        format!("diagnostic_blocker_summary={}", blocker_summary),
     ];
     for target in output.targets.iter().take(10) {
         lines.push(format!(
@@ -509,6 +608,7 @@ mod tests {
         assert!(joined.contains("selected_leader_wallet=0xleader"));
         assert!(joined.contains("target_count=1"));
         assert!(joined.contains("delta_count=1"));
+        assert!(joined.contains("diagnostic_blocker_summary=none_detected"));
         assert!(joined.contains("report_path="));
 
         let report_path = joined
@@ -518,6 +618,7 @@ mod tests {
         let report = fs::read_to_string(report_path).expect("report exists");
         assert!(report.contains("leader_ewma_value_usdc=55000000"));
         assert!(report.contains("selected_leader_review_status=stable"));
+        assert!(report.contains("diagnostic_blocker_summary=none_detected"));
 
         fs::remove_dir_all(root).expect("temp root removed");
     }

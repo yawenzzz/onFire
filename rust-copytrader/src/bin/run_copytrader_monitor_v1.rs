@@ -229,11 +229,24 @@ fn run_monitor(options: &Options) -> Result<String, String> {
     emit_selected_leader(&runtime, &selected_env)?;
 
     let mut last_seen_tx = None::<String>;
+    let mut active_wallet = None::<String>;
     let mut last_operator_signature = None::<String>;
     let mut last_reconcile_ms = 0u64;
     let iterations = options.iterations.unwrap_or(usize::MAX);
     for index in 0..iterations {
+        if options.auto_select {
+            select_leader(&select_bin, &summary_path, &selected_env)?;
+        }
+        emit_selected_leader(&runtime, &selected_env)?;
         let wallet = load_selected_wallet(&selected_env)?;
+        if active_wallet.as_deref() != Some(wallet.as_str()) {
+            last_seen_tx = None;
+            active_wallet = Some(wallet.clone());
+            runtime.handle.emit(MonEvent::AlertNote {
+                level: Health::Ok,
+                msg: format!("selected leader switched to {wallet}"),
+            });
+        }
         let watch_output = run_watch_cycle(
             &runtime,
             &watch_bin,
@@ -456,6 +469,29 @@ fn run_position_cycle(
         value_usdc,
         snapshot_age_ms: 0,
         provisional_drift_bps: 0,
+    });
+
+    runtime.handle.emit(MonEvent::PositionDiagnostics {
+        target_count: values
+            .get("target_count")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0),
+        delta_count: values
+            .get("delta_count")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0),
+        stale_asset_count: values
+            .get("diagnostic_stale_asset_count")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0),
+        blocked_asset_count: values
+            .get("diagnostic_blocked_asset_count")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0),
+        blocker_summary: values
+            .get("diagnostic_blocker_summary")
+            .cloned()
+            .unwrap_or_else(|| "none".to_string()),
     });
 
     if let Some(asset) = values.get("target[0].asset") {
@@ -750,7 +786,7 @@ mod tests {
         fs::create_dir_all(root.join(".omx/operator-demo")).expect("dir created");
         fs::write(
             root.join(".omx/discovery/selected-leader.env"),
-            "COPYTRADER_DISCOVERY_WALLET=0xleader\nCOPYTRADER_SELECTED_SCORE=84\n",
+            "COPYTRADER_DISCOVERY_WALLET=0xleader\nCOPYTRADER_SELECTED_SCORE=84\nCOPYTRADER_SELECTED_CATEGORY=TECH\nCOPYTRADER_SELECTED_REVIEW_STATUS=stable\n",
         )
         .expect("env written");
         fs::write(
@@ -781,7 +817,7 @@ mod tests {
         let position = root.join("run_position_targeting_demo");
         write_executable(
             &position,
-            "#!/bin/sh\nprintf 'leader_position_count=1\nleader_spot_value_usdc=5500000\ndiagnostic_total_target_risk_usdc=2000000\ntarget[0].asset=asset-1\n'\n",
+            "#!/bin/sh\nprintf 'leader_position_count=1\nleader_spot_value_usdc=5500000\ntarget_count=1\ndelta_count=0\ndiagnostic_total_target_risk_usdc=2000000\ndiagnostic_stale_asset_count=1\ndiagnostic_blocked_asset_count=1\ndiagnostic_blocker_summary=zero_target:1,tail_lt24h:1\ntarget[0].asset=asset-1\n'\n",
         );
 
         let options = super::Options {
@@ -810,6 +846,14 @@ mod tests {
         assert!(frame.contains("copytrader monitor v1"));
         assert!(frame.contains("0xleader"));
         assert!(frame.contains("market-a"));
+        assert!(frame.contains("selected leader"));
+        assert!(frame.contains("category=TECH"));
+        assert!(frame.contains("position targeting"));
+        assert!(frame.contains("blocker_summary=zero_target:1,tail_lt24h:1"));
+        assert!(frame.contains("selected leader"));
+        assert!(frame.contains("category=TECH"));
+        assert!(frame.contains("position targeting"));
+        assert!(frame.contains("blocker_summary=zero_target:1,tail_lt24h:1"));
         assert!(root.join(".omx/monitor/latest.txt").exists());
         assert!(root.join(".omx/monitor/metrics.txt").exists());
         assert!(root.join(".omx/monitor/health.json").exists());

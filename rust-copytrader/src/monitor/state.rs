@@ -3,7 +3,7 @@ use super::hist::{RollingHistogram, RollingRms};
 use super::rolling::RollingCounter;
 use super::snapshot::{
     AlertView, BookViewUi, ExecView, FeedChannelView, FeedHttpView, FeedView, Health, LeaderView,
-    Mode, ProcView, RiskView, SelectedLeaderView, SignalView, UiSnapshot,
+    Mode, PositionTargetingView, ProcView, RiskView, SelectedLeaderView, SignalView, UiSnapshot,
 };
 use super::{MonitorCfg, now_ms_u64};
 use std::collections::{BTreeMap, VecDeque};
@@ -271,6 +271,15 @@ impl Default for SignalMon {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct PositionTargetingMon {
+    target_count: u64,
+    delta_count: u64,
+    stale_asset_count: u64,
+    blocked_asset_count: u64,
+    blocker_summary: String,
+}
+
 #[derive(Debug, Clone)]
 struct ExecState {
     activity_to_intent_ms: RollingHistogram,
@@ -339,6 +348,7 @@ pub struct MonState {
     signals: BTreeMap<String, SignalMon>,
     exec: ExecState,
     risk: RiskState,
+    position_targeting: PositionTargetingMon,
     selected_leader: SelectedLeaderMon,
     alerts: Vec<AlertView>,
     logs: VecDeque<String>,
@@ -355,6 +365,7 @@ impl MonState {
             signals: BTreeMap::new(),
             exec: ExecState::new(),
             risk: RiskState::new(),
+            position_targeting: PositionTargetingMon::default(),
             selected_leader: SelectedLeaderMon::default(),
             alerts: Vec::new(),
             logs: VecDeque::new(),
@@ -557,6 +568,21 @@ impl MonState {
                     },
                 );
             }
+            MonEvent::PositionDiagnostics {
+                target_count,
+                delta_count,
+                stale_asset_count,
+                blocked_asset_count,
+                blocker_summary,
+            } => {
+                self.position_targeting = PositionTargetingMon {
+                    target_count,
+                    delta_count,
+                    stale_asset_count,
+                    blocked_asset_count,
+                    blocker_summary,
+                };
+            }
             MonEvent::OrderIntent { .. } => {
                 self.exec.last_submit_status = "intent".to_string();
             }
@@ -735,6 +761,13 @@ impl MonState {
             leaders,
             books,
             signals,
+            position_targeting: PositionTargetingView {
+                target_count: self.position_targeting.target_count,
+                delta_count: self.position_targeting.delta_count,
+                stale_asset_count: self.position_targeting.stale_asset_count,
+                blocked_asset_count: self.position_targeting.blocked_asset_count,
+                blocker_summary: self.position_targeting.blocker_summary.clone(),
+            },
             exec,
             risk,
             alerts: Vec::new(),

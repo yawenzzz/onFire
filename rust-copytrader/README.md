@@ -731,6 +731,27 @@ cargo run --bin run_position_targeting_demo -- --root ..
 
 ### 15.4c ANSI 轻量终端面板
 
+## 15.4d monitor v1（smart-money 实时监控）
+
+```bash
+cargo run --bin run_copytrader_monitor_v1 -- --root .. --proxy http://127.0.0.1:7897
+```
+
+详细解释见：
+
+- `monitor_v1_explained.md`
+
+这个 monitor 会把：
+
+- 当前 selected smart-money 钱包
+- 最新 activity
+- position targeting 结果
+- probable blockers（解释为什么 `delta_count=0`）
+- healthz / readyz / metrics
+
+整成一条轻量监控面。
+
+
 如果你不想一条条翻：
 
 - `wallet-filter-v1-summary.txt`

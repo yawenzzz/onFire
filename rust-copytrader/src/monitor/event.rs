@@ -203,6 +203,13 @@ pub enum MonEvent {
         reason: SkipReason,
         fresh_ms: u32,
     },
+    PositionDiagnostics {
+        target_count: u64,
+        delta_count: u64,
+        stale_asset_count: u64,
+        blocked_asset_count: u64,
+        blocker_summary: String,
+    },
     OrderIntent {
         order_id: u64,
         asset: String,
