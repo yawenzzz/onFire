@@ -1,4 +1,5 @@
 use rust_copytrader::wallet_filter::resolve_category_scope;
+use std::cmp::Reverse;
 use std::env;
 use std::fs;
 use std::io;
@@ -26,6 +27,21 @@ struct CategoryScanResult {
     top_rejected_wallet: Option<String>,
     top_rejection_reasons: Option<String>,
     section: String,
+}
+
+impl CategoryScanResult {
+    fn rejection_reason_count(&self) -> usize {
+        self.top_rejection_reasons
+            .as_deref()
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .count()
+            })
+            .unwrap_or(0)
+    }
 }
 
 impl Default for Options {
@@ -223,9 +239,12 @@ fn render_summary(results: &[CategoryScanResult]) -> String {
     let best_pass = passed
         .iter()
         .max_by_key(|result| result.selected_score.unwrap_or(i64::MIN));
-    let best_reject = rejected
-        .iter()
-        .max_by_key(|result| result.top_rejected_score.unwrap_or(i64::MIN));
+    let best_reject = rejected.iter().min_by_key(|result| {
+        (
+            result.rejection_reason_count(),
+            Reverse(result.top_rejected_score.unwrap_or(i64::MIN)),
+        )
+    });
 
     let mut lines = vec![
         "wallet_filter_summary_strategy=wallet_filter_v1".to_string(),
@@ -266,6 +285,12 @@ fn render_summary(results: &[CategoryScanResult]) -> String {
             best_reject
                 .and_then(|result| result.top_rejection_reasons.as_deref())
                 .unwrap_or("none")
+        ),
+        format!(
+            "best_rejected_reason_count={}",
+            best_reject
+                .map(|result| result.rejection_reason_count().to_string())
+                .unwrap_or_else(|| "none".to_string())
         ),
     ];
     for result in results {
@@ -507,6 +532,7 @@ mod tests {
         assert!(summary.contains("best_pass_category=SPORTS"));
         assert!(summary.contains("best_rejected_category=CRYPTO"));
         assert!(summary.contains("best_rejected_wallet=none"));
+        assert!(summary.contains("best_rejected_reason_count=0"));
         assert!(summary.contains("== category SPORTS =="));
         assert!(summary.contains("status=passed"));
         assert!(summary.contains("== category CRYPTO =="));
