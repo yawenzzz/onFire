@@ -303,6 +303,14 @@ cat ../.omx/discovery/wallet-filter-v1-report.txt
 - unique markets / traded markets
 - 以及被踢掉的原因
 
+如果你看这些字段还是嫌抽象，可以直接看这份解释文档：
+
+```bash
+cat wallet_filter_metrics_explained.md
+```
+
+里面已经把 `score_total`、`maker_rebate_count`、`tail24`、`copyable_ratio`、`rejection_reasons` 这些指标全部翻成人话了。
+
 ### 7.1b 如果你想一口气扫多个类别
 
 如果你不是只看一个类别，而是想看：
