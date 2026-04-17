@@ -729,6 +729,41 @@ cargo run --bin run_position_targeting_demo -- --root ..
 并且把报告落到：
 - `.omx/position-targeting/position-targeting-*.txt`
 
+### 15.4c ANSI 轻量终端面板
+
+如果你不想一条条翻：
+
+- `wallet-filter-v1-summary.txt`
+- `selected-leader.env`
+- `operator-demo/latest.txt`
+- `position-targeting-*.txt`
+
+那可以直接开一个轻量 ANSI 终端面板：
+
+```bash
+cargo run --bin run_copytrader_ansi_dashboard -- --root ..
+```
+
+它会用 ANSI 清屏重绘，默认每秒刷新一次，主要展示：
+
+- smart-money summary
+- selected leader
+- operator lane
+- position targeting
+- auto-guarded 最新报告
+
+如果你只想看一帧，不要持续刷新：
+
+```bash
+cargo run --bin run_copytrader_ansi_dashboard -- --root .. --once
+```
+
+如果想调刷新频率：
+
+```bash
+cargo run --bin run_copytrader_ansi_dashboard -- --root .. --interval-ms 500
+```
+
 ### 15.5 One-command operator flow
 
 ```bash
