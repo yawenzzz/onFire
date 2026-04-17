@@ -9,6 +9,7 @@ struct Options {
     wallet: Option<String>,
     leaderboard: Option<String>,
     activity: Option<String>,
+    report: Option<String>,
     index: usize,
     output: Option<String>,
     print_wallet: bool,
@@ -64,7 +65,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: select_copy_leader [--wallet <wallet> | --leaderboard <path> | --activity <path>] [--index <n>] [--output <path>] [--print-wallet]"
+        "usage: select_copy_leader [--wallet <wallet> | --leaderboard <path> | --activity <path> | --report <path>] [--index <n>] [--output <path>] [--print-wallet]"
     );
 }
 
@@ -76,6 +77,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--wallet" => options.wallet = Some(next_value(&mut iter, arg)?),
             "--leaderboard" => options.leaderboard = Some(next_value(&mut iter, arg)?),
             "--activity" => options.activity = Some(next_value(&mut iter, arg)?),
+            "--report" => options.report = Some(next_value(&mut iter, arg)?),
             "--index" => options.index = parse_usize(&next_value(&mut iter, arg)?, "index")?,
             "--output" => options.output = Some(next_value(&mut iter, arg)?),
             "--print-wallet" => options.print_wallet = true,
@@ -85,12 +87,17 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
 
     let source_count = usize::from(options.wallet.is_some())
         + usize::from(options.leaderboard.is_some())
-        + usize::from(options.activity.is_some());
+        + usize::from(options.activity.is_some())
+        + usize::from(options.report.is_some());
     if source_count == 0 {
-        return Err("missing required --wallet, --leaderboard, or --activity".to_string());
+        return Err(
+            "missing required --wallet, --leaderboard, --activity, or --report".to_string(),
+        );
     }
     if source_count > 1 {
-        return Err("use exactly one of --wallet, --leaderboard, or --activity".to_string());
+        return Err(
+            "use exactly one of --wallet, --leaderboard, --activity, or --report".to_string(),
+        );
     }
 
     Ok(options)
@@ -125,6 +132,18 @@ fn resolve_wallet(options: &Options) -> Result<String, String> {
                 options.index, leaderboard_path
             )
         });
+    }
+
+    if let Some(report_path) = &options.report {
+        let content = fs::read_to_string(report_path)
+            .map_err(|error| format!("failed to read {report_path}: {error}"))?;
+        return content
+            .lines()
+            .find_map(|line| line.strip_prefix("selected_wallet="))
+            .map(|value| value.trim().to_string())
+            .filter(|value| looks_like_wallet(value))
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("failed to extract selected_wallet from {report_path}"));
     }
 
     let activity_path = options
@@ -181,6 +200,8 @@ fn looks_like_wallet(value: &str) -> bool {
 fn render_env_output(wallet: &str, options: &Options) -> String {
     let source = if let Some(path) = &options.leaderboard {
         format!("leaderboard:{}#{}", path, options.index)
+    } else if let Some(path) = &options.report {
+        format!("wallet_filter_report:{}", path)
     } else if let Some(path) = &options.activity {
         format!("activity:{}#{}", path, options.index)
     } else {
@@ -236,6 +257,36 @@ mod tests {
         assert_eq!(options.wallet.as_deref(), Some("0xabc"));
         assert_eq!(options.output.as_deref(), Some("/tmp/selected.env"));
         assert!(options.print_wallet);
+    }
+
+    #[test]
+    fn resolve_wallet_reads_wallet_filter_report() {
+        let root = unique_temp_dir("report");
+        fs::create_dir_all(&root).expect("temp dir created");
+        let report = root.join("wallet-filter-v1-report.txt");
+        fs::write(&report, "selected_wallet=0xleader-smart\n").expect("report written");
+
+        let options =
+            parse_args(&["--report".into(), report.display().to_string()]).expect("parse");
+
+        assert_eq!(resolve_wallet(&options).expect("wallet"), "0xleader-smart");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn resolve_wallet_rejects_wallet_filter_report_without_real_selection() {
+        let root = unique_temp_dir("report-none");
+        fs::create_dir_all(&root).expect("temp dir created");
+        let report = root.join("wallet-filter-v1-report.txt");
+        fs::write(&report, "selected_wallet=none\n").expect("report written");
+
+        let options =
+            parse_args(&["--report".into(), report.display().to_string()]).expect("parse");
+
+        assert!(resolve_wallet(&options).is_err());
+
+        fs::remove_dir_all(root).expect("temp dir removed");
     }
 
     #[test]

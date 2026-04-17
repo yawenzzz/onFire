@@ -237,13 +237,14 @@ bash scripts/run_rust_helper_smoke.sh
 
 ## 7. 第二步：真实抓榜 + 真实选 leader
 
-### 7.1 一把做完 discovery -> 选 leader
+### 7.1 一把做完 discovery -> smart money 筛选 -> 选 leader
 
 ```bash
 cd ~/onFire/rust-copytrader
 cargo run --bin discover_copy_leader -- \
   --discovery-dir ../.omx/discovery \
   --proxy http://127.0.0.1:7897 \
+  --category SPECIALIST \
   --connect-timeout-ms 8000 \
   --max-time-ms 20000
 ```
@@ -251,19 +252,56 @@ cargo run --bin discover_copy_leader -- \
 成功后你会得到：
 - `.omx/discovery/leaderboard-*.json`
 - `.omx/discovery/activity-*.json`
+- `.omx/discovery/positions-*.json`
+- `.omx/discovery/value-*.json`
+- `.omx/discovery/traded-*.json`
+- `.omx/discovery/wallet-filter-v1-report.txt`
 - `.omx/discovery/selected-leader.env`
+
+这里要注意一件事：
+
+> `discover_copy_leader` 现在已经不是“按原始榜单 rank 直接拿第 1 名”。  
+> 它会严格按 `rust-copytrader/wallet_filter_v1.md` 去做 smart money 钱包筛选：
+> - 同类别 `WEEK + MONTH` 交集做候选池
+> - `ALL + PNL` 只加分
+> - `VOL` 榜只当红旗
+> - 再叠 `/activity`、`/positions`、`/value`、`/traded`、市场元数据做硬过滤 + 打分
 
 stdout 里会有类似：
 
 ```text
 selected_wallet=0x...
-selected_rank=1
+selected_category=SPORTS
+selected_score=87
+selected_rank=12
+selected_week_rank=8
+selected_month_rank=12
+selected_all_rank=41
 selected_pnl=...
 selected_username=...
+filter_report_path=../.omx/discovery/wallet-filter-v1-report.txt
 latest_activity_side=BUY
 latest_activity_slug=...
 latest_activity_tx=0x...
 ```
+
+如果你想看它为什么选这个 wallet，不要只看 `selected_wallet`，直接看：
+
+```bash
+cat ../.omx/discovery/wallet-filter-v1-report.txt
+```
+
+里面会直接告诉你每个候选钱包的：
+- score
+- maker rebate 情况
+- flip60
+- median hold
+- tail24 / tail72
+- copyable ratio
+- neg risk share
+- category purity
+- unique markets / traded markets
+- 以及被踢掉的原因
 
 ### 7.2 你也可以分开跑
 
@@ -431,6 +469,8 @@ cargo run --bin run_copytrader_operator_flow -- \
 - `.omx/operator-demo/discover-and-demo-*.txt`
 
 你最该看这些字段：
+ - `selected_category=...`
+ - `selected_score=...`
 - `selected_rank=...`
 - `selected_pnl=...`
 - `watch_user=...`
@@ -545,7 +585,7 @@ cargo run -- --operator-demo --root ..
 ```bash
 cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20 --proxy http://127.0.0.1:7897
 cargo run --bin fetch_user_activity -- --user 0xWALLET --type TRADE --limit 20 --proxy http://127.0.0.1:7897
-cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery --proxy http://127.0.0.1:7897 --connect-timeout-ms 8000 --max-time-ms 20000
+cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery --proxy http://127.0.0.1:7897 --category SPECIALIST --connect-timeout-ms 8000 --max-time-ms 20000
 ```
 
 ### 15.3 Watch / guarded
@@ -754,4 +794,3 @@ cargo run --bin run_copytrader_auto_guarded_loop -- \
 
 > **它已经不是“想法”，而是一条能跑到 real live preview 的 Rust 主路。**  
 > **默认安全，不乱下单；真下单需要你自己显式解锁。**
-

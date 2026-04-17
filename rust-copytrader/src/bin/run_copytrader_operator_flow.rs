@@ -45,7 +45,7 @@ impl Default for Options {
             leaderboard_base_url: None,
             activity_base_url: None,
             proxy: env::var("POLYMARKET_CURL_PROXY").ok(),
-            category: "OVERALL".to_string(),
+            category: "SPECIALIST".to_string(),
             time_period: "DAY".to_string(),
             order_by: "PNL".to_string(),
             limit: 20,

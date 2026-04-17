@@ -1,3 +1,11 @@
+use rust_copytrader::wallet_filter::{
+    ActivityRecord, LeaderboardEntry, MarketRecord, PositionRecord, WalletCandidateSeed,
+    WalletScoreCard, build_candidate_seeds, choose_wallet, evaluate_candidate, json_objects,
+    now_unix_secs, parse_activity_records, parse_leaderboard_entries, parse_market_record,
+    parse_position_records, parse_total_value, parse_traded_count, render_selected_leader_env,
+    render_wallet_filter_rejection_report, render_wallet_filter_report, resolve_category_scope,
+};
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::io;
@@ -8,14 +16,23 @@ use std::time::Duration;
 
 const LEADERBOARD_BASE_URL: &str = "https://data-api.polymarket.com/v1/leaderboard";
 const ACTIVITY_BASE_URL: &str = "https://data-api.polymarket.com/activity";
+const POSITIONS_BASE_URL: &str = "https://data-api.polymarket.com/positions";
+const VALUE_BASE_URL: &str = "https://data-api.polymarket.com/value";
+const TRADED_BASE_URL: &str = "https://data-api.polymarket.com/traded";
+const MARKET_BASE_URL: &str = "https://gamma-api.polymarket.com/markets/slug";
+const ACTIVITY_PAGE_LIMIT: usize = 500;
+const MAX_ACTIVITY_PAGES: usize = 20;
+const MAX_ACTIVITY_OFFSET_EXCLUSIVE: usize = 3_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Options {
     leaderboard_base_url: String,
     activity_base_url: String,
+    positions_base_url: String,
+    value_base_url: String,
+    traded_base_url: String,
+    market_base_url: String,
     category: String,
-    time_period: String,
-    order_by: String,
     limit: usize,
     offset: usize,
     index: usize,
@@ -37,10 +54,16 @@ impl Default for Options {
                 .unwrap_or_else(|_| LEADERBOARD_BASE_URL.to_string()),
             activity_base_url: env::var("POLYMARKET_ACTIVITY_BASE_URL")
                 .unwrap_or_else(|_| ACTIVITY_BASE_URL.to_string()),
-            category: "OVERALL".to_string(),
-            time_period: "DAY".to_string(),
-            order_by: "PNL".to_string(),
-            limit: 20,
+            positions_base_url: env::var("POLYMARKET_POSITIONS_BASE_URL")
+                .unwrap_or_else(|_| POSITIONS_BASE_URL.to_string()),
+            value_base_url: env::var("POLYMARKET_VALUE_BASE_URL")
+                .unwrap_or_else(|_| VALUE_BASE_URL.to_string()),
+            traded_base_url: env::var("POLYMARKET_TRADED_BASE_URL")
+                .unwrap_or_else(|_| TRADED_BASE_URL.to_string()),
+            market_base_url: env::var("POLYMARKET_MARKET_BASE_URL")
+                .unwrap_or_else(|_| MARKET_BASE_URL.to_string()),
+            category: "SPECIALIST".to_string(),
+            limit: 25,
             offset: 0,
             index: 0,
             activity_type: "TRADE".to_string(),
@@ -60,9 +83,18 @@ impl Default for Options {
 struct DiscoveryArtifacts {
     selected_wallet: String,
     leaderboard_path: PathBuf,
-    activity_path: Option<PathBuf>,
+    activity_path: PathBuf,
+    positions_path: PathBuf,
+    value_path: PathBuf,
+    traded_path: PathBuf,
+    filter_report_path: PathBuf,
     selected_leader_env_path: PathBuf,
+    selected_category: String,
+    selected_score: i64,
     selected_rank: Option<String>,
+    selected_week_rank: Option<String>,
+    selected_month_rank: Option<String>,
+    selected_all_rank: Option<String>,
     selected_pnl: Option<String>,
     selected_username: Option<String>,
     latest_activity_timestamp: Option<String>,
@@ -71,15 +103,22 @@ struct DiscoveryArtifacts {
     latest_activity_tx: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct LeaderSummary {
-    selected_rank: Option<String>,
-    selected_pnl: Option<String>,
-    selected_username: Option<String>,
-    latest_activity_timestamp: Option<String>,
-    latest_activity_side: Option<String>,
-    latest_activity_slug: Option<String>,
-    latest_activity_tx: Option<String>,
+#[derive(Debug, Clone)]
+struct CandidateData {
+    activities: Vec<ActivityRecord>,
+    positions: Vec<PositionRecord>,
+    total_value: Option<f64>,
+    traded_markets: u64,
+    markets: BTreeMap<String, MarketRecord>,
+    activity_path: PathBuf,
+    positions_path: PathBuf,
+    value_path: PathBuf,
+    traded_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct CandidateBoardPaths {
+    month_pnl_path: PathBuf,
 }
 
 fn main() -> ExitCode {
@@ -101,18 +140,34 @@ fn main() -> ExitCode {
     match execute(&options) {
         Ok(artifacts) => {
             println!("selected_wallet={}", artifacts.selected_wallet);
+            println!("selected_category={}", artifacts.selected_category);
+            println!("selected_score={}", artifacts.selected_score);
             println!("leaderboard_path={}", artifacts.leaderboard_path.display());
+            println!("activity_path={}", artifacts.activity_path.display());
+            println!("positions_path={}", artifacts.positions_path.display());
+            println!("value_path={}", artifacts.value_path.display());
+            println!("traded_path={}", artifacts.traded_path.display());
+            println!(
+                "filter_report_path={}",
+                artifacts.filter_report_path.display()
+            );
             if let Some(rank) = artifacts.selected_rank {
                 println!("selected_rank={rank}");
+            }
+            if let Some(rank) = artifacts.selected_week_rank {
+                println!("selected_week_rank={rank}");
+            }
+            if let Some(rank) = artifacts.selected_month_rank {
+                println!("selected_month_rank={rank}");
+            }
+            if let Some(rank) = artifacts.selected_all_rank {
+                println!("selected_all_rank={rank}");
             }
             if let Some(pnl) = artifacts.selected_pnl {
                 println!("selected_pnl={pnl}");
             }
             if let Some(username) = artifacts.selected_username {
                 println!("selected_username={username}");
-            }
-            if let Some(activity_path) = artifacts.activity_path {
-                println!("activity_path={}", activity_path.display());
             }
             if let Some(timestamp) = artifacts.latest_activity_timestamp {
                 println!("latest_activity_timestamp={timestamp}");
@@ -141,7 +196,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: discover_copy_leader [--leaderboard-base-url <url>] [--activity-base-url <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--discovery-dir <path>] [--curl-bin <path>] [--proxy <url>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--skip-activity]"
+        "usage: discover_copy_leader [--leaderboard-base-url <url>] [--activity-base-url <url>] [--positions-base-url <url>] [--value-base-url <url>] [--traded-base-url <url>] [--market-base-url <url>] [--category <SPECIALIST|CSV|single-category>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--discovery-dir <path>] [--curl-bin <path>] [--proxy <url>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--time-period <ignored>] [--order-by <ignored>] [--skip-activity]"
     );
 }
 
@@ -152,9 +207,11 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         match arg.as_str() {
             "--leaderboard-base-url" => options.leaderboard_base_url = next_value(&mut iter, arg)?,
             "--activity-base-url" => options.activity_base_url = next_value(&mut iter, arg)?,
+            "--positions-base-url" => options.positions_base_url = next_value(&mut iter, arg)?,
+            "--value-base-url" => options.value_base_url = next_value(&mut iter, arg)?,
+            "--traded-base-url" => options.traded_base_url = next_value(&mut iter, arg)?,
+            "--market-base-url" => options.market_base_url = next_value(&mut iter, arg)?,
             "--category" => options.category = next_value(&mut iter, arg)?,
-            "--time-period" => options.time_period = next_value(&mut iter, arg)?,
-            "--order-by" => options.order_by = next_value(&mut iter, arg)?,
             "--limit" => options.limit = parse_usize(&next_value(&mut iter, arg)?, "limit")?,
             "--offset" => options.offset = parse_usize(&next_value(&mut iter, arg)?, "offset")?,
             "--index" => options.index = parse_usize(&next_value(&mut iter, arg)?, "index")?,
@@ -176,6 +233,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 options.retry_delay_ms = parse_u64(&next_value(&mut iter, arg)?, "retry-delay-ms")?
             }
             "--skip-activity" => options.skip_activity = true,
+            "--time-period" | "--order-by" => {
+                let _ = next_value(&mut iter, arg)?;
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -204,111 +264,118 @@ fn parse_u64(value: &str, field: &str) -> Result<u64, String> {
 }
 
 fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
+    if options.skip_activity {
+        return Err(
+            "wallet_filter_v1 requires activity history; --skip-activity is not supported"
+                .to_string(),
+        );
+    }
+
     let discovery_dir = PathBuf::from(&options.discovery_dir);
+    let markets_dir = discovery_dir.join("markets");
     fs::create_dir_all(&discovery_dir)
         .map_err(|error| format!("failed to create {}: {error}", discovery_dir.display()))?;
+    fs::create_dir_all(&markets_dir)
+        .map_err(|error| format!("failed to create {}: {error}", markets_dir.display()))?;
 
-    let leaderboard_url = build_leaderboard_url(options);
-    let leaderboard_path = discovery_dir.join(format!(
-        "leaderboard-{}-{}-{}.json",
-        sanitize_for_filename(&options.category),
-        sanitize_for_filename(&options.time_period),
-        sanitize_for_filename(&options.order_by)
-    ));
-    let leaderboard_output = run_request_with_retry(
-        &options.curl_bin,
-        &build_curl_args(
-            &leaderboard_url,
-            options.proxy.as_deref(),
-            options.connect_timeout_ms,
-            options.max_time_ms,
-        ),
-        options.retry_count,
-        options.retry_delay_ms,
-    )?;
-    write_output_file(&leaderboard_path, &leaderboard_output.stdout).map_err(|error| {
+    let categories = resolve_category_scope(&options.category);
+    if categories.is_empty() {
+        return Err("wallet_filter_v1 requires at least one non-empty category scope".to_string());
+    }
+
+    let mut candidate_seeds = Vec::<WalletCandidateSeed>::new();
+    let mut board_paths = HashMap::<String, CandidateBoardPaths>::new();
+    for category in &categories {
+        let week = fetch_leaderboard_snapshot(options, &discovery_dir, category, "WEEK", "PNL")?;
+        let month = fetch_leaderboard_snapshot(options, &discovery_dir, category, "MONTH", "PNL")?;
+        let all = fetch_leaderboard_snapshot(options, &discovery_dir, category, "ALL", "PNL")?;
+        let vol = fetch_leaderboard_snapshot(options, &discovery_dir, category, "MONTH", "VOL")?;
+        board_paths.insert(
+            category.clone(),
+            CandidateBoardPaths {
+                month_pnl_path: month.path.clone(),
+            },
+        );
+        candidate_seeds.extend(build_candidate_seeds(
+            &week.entries,
+            &month.entries,
+            &all.entries,
+            &vol.entries,
+        ));
+    }
+
+    if candidate_seeds.is_empty() {
+        return Err(format!(
+            "wallet_filter_v1 found no week/month intersection candidates under {}",
+            categories.join(",")
+        ));
+    }
+
+    let now_ts = now_unix_secs();
+    let mut market_cache = BTreeMap::<String, MarketRecord>::new();
+    let mut candidate_data = HashMap::<String, CandidateData>::new();
+    let mut cards = Vec::<WalletScoreCard>::new();
+    for seed in &candidate_seeds {
+        let data = load_candidate_data(
+            options,
+            &discovery_dir,
+            &markets_dir,
+            &mut market_cache,
+            seed,
+            now_ts,
+        )?;
+        let card = evaluate_candidate(
+            seed,
+            &data.activities,
+            &data.positions,
+            data.total_value,
+            data.traded_markets,
+            &data.markets,
+            now_ts,
+        );
+        candidate_data.insert(seed.wallet.clone(), data);
+        cards.push(card);
+    }
+
+    let selection = choose_wallet(&cards, options.index).ok_or_else(|| {
+        let report = render_wallet_filter_rejection_report(
+            &cards,
+            &format!("wallet_filter_v1:{}", categories.join(",")),
+        );
+        let report_path = discovery_dir.join("wallet-filter-v1-report.txt");
+        let _ = write_output_file(&report_path, report.as_bytes());
+        let selected_leader_env_path = discovery_dir.join("selected-leader.env");
+        let _ = fs::remove_file(&selected_leader_env_path);
         format!(
-            "failed to write leaderboard artifact {}: {error}",
-            leaderboard_path.display()
+            "wallet_filter_v1 rejected every candidate; see {}",
+            report_path.display()
         )
     })?;
 
-    let leaderboard_body = String::from_utf8(leaderboard_output.stdout)
-        .map_err(|error| format!("leaderboard response was not utf-8: {error}"))?;
-    let selected_wallet =
-        extract_wallet_from_json(&leaderboard_body, options.index).ok_or_else(|| {
-            format!(
-                "failed to extract wallet at index {} from {}",
-                options.index,
-                leaderboard_path.display()
-            )
-        })?;
-    let leaderboard_summary = extract_object_containing(&leaderboard_body, &selected_wallet);
+    let selected = &selection.selected;
+    let selected_data = candidate_data
+        .get(&selected.seed.wallet)
+        .ok_or_else(|| "selected candidate data missing".to_string())?;
+    let leaderboard_path = board_paths
+        .get(&selected.seed.category)
+        .map(|paths| paths.month_pnl_path.clone())
+        .ok_or_else(|| "selected leaderboard artifact missing".to_string())?;
 
-    let (activity_path, activity_summary) = if options.skip_activity {
-        (None, None)
-    } else {
-        let activity_url = build_activity_url(
-            &options.activity_base_url,
-            &selected_wallet,
-            &options.activity_type,
-            options.limit,
-        );
-        let path = discovery_dir.join(format!(
-            "activity-{}-{}.json",
-            sanitize_for_filename(&selected_wallet),
-            sanitize_for_filename(&options.activity_type.to_lowercase())
-        ));
-        let activity_output = run_request_with_retry(
-            &options.curl_bin,
-            &build_curl_args(
-                &activity_url,
-                options.proxy.as_deref(),
-                options.connect_timeout_ms,
-                options.max_time_ms,
-            ),
-            options.retry_count,
-            options.retry_delay_ms,
-        )?;
-        write_output_file(&path, &activity_output.stdout).map_err(|error| {
-            format!(
-                "failed to write activity artifact {}: {error}",
-                path.display()
-            )
-        })?;
-        let activity_body = String::from_utf8(activity_output.stdout)
-            .map_err(|error| format!("activity response was not utf-8: {error}"))?;
-        (Some(path), first_json_object(&activity_body))
-    };
+    let report_path = discovery_dir.join("wallet-filter-v1-report.txt");
+    let report_source = format!(
+        "wallet_filter_v1:{}#{}",
+        selected.seed.category, options.index
+    );
+    write_output_file(
+        &report_path,
+        render_wallet_filter_report(&selection, &report_source).as_bytes(),
+    )
+    .map_err(|error| format!("failed to write {}: {error}", report_path.display()))?;
 
     let selected_leader_env_path = discovery_dir.join("selected-leader.env");
-    let summary = LeaderSummary {
-        selected_rank: leaderboard_summary
-            .as_deref()
-            .and_then(|object| extract_field_value(object, "rank")),
-        selected_pnl: leaderboard_summary
-            .as_deref()
-            .and_then(|object| extract_field_value(object, "pnl")),
-        selected_username: leaderboard_summary
-            .as_deref()
-            .and_then(|object| extract_field_value(object, "userName")),
-        latest_activity_timestamp: activity_summary
-            .as_deref()
-            .and_then(|object| extract_field_value(object, "timestamp")),
-        latest_activity_side: activity_summary
-            .as_deref()
-            .and_then(|object| extract_field_value(object, "side")),
-        latest_activity_slug: activity_summary
-            .as_deref()
-            .and_then(|object| extract_field_value(object, "slug")),
-        latest_activity_tx: activity_summary
-            .as_deref()
-            .and_then(|object| extract_field_value(object, "transactionHash")),
-    };
     write_output_file(
         &selected_leader_env_path,
-        render_selected_leader_env(&selected_wallet, &leaderboard_path, options.index, &summary)
-            .as_bytes(),
+        render_selected_leader_env(&selection, &report_source).as_bytes(),
     )
     .map_err(|error| {
         format!(
@@ -318,39 +385,310 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
     })?;
 
     Ok(DiscoveryArtifacts {
-        selected_wallet,
+        selected_wallet: selected.seed.wallet.clone(),
         leaderboard_path,
-        activity_path,
+        activity_path: selected_data.activity_path.clone(),
+        positions_path: selected_data.positions_path.clone(),
+        value_path: selected_data.value_path.clone(),
+        traded_path: selected_data.traded_path.clone(),
+        filter_report_path: report_path,
         selected_leader_env_path,
-        selected_rank: summary.selected_rank,
-        selected_pnl: summary.selected_pnl,
-        selected_username: summary.selected_username,
-        latest_activity_timestamp: summary.latest_activity_timestamp,
-        latest_activity_side: summary.latest_activity_side,
-        latest_activity_slug: summary.latest_activity_slug,
-        latest_activity_tx: summary.latest_activity_tx,
+        selected_category: selected.seed.category.clone(),
+        selected_score: selected.score_total,
+        selected_rank: selected.seed.month_rank.map(|value| value.to_string()),
+        selected_week_rank: selected.seed.week_rank.map(|value| value.to_string()),
+        selected_month_rank: selected.seed.month_rank.map(|value| value.to_string()),
+        selected_all_rank: selected.seed.all_rank.map(|value| value.to_string()),
+        selected_pnl: Some(format!("{:.6}", selected.seed.month_pnl)),
+        selected_username: selected.seed.username.clone(),
+        latest_activity_timestamp: selected.metrics.latest_trade.timestamp.clone(),
+        latest_activity_side: selected.metrics.latest_trade.side.clone(),
+        latest_activity_slug: selected.metrics.latest_trade.slug.clone(),
+        latest_activity_tx: selected.metrics.latest_trade.tx.clone(),
     })
 }
 
-fn build_leaderboard_url(options: &Options) -> String {
+fn load_candidate_data(
+    options: &Options,
+    discovery_dir: &Path,
+    markets_dir: &Path,
+    market_cache: &mut BTreeMap<String, MarketRecord>,
+    seed: &WalletCandidateSeed,
+    now_ts: u64,
+) -> Result<CandidateData, String> {
+    let activity_path = discovery_dir.join(format!(
+        "activity-{}-90d.json",
+        sanitize_for_filename(&seed.wallet)
+    ));
+    let activities_body = fetch_activity_history(options, &seed.wallet, now_ts)?;
+    write_output_file(&activity_path, activities_body.as_bytes()).map_err(|error| {
+        format!(
+            "failed to write activity artifact {}: {error}",
+            activity_path.display()
+        )
+    })?;
+    let activities = parse_activity_records(&activities_body);
+
+    let positions_path = discovery_dir.join(format!(
+        "positions-{}.json",
+        sanitize_for_filename(&seed.wallet)
+    ));
+    let positions_body = fetch_simple_json(
+        &build_positions_url(&options.positions_base_url, &seed.wallet),
+        options,
+    )?;
+    write_output_file(&positions_path, positions_body.as_bytes()).map_err(|error| {
+        format!(
+            "failed to write positions artifact {}: {error}",
+            positions_path.display()
+        )
+    })?;
+    let positions = parse_position_records(&positions_body);
+
+    let value_path = discovery_dir.join(format!(
+        "value-{}.json",
+        sanitize_for_filename(&seed.wallet)
+    ));
+    let value_body = fetch_simple_json(
+        &build_value_url(&options.value_base_url, &seed.wallet),
+        options,
+    )?;
+    write_output_file(&value_path, value_body.as_bytes()).map_err(|error| {
+        format!(
+            "failed to write value artifact {}: {error}",
+            value_path.display()
+        )
+    })?;
+    let total_value = parse_total_value(&value_body);
+
+    let traded_path = discovery_dir.join(format!(
+        "traded-{}.json",
+        sanitize_for_filename(&seed.wallet)
+    ));
+    let traded_body = fetch_simple_json(
+        &build_traded_url(&options.traded_base_url, &seed.wallet),
+        options,
+    )?;
+    write_output_file(&traded_path, traded_body.as_bytes()).map_err(|error| {
+        format!(
+            "failed to write traded artifact {}: {error}",
+            traded_path.display()
+        )
+    })?;
+    let traded_markets = parse_traded_count(&traded_body).unwrap_or(0);
+
+    let mut markets = BTreeMap::<String, MarketRecord>::new();
+    let market_slugs = collect_market_slugs(&activities, &positions);
+    for slug in market_slugs {
+        if let Some(market) = market_cache.get(&slug) {
+            markets.insert(slug.clone(), market.clone());
+            continue;
+        }
+        let body = fetch_simple_json(&build_market_url(&options.market_base_url, &slug), options)?;
+        let path = markets_dir.join(format!("{}.json", sanitize_for_filename(&slug)));
+        write_output_file(&path, body.as_bytes()).map_err(|error| {
+            format!(
+                "failed to write market artifact {}: {error}",
+                path.display()
+            )
+        })?;
+        if let Some(market) = parse_market_record(&body, &slug) {
+            market_cache.insert(slug.clone(), market.clone());
+            markets.insert(slug, market);
+        }
+    }
+
+    Ok(CandidateData {
+        activities,
+        positions,
+        total_value,
+        traded_markets,
+        markets,
+        activity_path,
+        positions_path,
+        value_path,
+        traded_path,
+    })
+}
+
+fn collect_market_slugs(
+    activities: &[ActivityRecord],
+    positions: &[PositionRecord],
+) -> Vec<String> {
+    let mut seen = BTreeMap::<String, ()>::new();
+    for activity in activities {
+        if let Some(slug) = activity
+            .slug
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            seen.insert(slug.to_string(), ());
+        }
+    }
+    for position in positions {
+        if let Some(slug) = position
+            .slug
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            seen.insert(slug.to_string(), ());
+        }
+    }
+    seen.into_keys().collect()
+}
+
+fn fetch_activity_history(options: &Options, wallet: &str, now_ts: u64) -> Result<String, String> {
+    let start_ts = now_ts.saturating_sub(rust_copytrader::wallet_filter::LOOKBACK_SECS);
+    let mut offset = 0;
+    let mut objects = Vec::<String>::new();
+    for _ in 0..MAX_ACTIVITY_PAGES {
+        if offset >= MAX_ACTIVITY_OFFSET_EXCLUSIVE {
+            break;
+        }
+        let url = build_activity_url(
+            &options.activity_base_url,
+            wallet,
+            start_ts,
+            now_ts,
+            ACTIVITY_PAGE_LIMIT,
+            offset,
+        );
+        let body = fetch_simple_json(&url, options)?;
+        let page_objects = json_objects(&body);
+        if page_objects.is_empty() {
+            break;
+        }
+        objects.extend(page_objects.iter().cloned());
+        if page_objects.len() < ACTIVITY_PAGE_LIMIT {
+            break;
+        }
+        offset += ACTIVITY_PAGE_LIMIT;
+    }
+    Ok(format!("[{}]", objects.join(",")))
+}
+
+fn fetch_leaderboard_snapshot(
+    options: &Options,
+    discovery_dir: &Path,
+    category: &str,
+    time_period: &str,
+    order_by: &str,
+) -> Result<LeaderboardSnapshot, String> {
+    let path = discovery_dir.join(format!(
+        "leaderboard-{}-{}-{}.json",
+        sanitize_for_filename(category),
+        sanitize_for_filename(time_period),
+        sanitize_for_filename(order_by)
+    ));
+    let body = fetch_simple_json(
+        &build_leaderboard_url(
+            &options.leaderboard_base_url,
+            category,
+            time_period,
+            order_by,
+            options.limit,
+            options.offset,
+        ),
+        options,
+    )?;
+    write_output_file(&path, body.as_bytes()).map_err(|error| {
+        format!(
+            "failed to write leaderboard artifact {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(LeaderboardSnapshot {
+        path,
+        entries: parse_leaderboard_entries(&body, category, time_period, order_by),
+    })
+}
+
+fn fetch_simple_json(url: &str, options: &Options) -> Result<String, String> {
+    let output = run_request_with_retry(
+        &options.curl_bin,
+        &build_curl_args(
+            url,
+            options.proxy.as_deref(),
+            options.connect_timeout_ms,
+            options.max_time_ms,
+        ),
+        options.retry_count,
+        options.retry_delay_ms,
+    )
+    .map_err(|error| format!("{url} -> {error}"))?;
+    String::from_utf8(output.stdout)
+        .map_err(|error| format!("{url} -> response was not utf-8: {error}"))
+}
+
+fn build_leaderboard_url(
+    base_url: &str,
+    category: &str,
+    time_period: &str,
+    order_by: &str,
+    limit: usize,
+    offset: usize,
+) -> String {
     format!(
         "{}?category={}&timePeriod={}&orderBy={}&limit={}&offset={}",
-        options.leaderboard_base_url.trim_end_matches('/'),
-        encode_component(&options.category),
-        encode_component(&options.time_period),
-        encode_component(&options.order_by),
-        options.limit,
-        options.offset
+        base_url.trim_end_matches('/'),
+        encode_component(category),
+        encode_component(time_period),
+        encode_component(order_by),
+        limit,
+        offset
     )
 }
 
-fn build_activity_url(base_url: &str, wallet: &str, activity_type: &str, limit: usize) -> String {
+fn build_activity_url(
+    base_url: &str,
+    wallet: &str,
+    start_ts: u64,
+    end_ts: u64,
+    limit: usize,
+    offset: usize,
+) -> String {
     format!(
-        "{}?user={}&limit={}&offset=0&sortBy=TIMESTAMP&sortDirection=DESC&type={}",
+        "{}?user={}&limit={}&offset={}&sortBy=TIMESTAMP&sortDirection=DESC&start={}&end={}",
         base_url.trim_end_matches('/'),
         encode_component(wallet),
         limit,
-        encode_component(activity_type)
+        offset,
+        start_ts,
+        end_ts,
+    )
+}
+
+fn build_positions_url(base_url: &str, wallet: &str) -> String {
+    format!(
+        "{}?user={}&limit=500&offset=0&sortBy=CURRENT&sortDirection=DESC",
+        base_url.trim_end_matches('/'),
+        encode_component(wallet)
+    )
+}
+
+fn build_value_url(base_url: &str, wallet: &str) -> String {
+    format!(
+        "{}?user={}",
+        base_url.trim_end_matches('/'),
+        encode_component(wallet)
+    )
+}
+
+fn build_traded_url(base_url: &str, wallet: &str) -> String {
+    format!(
+        "{}?user={}",
+        base_url.trim_end_matches('/'),
+        encode_component(wallet)
+    )
+}
+
+fn build_market_url(base_url: &str, slug: &str) -> String {
+    format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        encode_component(slug)
     )
 }
 
@@ -365,9 +703,9 @@ fn build_curl_args(
         "--show-error".to_string(),
         "--fail-with-body".to_string(),
         "--connect-timeout".to_string(),
-        format!("{}", seconds_from_ms(connect_timeout_ms)),
+        seconds_from_ms(connect_timeout_ms),
         "--max-time".to_string(),
-        format!("{}", seconds_from_ms(max_time_ms)),
+        seconds_from_ms(max_time_ms),
         "-A".to_string(),
         "Mozilla/5.0".to_string(),
         "-H".to_string(),
@@ -433,149 +771,6 @@ fn is_retryable_transport_error(error: &str) -> bool {
     error.contains("curl exited with 28") || error.contains("curl exited with 35")
 }
 
-fn extract_wallet_from_json(content: &str, index: usize) -> Option<String> {
-    let fields = ["proxyWallet", "wallet", "address", "user"];
-    let mut wallets = Vec::new();
-
-    for field in fields {
-        let needle = format!("\"{field}\"");
-        let mut remaining = content;
-        while let Some(start) = remaining.find(&needle) {
-            remaining = &remaining[start + needle.len()..];
-            let Some(colon) = remaining.find(':') else {
-                break;
-            };
-            remaining = &remaining[colon + 1..];
-            let trimmed = remaining.trim_start();
-            if !trimmed.starts_with('"') {
-                remaining = trimmed;
-                continue;
-            }
-            let trimmed = &trimmed[1..];
-            let Some(end) = trimmed.find('"') else {
-                break;
-            };
-            let candidate = &trimmed[..end];
-            if looks_like_wallet(candidate) && !wallets.iter().any(|seen| seen == candidate) {
-                wallets.push(candidate.to_string());
-            }
-            remaining = &trimmed[end + 1..];
-        }
-    }
-
-    wallets.get(index).cloned()
-}
-
-fn extract_object_containing(content: &str, wallet: &str) -> Option<String> {
-    for field in ["proxyWallet", "wallet", "address", "user"] {
-        let needle = format!("\"{field}\":\"{wallet}\"");
-        if let Some(start) = content.find(&needle) {
-            return object_bounds(content, start)
-                .map(|(start, end)| content[start..=end].to_string());
-        }
-    }
-    None
-}
-
-fn first_json_object(content: &str) -> Option<String> {
-    let start = content.find('{')?;
-    object_bounds(content, start).map(|(start, end)| content[start..=end].to_string())
-}
-
-fn object_bounds(content: &str, anchor: usize) -> Option<(usize, usize)> {
-    let bytes = content.as_bytes();
-    let start = content[..=anchor].rfind('{')?;
-    let mut depth = 0_i32;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (idx, byte) in bytes.iter().enumerate().skip(start) {
-        match byte {
-            b'\\' if in_string && !escaped => {
-                escaped = true;
-                continue;
-            }
-            b'"' if !escaped => in_string = !in_string,
-            b'{' if !in_string => depth += 1,
-            b'}' if !in_string => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some((start, idx));
-                }
-            }
-            _ => {}
-        }
-        escaped = false;
-    }
-    None
-}
-
-fn extract_field_value(object: &str, field: &str) -> Option<String> {
-    let needle = format!("\"{field}\":");
-    let start = object.find(&needle)?;
-    let rest = object[start + needle.len()..].trim_start();
-    if let Some(rest) = rest.strip_prefix('"') {
-        let mut escaped = false;
-        for (idx, ch) in rest.char_indices() {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            match ch {
-                '\\' => escaped = true,
-                '"' => return Some(rest[..idx].to_string()),
-                _ => {}
-            }
-        }
-        None
-    } else {
-        let end = rest.find([',', '}']).unwrap_or(rest.len());
-        Some(rest[..end].trim().to_string())
-    }
-}
-
-fn render_selected_leader_env(
-    wallet: &str,
-    leaderboard_path: &Path,
-    index: usize,
-    summary: &LeaderSummary,
-) -> String {
-    let mut lines = vec![
-        format!("COPYTRADER_DISCOVERY_WALLET={wallet}"),
-        format!("COPYTRADER_LEADER_WALLET={wallet}"),
-        format!(
-            "COPYTRADER_SELECTED_FROM=leaderboard:{}#{}",
-            leaderboard_path.display(),
-            index
-        ),
-    ];
-    if let Some(value) = &summary.selected_rank {
-        lines.push(format!("COPYTRADER_SELECTED_RANK={value}"));
-    }
-    if let Some(value) = &summary.selected_pnl {
-        lines.push(format!("COPYTRADER_SELECTED_PNL={value}"));
-    }
-    if let Some(value) = &summary.selected_username {
-        lines.push(format!("COPYTRADER_SELECTED_USERNAME={value}"));
-    }
-    if let Some(value) = &summary.latest_activity_timestamp {
-        lines.push(format!("COPYTRADER_LATEST_ACTIVITY_TIMESTAMP={value}"));
-    }
-    if let Some(value) = &summary.latest_activity_side {
-        lines.push(format!("COPYTRADER_LATEST_ACTIVITY_SIDE={value}"));
-    }
-    if let Some(value) = &summary.latest_activity_slug {
-        lines.push(format!("COPYTRADER_LATEST_ACTIVITY_SLUG={value}"));
-    }
-    if let Some(value) = &summary.latest_activity_tx {
-        lines.push(format!("COPYTRADER_LATEST_ACTIVITY_TX={value}"));
-    }
-    lines.join("\n") + "\n"
-}
-
-fn looks_like_wallet(value: &str) -> bool {
-    value.starts_with("0x") && value.len() >= 6
-}
-
 fn write_output_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -611,17 +806,21 @@ fn encode_component(value: &str) -> String {
     encoded
 }
 
+#[derive(Debug, Clone)]
+struct LeaderboardSnapshot {
+    path: PathBuf,
+    entries: Vec<LeaderboardEntry>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        LEADERBOARD_BASE_URL, LeaderSummary, Options, build_activity_url, build_leaderboard_url,
-        execute, extract_field_value, extract_object_containing, extract_wallet_from_json,
-        first_json_object, parse_args, render_selected_leader_env, seconds_from_ms,
-        write_output_file,
+        ACTIVITY_PAGE_LIMIT, build_activity_url, build_leaderboard_url, execute,
+        is_retryable_transport_error, parse_args, seconds_from_ms,
     };
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(name: &str) -> PathBuf {
@@ -629,82 +828,66 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        std::env::temp_dir().join(format!("discover-copy-leader-{name}-{suffix}"))
+        std::env::temp_dir().join(format!("discover-copy-leader-v1-{name}-{suffix}"))
     }
 
     #[test]
-    fn parse_args_accepts_discovery_flags() {
+    fn parse_args_accepts_wallet_filter_v1_options() {
         let options = parse_args(&[
-            "--leaderboard-base-url".into(),
-            "https://example.com/leaderboard".into(),
-            "--activity-base-url".into(),
-            "https://example.com/activity".into(),
             "--category".into(),
-            "OVERALL".into(),
-            "--time-period".into(),
-            "WEEK".into(),
-            "--order-by".into(),
-            "VOL".into(),
+            "SPORTS,CRYPTO".into(),
+            "--limit".into(),
+            "10".into(),
+            "--offset".into(),
+            "5".into(),
             "--index".into(),
-            "2".into(),
+            "1".into(),
             "--activity-type".into(),
             "TRADE".into(),
-            "--discovery-dir".into(),
-            "/tmp/discovery".into(),
-            "--proxy".into(),
-            "http://127.0.0.1:7897".into(),
-            "--retry-count".into(),
-            "2".into(),
-            "--retry-delay-ms".into(),
-            "10".into(),
-            "--skip-activity".into(),
+            "--positions-base-url".into(),
+            "https://example.com/positions".into(),
+            "--market-base-url".into(),
+            "https://example.com/markets/slug".into(),
         ])
         .expect("parse");
 
-        assert_eq!(
-            options.leaderboard_base_url,
-            "https://example.com/leaderboard"
-        );
-        assert_eq!(options.activity_base_url, "https://example.com/activity");
-        assert_eq!(options.category, "OVERALL");
-        assert_eq!(options.time_period, "WEEK");
-        assert_eq!(options.order_by, "VOL");
-        assert_eq!(options.index, 2);
+        assert_eq!(options.category, "SPORTS,CRYPTO");
+        assert_eq!(options.limit, 10);
+        assert_eq!(options.offset, 5);
+        assert_eq!(options.index, 1);
         assert_eq!(options.activity_type, "TRADE");
-        assert_eq!(options.discovery_dir, "/tmp/discovery");
-        assert_eq!(options.proxy.as_deref(), Some("http://127.0.0.1:7897"));
-        assert_eq!(options.retry_count, 2);
-        assert_eq!(options.retry_delay_ms, 10);
-        assert!(options.skip_activity);
+        assert_eq!(options.positions_base_url, "https://example.com/positions");
+        assert_eq!(options.market_base_url, "https://example.com/markets/slug");
     }
 
     #[test]
-    fn build_urls_follow_expected_shape() {
-        let options = Options::default();
-        let leaderboard_url = build_leaderboard_url(&options);
-        let activity_url =
-            build_activity_url("https://example.com/activity", "0xleader", "TRADE", 5);
-        let curl_args = super::build_curl_args(
-            "https://example.com",
-            Some("http://127.0.0.1:7897"),
-            1500,
-            8000,
+    fn urls_follow_expected_shape() {
+        let leaderboard = build_leaderboard_url(
+            "https://data-api.polymarket.com/v1/leaderboard",
+            "SPORTS",
+            "MONTH",
+            "PNL",
+            25,
+            0,
         );
-
-        assert!(leaderboard_url.starts_with(LEADERBOARD_BASE_URL));
-        assert!(leaderboard_url.contains("category=OVERALL"));
-        assert!(leaderboard_url.contains("timePeriod=DAY"));
-        assert!(leaderboard_url.contains("orderBy=PNL"));
-        assert!(activity_url.starts_with("https://example.com/activity"));
-        assert!(activity_url.contains("user=0xleader"));
-        assert!(activity_url.contains("type=TRADE"));
-        assert!(activity_url.contains("limit=5"));
-        assert!(curl_args.contains(&"--proxy".to_string()));
-        assert!(curl_args.contains(&"http://127.0.0.1:7897".to_string()));
+        let activity = build_activity_url(
+            "https://data-api.polymarket.com/activity",
+            "0xwallet",
+            100,
+            200,
+            ACTIVITY_PAGE_LIMIT,
+            0,
+        );
+        assert!(leaderboard.contains("category=SPORTS"));
+        assert!(leaderboard.contains("timePeriod=MONTH"));
+        assert!(leaderboard.contains("orderBy=PNL"));
+        assert!(activity.contains("user=0xwallet"));
+        assert!(activity.contains("start=100"));
+        assert!(activity.contains("end=200"));
     }
 
     #[test]
-    fn execute_persists_discovery_artifacts_and_selected_env() {
+    fn execute_runs_wallet_filter_v1_and_writes_artifacts() {
         let root = unique_temp_dir("execute");
         fs::create_dir_all(&root).expect("temp dir created");
         let curl_stub = root.join("curl-stub.sh");
@@ -713,10 +896,51 @@ mod tests {
             concat!(
                 "#!/usr/bin/env bash\n",
                 "url=\"${@: -1}\"\n",
-                "if [[ \"$url\" == *\"leaderboard\"* ]]; then\n",
-                "  printf '[{\"rank\":\"1\",\"proxyWallet\":\"0xleader1\",\"userName\":\"zero\",\"pnl\":111.0},{\"rank\":\"2\",\"proxyWallet\":\"0xleader2\",\"userName\":\"one\",\"pnl\":222.5}]'\n",
+                "if [[ \"$url\" == *\"leaderboard\"* && \"$url\" == *\"category=SPORTS\"* && \"$url\" == *\"timePeriod=WEEK\"* && \"$url\" == *\"orderBy=PNL\"* ]]; then\n",
+                "  printf '[{\"rank\":\"1\",\"proxyWallet\":\"0xgood\",\"userName\":\"good\",\"vol\":10000,\"pnl\":800},{\"rank\":\"2\",\"proxyWallet\":\"0xbad\",\"userName\":\"bad\",\"vol\":20000,\"pnl\":700}]'\n",
+                "elif [[ \"$url\" == *\"leaderboard\"* && \"$url\" == *\"category=SPORTS\"* && \"$url\" == *\"timePeriod=MONTH\"* && \"$url\" == *\"orderBy=PNL\"* ]]; then\n",
+                "  printf '[{\"rank\":\"2\",\"proxyWallet\":\"0xgood\",\"userName\":\"good\",\"vol\":20000,\"pnl\":1600},{\"rank\":\"3\",\"proxyWallet\":\"0xbad\",\"userName\":\"bad\",\"vol\":30000,\"pnl\":1400}]'\n",
+                "elif [[ \"$url\" == *\"leaderboard\"* && \"$url\" == *\"category=SPORTS\"* && \"$url\" == *\"timePeriod=ALL\"* && \"$url\" == *\"orderBy=PNL\"* ]]; then\n",
+                "  printf '[{\"rank\":\"5\",\"proxyWallet\":\"0xgood\",\"userName\":\"good\",\"vol\":40000,\"pnl\":5000}]'\n",
+                "elif [[ \"$url\" == *\"leaderboard\"* && \"$url\" == *\"category=SPORTS\"* && \"$url\" == *\"timePeriod=MONTH\"* && \"$url\" == *\"orderBy=VOL\"* ]]; then\n",
+                "  printf '[{\"rank\":\"1\",\"proxyWallet\":\"0xbad\",\"userName\":\"bad\",\"vol\":50000,\"pnl\":100}]'\n",
+                "elif [[ \"$url\" == *\"activity\"*\"user=0xgood\"* ]]; then\n",
+                "  printf '[",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770000000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg1\",\"asset\":\"a1\",\"side\":\"BUY\",\"slug\":\"market-1\",\"conditionId\":\"c1\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770086400,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg2\",\"asset\":\"a1\",\"side\":\"SELL\",\"slug\":\"market-1\",\"conditionId\":\"c1\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770100000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg3\",\"asset\":\"a2\",\"side\":\"BUY\",\"slug\":\"market-2\",\"conditionId\":\"c2\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770300000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg4\",\"asset\":\"a2\",\"side\":\"SELL\",\"slug\":\"market-2\",\"conditionId\":\"c2\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770310000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg5\",\"asset\":\"a3\",\"side\":\"BUY\",\"slug\":\"market-3\",\"conditionId\":\"c3\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770500000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg6\",\"asset\":\"a3\",\"side\":\"SELL\",\"slug\":\"market-3\",\"conditionId\":\"c3\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770510000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg7\",\"asset\":\"a4\",\"side\":\"BUY\",\"slug\":\"market-4\",\"conditionId\":\"c4\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770700000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg8\",\"asset\":\"a4\",\"side\":\"SELL\",\"slug\":\"market-4\",\"conditionId\":\"c4\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770710000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg9\",\"asset\":\"a5\",\"side\":\"BUY\",\"slug\":\"market-5\",\"conditionId\":\"c5\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770900000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg10\",\"asset\":\"a5\",\"side\":\"SELL\",\"slug\":\"market-5\",\"conditionId\":\"c5\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1770910000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg11\",\"asset\":\"a6\",\"side\":\"BUY\",\"slug\":\"market-6\",\"conditionId\":\"c6\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1771100000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg12\",\"asset\":\"a6\",\"side\":\"SELL\",\"slug\":\"market-6\",\"conditionId\":\"c6\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1771110000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg13\",\"asset\":\"a7\",\"side\":\"BUY\",\"slug\":\"market-7\",\"conditionId\":\"c7\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1771300000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg14\",\"asset\":\"a7\",\"side\":\"SELL\",\"slug\":\"market-7\",\"conditionId\":\"c7\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1771310000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg15\",\"asset\":\"a8\",\"side\":\"BUY\",\"slug\":\"market-8\",\"conditionId\":\"c8\"},",
+                "{\"proxyWallet\":\"0xgood\",\"timestamp\":1771500000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xg16\",\"asset\":\"a8\",\"side\":\"SELL\",\"slug\":\"market-8\",\"conditionId\":\"c8\"}]'\n",
+                "elif [[ \"$url\" == *\"activity\"*\"user=0xbad\"* ]]; then\n",
+                "  printf '[{\"proxyWallet\":\"0xbad\",\"timestamp\":1770000000,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xb1\",\"asset\":\"b1\",\"side\":\"BUY\",\"slug\":\"market-1\",\"conditionId\":\"c1\"},{\"proxyWallet\":\"0xbad\",\"timestamp\":1770000100,\"type\":\"TRADE\",\"size\":10,\"usdcSize\":100,\"transactionHash\":\"0xb2\",\"asset\":\"b1\",\"side\":\"SELL\",\"slug\":\"market-1\",\"conditionId\":\"c1\"},{\"proxyWallet\":\"0xbad\",\"timestamp\":1770000200,\"type\":\"MAKER_REBATE\",\"size\":0,\"usdcSize\":1,\"asset\":\"b1\"}]'\n",
+                "elif [[ \"$url\" == *\"positions\"*\"user=0xgood\"* ]]; then\n",
+                "  printf '[{\"proxyWallet\":\"0xgood\",\"asset\":\"a1\",\"conditionId\":\"c1\",\"slug\":\"market-1\",\"currentValue\":500,\"endDate\":\"2026-12-31T00:00:00Z\",\"negativeRisk\":false}]'\n",
+                "elif [[ \"$url\" == *\"positions\"*\"user=0xbad\"* ]]; then\n",
+                "  printf '[{\"proxyWallet\":\"0xbad\",\"asset\":\"b1\",\"conditionId\":\"c1\",\"slug\":\"market-1\",\"currentValue\":5,\"endDate\":\"2026-12-31T00:00:00Z\",\"negativeRisk\":false}]'\n",
+                "elif [[ \"$url\" == *\"/value\"*\"user=0xgood\"* ]]; then\n",
+                "  printf '[{\"user\":\"0xgood\",\"value\":500}]'\n",
+                "elif [[ \"$url\" == *\"/value\"*\"user=0xbad\"* ]]; then\n",
+                "  printf '[{\"user\":\"0xbad\",\"value\":5}]'\n",
+                "elif [[ \"$url\" == *\"/traded\"*\"user=0xgood\"* ]]; then\n",
+                "  printf '{\"user\":\"0xgood\",\"traded\":25}'\n",
+                "elif [[ \"$url\" == *\"/traded\"*\"user=0xbad\"* ]]; then\n",
+                "  printf '{\"user\":\"0xbad\",\"traded\":5}'\n",
+                "elif [[ \"$url\" == *\"markets/slug/market-\"* ]]; then\n",
+                "  printf '{\"slug\":\"market-generic\",\"conditionId\":\"c\",\"category\":\"SPORTS\",\"endDate\":\"2026-12-31T00:00:00Z\",\"acceptingOrders\":true,\"enableOrderBook\":true,\"liquidityClob\":90000,\"volume24hrClob\":50000,\"negRisk\":false}'\n",
                 "else\n",
-                "  printf '[{\"proxyWallet\":\"0xleader2\",\"side\":\"BUY\",\"timestamp\":12345,\"slug\":\"market-slug\",\"transactionHash\":\"0xfeed\"}]'\n",
+                "  echo \"unhandled url: $url\" >&2\n",
+                "  exit 1\n",
                 "fi\n"
             ),
         )
@@ -730,131 +954,103 @@ mod tests {
             curl_stub.display().to_string(),
             "--discovery-dir".into(),
             root.join("discovery").display().to_string(),
-            "--index".into(),
-            "1".into(),
+            "--category".into(),
+            "SPORTS".into(),
         ])
         .expect("parse");
 
         let artifacts = execute(&options).expect("execute should succeed");
 
-        assert_eq!(artifacts.selected_wallet, "0xleader2");
-        assert_eq!(artifacts.selected_rank.as_deref(), Some("2"));
-        assert_eq!(artifacts.selected_username.as_deref(), Some("one"));
-        assert_eq!(artifacts.selected_pnl.as_deref(), Some("222.5"));
-        assert!(artifacts.leaderboard_path.exists());
-        assert!(
-            artifacts
-                .activity_path
-                .as_ref()
-                .expect("activity path")
-                .exists()
-        );
-        assert_eq!(
-            artifacts.latest_activity_timestamp.as_deref(),
-            Some("12345")
-        );
-        assert_eq!(artifacts.latest_activity_side.as_deref(), Some("BUY"));
-        assert_eq!(
-            artifacts.latest_activity_slug.as_deref(),
-            Some("market-slug")
-        );
-        assert_eq!(artifacts.latest_activity_tx.as_deref(), Some("0xfeed"));
+        assert_eq!(artifacts.selected_wallet, "0xgood");
+        assert_eq!(artifacts.selected_category, "SPORTS");
+        assert!(artifacts.activity_path.exists());
+        assert!(artifacts.positions_path.exists());
+        assert!(artifacts.value_path.exists());
+        assert!(artifacts.traded_path.exists());
+        assert!(artifacts.filter_report_path.exists());
         assert!(artifacts.selected_leader_env_path.exists());
-        let env = fs::read_to_string(&artifacts.selected_leader_env_path).expect("env file");
-        assert!(env.contains("COPYTRADER_DISCOVERY_WALLET=0xleader2"));
-        assert!(env.contains("COPYTRADER_SELECTED_FROM=leaderboard:"));
+        let report = fs::read_to_string(&artifacts.filter_report_path).expect("report");
+        assert!(report.contains("wallet_filter_strategy=wallet_filter_v1"));
+        assert!(report.contains("selected_wallet=0xgood"));
+        let env = fs::read_to_string(&artifacts.selected_leader_env_path).expect("env");
+        assert!(env.contains("COPYTRADER_SELECTED_CATEGORY=SPORTS"));
+        assert!(env.contains("COPYTRADER_SELECTED_SCORE="));
+        assert!(env.contains("COPYTRADER_FILTER_COPYABLE_RATIO="));
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn execute_clears_stale_selected_env_when_every_candidate_is_rejected() {
+        let root = unique_temp_dir("reject-all");
+        let discovery_dir = root.join("discovery");
+        fs::create_dir_all(&discovery_dir).expect("discovery dir created");
+        fs::write(
+            discovery_dir.join("selected-leader.env"),
+            "COPYTRADER_DISCOVERY_WALLET=0xstale\n",
+        )
+        .expect("stale env written");
+
+        let curl_stub = root.join("curl-stub.sh");
+        fs::write(
+            &curl_stub,
+            concat!(
+                "#!/usr/bin/env bash\n",
+                "url=\"${@: -1}\"\n",
+                "if [[ \"$url\" == *\"leaderboard\"* ]]; then\n",
+                "  printf '[{\"rank\":\"1\",\"proxyWallet\":\"0xbad\",\"userName\":\"bad\",\"vol\":1000,\"pnl\":50}]'\n",
+                "elif [[ \"$url\" == *\"activity\"* ]]; then\n",
+                "  printf '[{\"proxyWallet\":\"0xbad\",\"timestamp\":1770000000,\"type\":\"MAKER_REBATE\",\"size\":0,\"usdcSize\":1,\"asset\":\"b1\"}]'\n",
+                "elif [[ \"$url\" == *\"positions\"* ]]; then\n",
+                "  printf '[{\"proxyWallet\":\"0xbad\",\"asset\":\"b1\",\"conditionId\":\"c1\",\"slug\":\"market-1\",\"currentValue\":0,\"endDate\":\"2026-12-31T00:00:00Z\",\"negativeRisk\":false}]'\n",
+                "elif [[ \"$url\" == *\"/value\"* ]]; then\n",
+                "  printf '[{\"user\":\"0xbad\",\"value\":0}]'\n",
+                "elif [[ \"$url\" == *\"/traded\"* ]]; then\n",
+                "  printf '{\"user\":\"0xbad\",\"traded\":1}'\n",
+                "elif [[ \"$url\" == *\"markets/slug/market-1\"* ]]; then\n",
+                "  printf '{\"slug\":\"market-1\",\"conditionId\":\"c1\",\"category\":\"SPORTS\",\"endDate\":\"2026-12-31T00:00:00Z\",\"acceptingOrders\":true,\"enableOrderBook\":true,\"liquidityClob\":90000,\"volume24hrClob\":50000,\"negRisk\":false}'\n",
+                "else\n",
+                "  echo \"unhandled url: $url\" >&2\n",
+                "  exit 1\n",
+                "fi\n"
+            ),
+        )
+        .expect("stub written");
+        let mut perms = fs::metadata(&curl_stub).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&curl_stub, perms).expect("perms");
+
+        let options = parse_args(&[
+            "--curl-bin".into(),
+            curl_stub.display().to_string(),
+            "--discovery-dir".into(),
+            discovery_dir.display().to_string(),
+            "--category".into(),
+            "SPORTS".into(),
+        ])
+        .expect("parse");
+
+        let error = execute(&options).expect_err("all candidates should be rejected");
+        assert!(error.contains("wallet_filter_v1 rejected every candidate"));
+        assert!(!discovery_dir.join("selected-leader.env").exists());
+        let report = fs::read_to_string(discovery_dir.join("wallet-filter-v1-report.txt"))
+            .expect("report should exist");
+        assert!(report.contains("selected_wallet=none"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
 
     #[test]
     fn retryable_transport_errors_cover_timeout_and_ssl_failures() {
-        assert!(super::is_retryable_transport_error(
+        assert!(is_retryable_transport_error(
             "curl exited with 28: curl: (28) timeout"
         ));
-        assert!(super::is_retryable_transport_error(
+        assert!(is_retryable_transport_error(
             "curl exited with 35: curl: (35) SSL_ERROR_SYSCALL"
         ));
-        assert!(!super::is_retryable_transport_error(
+        assert!(!is_retryable_transport_error(
             "curl exited with 22: HTTP 404"
         ));
-    }
-
-    #[test]
-    fn extract_wallet_from_json_finds_wallet_like_fields() {
-        let json = r#"[{"proxyWallet":"0xleader1"},{"user":"0xleader2"}]"#;
-        assert_eq!(
-            extract_wallet_from_json(json, 0).as_deref(),
-            Some("0xleader1")
-        );
-        assert_eq!(
-            extract_wallet_from_json(json, 1).as_deref(),
-            Some("0xleader2")
-        );
-    }
-
-    #[test]
-    fn extract_object_and_field_value_pull_summary_fields() {
-        let leaderboard =
-            r#"[{"rank":"2","proxyWallet":"0xleader2","userName":"one","pnl":222.5}]"#;
-        let object = extract_object_containing(leaderboard, "0xleader2").expect("object");
-        assert_eq!(extract_field_value(&object, "rank").as_deref(), Some("2"));
-        assert_eq!(
-            extract_field_value(&object, "userName").as_deref(),
-            Some("one")
-        );
-        assert_eq!(
-            extract_field_value(&object, "pnl").as_deref(),
-            Some("222.5")
-        );
-
-        let activity =
-            r#"[{"timestamp":12345,"transactionHash":"0xfeed","slug":"market-slug","side":"BUY"}]"#;
-        let object = first_json_object(activity).expect("activity object");
-        assert_eq!(
-            extract_field_value(&object, "transactionHash").as_deref(),
-            Some("0xfeed")
-        );
-        assert_eq!(
-            extract_field_value(&object, "slug").as_deref(),
-            Some("market-slug")
-        );
-    }
-
-    #[test]
-    fn render_selected_leader_env_includes_source_path() {
-        let rendered = render_selected_leader_env(
-            "0xleader1",
-            Path::new("/tmp/out.json"),
-            3,
-            &LeaderSummary {
-                selected_rank: Some("3".into()),
-                selected_pnl: Some("123.45".into()),
-                selected_username: Some("alpha".into()),
-                latest_activity_timestamp: Some("1776303488".into()),
-                latest_activity_side: Some("BUY".into()),
-                latest_activity_slug: Some("market-slug".into()),
-                latest_activity_tx: Some("0xfeed".into()),
-            },
-        );
-        assert!(rendered.contains("COPYTRADER_DISCOVERY_WALLET=0xleader1"));
-        assert!(rendered.contains("COPYTRADER_SELECTED_FROM=leaderboard:/tmp/out.json#3"));
-        assert!(rendered.contains("COPYTRADER_SELECTED_RANK=3"));
-        assert!(rendered.contains("COPYTRADER_SELECTED_PNL=123.45"));
-        assert!(rendered.contains("COPYTRADER_SELECTED_USERNAME=alpha"));
-        assert!(rendered.contains("COPYTRADER_LATEST_ACTIVITY_SIDE=BUY"));
-    }
-
-    #[test]
-    fn write_output_file_creates_parent_directories() {
-        let root = unique_temp_dir("output");
-        let path = root.join("nested").join("artifact.json");
-        write_output_file(&path, br#"{"ok":true}"#).expect("write should succeed");
-        assert_eq!(
-            fs::read_to_string(&path).expect("artifact exists"),
-            "{\"ok\":true}"
-        );
-        fs::remove_dir_all(root).expect("temp dir removed");
     }
 
     #[test]

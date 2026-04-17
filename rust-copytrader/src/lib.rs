@@ -9,3 +9,4 @@ pub mod pipeline;
 
 pub mod replay;
 pub mod telemetry;
+pub mod wallet_filter;
