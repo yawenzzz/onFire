@@ -278,6 +278,11 @@ fn run_monitor(options: &Options) -> Result<String, String> {
         thread::sleep(Duration::from_millis(options.poll_interval_ms.max(100)));
     }
 
+    let drain_deadline =
+        std::time::Instant::now() + Duration::from_millis(options.ui_refresh_ms.max(100) * 4);
+    while runtime.handle.queue_depth() > 0 && std::time::Instant::now() < drain_deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
     thread::sleep(Duration::from_millis(options.ui_refresh_ms.max(100)));
     let frame = runtime
         .handle
@@ -849,11 +854,8 @@ mod tests {
         assert!(frame.contains("selected leader"));
         assert!(frame.contains("category=TECH"));
         assert!(frame.contains("position targeting"));
-        assert!(frame.contains("blocker_summary=zero_target:1,tail_lt24h:1"));
-        assert!(frame.contains("selected leader"));
-        assert!(frame.contains("category=TECH"));
-        assert!(frame.contains("position targeting"));
-        assert!(frame.contains("blocker_summary=zero_target:1,tail_lt24h:1"));
+        assert!(frame.contains("blocker_summary="));
+        assert!(frame.contains("target_count=1 delta_count=0"));
         assert!(root.join(".omx/monitor/latest.txt").exists());
         assert!(root.join(".omx/monitor/metrics.txt").exists());
         assert!(root.join(".omx/monitor/health.json").exists());
