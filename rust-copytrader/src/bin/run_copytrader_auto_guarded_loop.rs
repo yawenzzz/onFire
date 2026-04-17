@@ -18,11 +18,13 @@ struct Options {
     loop_count: usize,
     loop_interval_ms: u64,
     watch_poll_count: usize,
+    position_targeting_demo: bool,
     live_submit_gate: bool,
     allow_live_submit: bool,
     discover_bin: Option<String>,
     watch_bin: Option<String>,
     guarded_bin: Option<String>,
+    position_targeting_bin: Option<String>,
     live_submit_bin: Option<String>,
 }
 
@@ -39,11 +41,13 @@ impl Default for Options {
             loop_count: 1,
             loop_interval_ms: 5_000,
             watch_poll_count: 1,
+            position_targeting_demo: false,
             live_submit_gate: false,
             allow_live_submit: false,
             discover_bin: None,
             watch_bin: None,
             guarded_bin: None,
+            position_targeting_bin: None,
             live_submit_bin: None,
         }
     }
@@ -84,7 +88,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_auto_guarded_loop [--root <path>] [--discovery-dir <path>] [--proxy <url>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--loop-count <n>] [--loop-interval-ms <n>] [--watch-poll-count <n>] [--live-submit-gate] [--allow-live-submit] [--discover-bin <path>] [--watch-bin <path>] [--guarded-bin <path>] [--live-submit-bin <path>]"
+        "usage: run_copytrader_auto_guarded_loop [--root <path>] [--discovery-dir <path>] [--proxy <url>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--loop-count <n>] [--loop-interval-ms <n>] [--watch-poll-count <n>] [--position-targeting-demo] [--live-submit-gate] [--allow-live-submit] [--discover-bin <path>] [--watch-bin <path>] [--guarded-bin <path>] [--position-targeting-bin <path>] [--live-submit-bin <path>]"
     );
 }
 
@@ -120,11 +124,15 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 options.watch_poll_count =
                     parse_usize(&next_value(&mut iter, arg)?, "watch-poll-count")?
             }
+            "--position-targeting-demo" => options.position_targeting_demo = true,
             "--live-submit-gate" => options.live_submit_gate = true,
             "--allow-live-submit" => options.allow_live_submit = true,
             "--discover-bin" => options.discover_bin = Some(next_value(&mut iter, arg)?),
             "--watch-bin" => options.watch_bin = Some(next_value(&mut iter, arg)?),
             "--guarded-bin" => options.guarded_bin = Some(next_value(&mut iter, arg)?),
+            "--position-targeting-bin" => {
+                options.position_targeting_bin = Some(next_value(&mut iter, arg)?)
+            }
             "--live-submit-bin" => options.live_submit_bin = Some(next_value(&mut iter, arg)?),
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -168,6 +176,11 @@ fn run_auto_guarded_loop(options: &Options) -> Result<(PathBuf, Option<String>),
         options.guarded_bin.as_deref(),
     )
     .map_err(|error| format!("failed to resolve run_copytrader_guarded_cycle: {error}"))?;
+    let position_targeting_bin = resolve_bin_path(
+        "run_position_targeting_demo",
+        options.position_targeting_bin.as_deref(),
+    )
+    .map_err(|error| format!("failed to resolve run_position_targeting_demo: {error}"))?;
     let live_submit_bin = resolve_bin_path(
         "run_copytrader_live_submit_gate",
         options.live_submit_bin.as_deref(),
@@ -234,6 +247,28 @@ fn run_auto_guarded_loop(options: &Options) -> Result<(PathBuf, Option<String>),
         ));
         if failure.is_some() {
             break;
+        }
+
+        if options.position_targeting_demo {
+            let position_output = run_command(
+                &position_targeting_bin,
+                &["--root".to_string(), options.root.clone()],
+                Some(Path::new(".")),
+            );
+            let position_text = match &position_output {
+                Ok(output) => decode_stdout("run_position_targeting_demo", output)?,
+                Err(error) => {
+                    failure = Some(("run_position_targeting_demo".to_string(), error.clone()));
+                    format!("error={error}")
+                }
+            };
+            report_sections.push(format!(
+                "== iteration {iteration} / run_position_targeting_demo ==\n{}",
+                position_text.trim_end()
+            ));
+            if failure.is_some() {
+                break;
+            }
         }
 
         if options.live_submit_gate {
@@ -431,6 +466,7 @@ mod tests {
             "10".into(),
             "--watch-poll-count".into(),
             "3".into(),
+            "--position-targeting-demo".into(),
             "--live-submit-gate".into(),
             "--allow-live-submit".into(),
             "--proxy".into(),
@@ -441,6 +477,7 @@ mod tests {
         assert_eq!(options.loop_count, 2);
         assert_eq!(options.loop_interval_ms, 10);
         assert_eq!(options.watch_poll_count, 3);
+        assert!(options.position_targeting_demo);
         assert!(options.live_submit_gate);
         assert!(options.allow_live_submit);
         assert_eq!(options.proxy.as_deref(), Some("http://127.0.0.1:7897"));
@@ -501,6 +538,11 @@ mod tests {
             &guarded,
             "#!/usr/bin/env bash\nprintf 'mode=guarded-cycle\\ncycle_outcome=processed\\n'\n",
         );
+        let position_targeting = root.join("run_position_targeting_demo");
+        write_executable(
+            &position_targeting,
+            "#!/usr/bin/env bash\nprintf 'mode=position-targeting-demo\\ntarget_count=2\\ndelta_count=1\\n'\n",
+        );
         let live_submit = root.join("run_copytrader_live_submit_gate");
         write_executable(
             &live_submit,
@@ -516,6 +558,9 @@ mod tests {
             watch.display().to_string(),
             "--guarded-bin".into(),
             guarded.display().to_string(),
+            "--position-targeting-bin".into(),
+            position_targeting.display().to_string(),
+            "--position-targeting-demo".into(),
             "--live-submit-bin".into(),
             live_submit.display().to_string(),
             "--live-submit-gate".into(),
@@ -535,6 +580,8 @@ mod tests {
         assert!(report.contains("watch_user=0xleader"));
         assert!(report.contains("== iteration 0 / run_copytrader_guarded_cycle =="));
         assert!(report.contains("cycle_outcome=processed"));
+        assert!(report.contains("== iteration 0 / run_position_targeting_demo =="));
+        assert!(report.contains("mode=position-targeting-demo"));
         assert!(report.contains("== iteration 0 / run_copytrader_live_submit_gate =="));
         assert!(report.contains("live_submit_status=preview_only"));
 
@@ -643,6 +690,66 @@ mod tests {
         assert!(error.is_some());
         let report = fs::read_to_string(&report_path).expect("report exists");
         assert!(report.contains("flow_failure_stage=run_copytrader_live_submit_gate"));
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn auto_guarded_loop_persists_failure_stage_when_position_targeting_demo_fails() {
+        let root = unique_temp_dir("position-targeting-failure");
+        fs::create_dir_all(root.join(".omx/auto-guarded")).expect("auto dir created");
+
+        let discover = root.join("discover_copy_leader");
+        write_executable(
+            &discover,
+            "#!/usr/bin/env bash\nprintf 'selected_wallet=0xleader\\n'\n",
+        );
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            "#!/usr/bin/env bash\nprintf 'watch_user=0xleader\\npoll_new_events=1\\n'\n",
+        );
+        let guarded = root.join("run_copytrader_guarded_cycle");
+        write_executable(
+            &guarded,
+            "#!/usr/bin/env bash\nprintf 'mode=guarded-cycle\\ncycle_outcome=processed\\n'\n",
+        );
+        let position_targeting = root.join("run_position_targeting_demo");
+        write_executable(
+            &position_targeting,
+            "#!/usr/bin/env bash\necho 'position targeting failed' >&2\nexit 1\n",
+        );
+        let live_submit = root.join("run_copytrader_live_submit_gate");
+        write_executable(
+            &live_submit,
+            "#!/usr/bin/env bash\nprintf 'mode=live-submit-gate\\n'\n",
+        );
+
+        let options = parse_args(&[
+            "--root".into(),
+            root.display().to_string(),
+            "--discover-bin".into(),
+            discover.display().to_string(),
+            "--watch-bin".into(),
+            watch.display().to_string(),
+            "--guarded-bin".into(),
+            guarded.display().to_string(),
+            "--position-targeting-bin".into(),
+            position_targeting.display().to_string(),
+            "--position-targeting-demo".into(),
+            "--live-submit-bin".into(),
+            live_submit.display().to_string(),
+            "--loop-count".into(),
+            "1".into(),
+            "--watch-poll-count".into(),
+            "1".into(),
+        ])
+        .expect("parse");
+
+        let (report_path, error) = run_auto_guarded_loop(&options).expect("loop returns report");
+        assert!(error.is_some());
+        let report = fs::read_to_string(&report_path).expect("report exists");
+        assert!(report.contains("flow_failure_stage=run_position_targeting_demo"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
