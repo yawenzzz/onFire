@@ -36,6 +36,12 @@ pub struct SelectedLeaderContext {
     pub rank: Option<String>,
     pub pnl: Option<String>,
     pub username: Option<String>,
+    pub review_status: Option<String>,
+    pub review_reasons: Option<String>,
+    pub core_pool_count: Option<String>,
+    pub core_pool_wallets: Option<String>,
+    pub active_pool_count: Option<String>,
+    pub active_pool_wallets: Option<String>,
     pub latest_activity_timestamp: Option<String>,
     pub latest_activity_side: Option<String>,
     pub latest_activity_slug: Option<String>,
@@ -341,6 +347,30 @@ impl RuntimeSession {
             .bootstrap
             .selected_leader()
             .and_then(|leader| leader.username.clone());
+        let selected_leader_review_status = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.review_status.clone());
+        let selected_leader_review_reasons = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.review_reasons.clone());
+        let selected_leader_core_pool_count = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.core_pool_count.clone());
+        let selected_leader_core_pool_wallets = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.core_pool_wallets.clone());
+        let selected_leader_active_pool_count = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.active_pool_count.clone());
+        let selected_leader_active_pool_wallets = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.active_pool_wallets.clone());
         let selected_leader_latest_activity_timestamp = self
             .bootstrap
             .selected_leader()
@@ -370,6 +400,13 @@ impl RuntimeSession {
                     selected_leader_rank: selected_leader_rank.clone(),
                     selected_leader_pnl: selected_leader_pnl.clone(),
                     selected_leader_username: selected_leader_username.clone(),
+                    selected_leader_review_status: selected_leader_review_status.clone(),
+                    selected_leader_review_reasons: selected_leader_review_reasons.clone(),
+                    selected_leader_core_pool_count: selected_leader_core_pool_count.clone(),
+                    selected_leader_core_pool_wallets: selected_leader_core_pool_wallets.clone(),
+                    selected_leader_active_pool_count: selected_leader_active_pool_count.clone(),
+                    selected_leader_active_pool_wallets: selected_leader_active_pool_wallets
+                        .clone(),
                     selected_leader_latest_activity_timestamp:
                         selected_leader_latest_activity_timestamp.clone(),
                     selected_leader_latest_activity_side: selected_leader_latest_activity_side
@@ -406,6 +443,15 @@ impl RuntimeSession {
                         selected_leader_rank: selected_leader_rank.clone(),
                         selected_leader_pnl: selected_leader_pnl.clone(),
                         selected_leader_username: selected_leader_username.clone(),
+                        selected_leader_review_status: selected_leader_review_status.clone(),
+                        selected_leader_review_reasons: selected_leader_review_reasons.clone(),
+                        selected_leader_core_pool_count: selected_leader_core_pool_count.clone(),
+                        selected_leader_core_pool_wallets: selected_leader_core_pool_wallets
+                            .clone(),
+                        selected_leader_active_pool_count: selected_leader_active_pool_count
+                            .clone(),
+                        selected_leader_active_pool_wallets: selected_leader_active_pool_wallets
+                            .clone(),
                         selected_leader_latest_activity_timestamp:
                             selected_leader_latest_activity_timestamp.clone(),
                         selected_leader_latest_activity_side: selected_leader_latest_activity_side
@@ -494,6 +540,12 @@ impl RuntimeSession {
             selected_leader_rank,
             selected_leader_pnl,
             selected_leader_username,
+            selected_leader_review_status,
+            selected_leader_review_reasons,
+            selected_leader_core_pool_count,
+            selected_leader_core_pool_wallets,
+            selected_leader_active_pool_count,
+            selected_leader_active_pool_wallets,
             selected_leader_latest_activity_timestamp,
             selected_leader_latest_activity_side,
             selected_leader_latest_activity_slug,
@@ -552,6 +604,12 @@ fn selected_leader_context_from_root(
             rank: None,
             pnl: None,
             username: None,
+            review_status: None,
+            review_reasons: None,
+            core_pool_count: None,
+            core_pool_wallets: None,
+            active_pool_count: None,
+            active_pool_wallets: None,
             latest_activity_timestamp: None,
             latest_activity_side: None,
             latest_activity_slug: None,
@@ -579,6 +637,27 @@ fn selected_leader_context_from_root(
                         rank: env_file_value(&content, &["COPYTRADER_SELECTED_RANK"]),
                         pnl: env_file_value(&content, &["COPYTRADER_SELECTED_PNL"]),
                         username: env_file_value(&content, &["COPYTRADER_SELECTED_USERNAME"]),
+                        review_status: env_file_value(
+                            &content,
+                            &["COPYTRADER_SELECTED_REVIEW_STATUS"],
+                        ),
+                        review_reasons: env_file_value(
+                            &content,
+                            &["COPYTRADER_SELECTED_REVIEW_REASONS"],
+                        ),
+                        core_pool_count: env_file_value(&content, &["COPYTRADER_CORE_POOL_COUNT"]),
+                        core_pool_wallets: env_file_value(
+                            &content,
+                            &["COPYTRADER_CORE_POOL_WALLETS"],
+                        ),
+                        active_pool_count: env_file_value(
+                            &content,
+                            &["COPYTRADER_ACTIVE_POOL_COUNT"],
+                        ),
+                        active_pool_wallets: env_file_value(
+                            &content,
+                            &["COPYTRADER_ACTIVE_POOL_WALLETS"],
+                        ),
                         latest_activity_timestamp: env_file_value(
                             &content,
                             &["COPYTRADER_LATEST_ACTIVITY_TIMESTAMP"],
@@ -624,6 +703,12 @@ fn selected_leader_context_from_root(
                 rank: env_map_value(env_map, &["COPYTRADER_SELECTED_RANK"]),
                 pnl: env_map_value(env_map, &["COPYTRADER_SELECTED_PNL"]),
                 username: env_map_value(env_map, &["COPYTRADER_SELECTED_USERNAME"]),
+                review_status: env_map_value(env_map, &["COPYTRADER_SELECTED_REVIEW_STATUS"]),
+                review_reasons: env_map_value(env_map, &["COPYTRADER_SELECTED_REVIEW_REASONS"]),
+                core_pool_count: env_map_value(env_map, &["COPYTRADER_CORE_POOL_COUNT"]),
+                core_pool_wallets: env_map_value(env_map, &["COPYTRADER_CORE_POOL_WALLETS"]),
+                active_pool_count: env_map_value(env_map, &["COPYTRADER_ACTIVE_POOL_COUNT"]),
+                active_pool_wallets: env_map_value(env_map, &["COPYTRADER_ACTIVE_POOL_WALLETS"]),
                 latest_activity_timestamp: env_map_value(
                     env_map,
                     &["COPYTRADER_LATEST_ACTIVITY_TIMESTAMP"],
@@ -683,6 +768,12 @@ fn activity_record(snapshot: &SnapshotBundle) -> String {
             "\"selected_leader_rank\":{},",
             "\"selected_leader_pnl\":{},",
             "\"selected_leader_username\":{},",
+            "\"selected_leader_review_status\":{},",
+            "\"selected_leader_review_reasons\":{},",
+            "\"selected_leader_core_pool_count\":{},",
+            "\"selected_leader_core_pool_wallets\":{},",
+            "\"selected_leader_active_pool_count\":{},",
+            "\"selected_leader_active_pool_wallets\":{},",
             "\"selected_leader_latest_activity_timestamp\":{},",
             "\"selected_leader_latest_activity_side\":{},",
             "\"selected_leader_latest_activity_slug\":{},",
@@ -697,6 +788,27 @@ fn activity_record(snapshot: &SnapshotBundle) -> String {
         opt_json(snapshot.runtime.selected_leader_rank.as_deref()),
         opt_json(snapshot.runtime.selected_leader_pnl.as_deref()),
         opt_json(snapshot.runtime.selected_leader_username.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_review_status.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_review_reasons.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_core_pool_count.as_deref()),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_core_pool_wallets
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_active_pool_count
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_active_pool_wallets
+                .as_deref()
+        ),
         opt_json(
             snapshot
                 .runtime
@@ -735,6 +847,12 @@ fn order_record(snapshot: &SnapshotBundle) -> String {
             "\"selected_leader_rank\":{},",
             "\"selected_leader_pnl\":{},",
             "\"selected_leader_username\":{},",
+            "\"selected_leader_review_status\":{},",
+            "\"selected_leader_review_reasons\":{},",
+            "\"selected_leader_core_pool_count\":{},",
+            "\"selected_leader_core_pool_wallets\":{},",
+            "\"selected_leader_active_pool_count\":{},",
+            "\"selected_leader_active_pool_wallets\":{},",
             "\"selected_leader_latest_activity_side\":{},",
             "\"selected_leader_latest_activity_slug\":{},",
             "\"selected_leader_latest_activity_tx\":{},",
@@ -750,6 +868,27 @@ fn order_record(snapshot: &SnapshotBundle) -> String {
         opt_json(snapshot.runtime.selected_leader_rank.as_deref()),
         opt_json(snapshot.runtime.selected_leader_pnl.as_deref()),
         opt_json(snapshot.runtime.selected_leader_username.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_review_status.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_review_reasons.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_core_pool_count.as_deref()),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_core_pool_wallets
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_active_pool_count
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_active_pool_wallets
+                .as_deref()
+        ),
         opt_json(
             snapshot
                 .runtime
@@ -785,6 +924,12 @@ fn verification_record(snapshot: &SnapshotBundle) -> String {
             "\"selected_leader_rank\":{},",
             "\"selected_leader_pnl\":{},",
             "\"selected_leader_username\":{},",
+            "\"selected_leader_review_status\":{},",
+            "\"selected_leader_review_reasons\":{},",
+            "\"selected_leader_core_pool_count\":{},",
+            "\"selected_leader_core_pool_wallets\":{},",
+            "\"selected_leader_active_pool_count\":{},",
+            "\"selected_leader_active_pool_wallets\":{},",
             "\"selected_leader_latest_activity_side\":{},",
             "\"selected_leader_latest_activity_slug\":{},",
             "\"selected_leader_latest_activity_tx\":{},",
@@ -798,6 +943,27 @@ fn verification_record(snapshot: &SnapshotBundle) -> String {
         opt_json(snapshot.runtime.selected_leader_rank.as_deref()),
         opt_json(snapshot.runtime.selected_leader_pnl.as_deref()),
         opt_json(snapshot.runtime.selected_leader_username.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_review_status.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_review_reasons.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_core_pool_count.as_deref()),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_core_pool_wallets
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_active_pool_count
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_active_pool_wallets
+                .as_deref()
+        ),
         opt_json(
             snapshot
                 .runtime

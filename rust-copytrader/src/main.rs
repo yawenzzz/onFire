@@ -314,6 +314,24 @@ fn render_runtime_smoke_report(root: &Path) -> Result<String, RootEnvLoadError> 
         if let Some(value) = &snapshot.runtime.selected_leader_username {
             lines.push(format!("runtime_subject_username={value}"));
         }
+        if let Some(value) = &snapshot.runtime.selected_leader_review_status {
+            lines.push(format!("runtime_subject_review_status={value}"));
+        }
+        if let Some(value) = &snapshot.runtime.selected_leader_review_reasons {
+            lines.push(format!("runtime_subject_review_reasons={value}"));
+        }
+        if let Some(value) = &snapshot.runtime.selected_leader_core_pool_count {
+            lines.push(format!("runtime_subject_core_pool_count={value}"));
+        }
+        if let Some(value) = &snapshot.runtime.selected_leader_core_pool_wallets {
+            lines.push(format!("runtime_subject_core_pool_wallets={value}"));
+        }
+        if let Some(value) = &snapshot.runtime.selected_leader_active_pool_count {
+            lines.push(format!("runtime_subject_active_pool_count={value}"));
+        }
+        if let Some(value) = &snapshot.runtime.selected_leader_active_pool_wallets {
+            lines.push(format!("runtime_subject_active_pool_wallets={value}"));
+        }
         if let Some(value) = &snapshot.runtime.selected_leader_latest_activity_timestamp {
             lines.push(format!("runtime_subject_latest_activity_timestamp={value}"));
         }

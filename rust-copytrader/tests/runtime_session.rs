@@ -83,6 +83,12 @@ fn replay_session_from_root_uses_selected_leader_as_runtime_subject() {
             "COPYTRADER_SELECTED_RANK=1\n",
             "COPYTRADER_SELECTED_PNL=123.45\n",
             "COPYTRADER_SELECTED_USERNAME=alpha\n",
+            "COPYTRADER_SELECTED_REVIEW_STATUS=stable\n",
+            "COPYTRADER_SELECTED_REVIEW_REASONS=none\n",
+            "COPYTRADER_CORE_POOL_COUNT=3\n",
+            "COPYTRADER_CORE_POOL_WALLETS=0xaaa:95,0xbbb:88\n",
+            "COPYTRADER_ACTIVE_POOL_COUNT=2\n",
+            "COPYTRADER_ACTIVE_POOL_WALLETS=0xaaa:95\n",
             "COPYTRADER_LATEST_ACTIVITY_TIMESTAMP=1776303488\n",
             "COPYTRADER_LATEST_ACTIVITY_SIDE=BUY\n",
             "COPYTRADER_LATEST_ACTIVITY_SLUG=market-slug\n",
@@ -117,6 +123,21 @@ fn replay_session_from_root_uses_selected_leader_as_runtime_subject() {
     assert_eq!(
         snapshot.runtime.selected_leader_username.as_deref(),
         Some("alpha")
+    );
+    assert_eq!(
+        snapshot.runtime.selected_leader_review_status.as_deref(),
+        Some("stable")
+    );
+    assert_eq!(
+        snapshot.runtime.selected_leader_core_pool_count.as_deref(),
+        Some("3")
+    );
+    assert_eq!(
+        snapshot
+            .runtime
+            .selected_leader_active_pool_wallets
+            .as_deref(),
+        Some("0xaaa:95")
     );
     assert_eq!(
         snapshot

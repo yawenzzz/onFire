@@ -75,6 +75,30 @@ impl OperatorReport {
             .selected_leader_username
             .as_deref()
             .unwrap_or("none");
+        let selected_leader_review_status = self
+            .snapshot
+            .runtime
+            .selected_leader_review_status
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_review_reasons = self
+            .snapshot
+            .runtime
+            .selected_leader_review_reasons
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_core_pool_count = self
+            .snapshot
+            .runtime
+            .selected_leader_core_pool_count
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_active_pool_count = self
+            .snapshot
+            .runtime
+            .selected_leader_active_pool_count
+            .as_deref()
+            .unwrap_or("none");
         let selected_leader_latest_activity_side = self
             .snapshot
             .runtime
@@ -97,6 +121,10 @@ impl OperatorReport {
                 "selected_leader_rank={} ",
                 "selected_leader_pnl={} ",
                 "selected_leader_username={} ",
+                "selected_leader_review_status={} ",
+                "selected_leader_review_reasons={} ",
+                "selected_leader_core_pool_count={} ",
+                "selected_leader_active_pool_count={} ",
                 "selected_leader_latest_activity_side={} ",
                 "selected_leader_latest_activity_slug={} ",
                 "last_submit_status={} ",
@@ -114,6 +142,10 @@ impl OperatorReport {
             selected_leader_rank,
             selected_leader_pnl,
             selected_leader_username,
+            selected_leader_review_status,
+            selected_leader_review_reasons,
+            selected_leader_core_pool_count,
+            selected_leader_active_pool_count,
             selected_leader_latest_activity_side,
             selected_leader_latest_activity_slug,
             self.snapshot.runtime.last_submit_status,

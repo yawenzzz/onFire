@@ -30,6 +30,12 @@ fn snapshot_bundle_renders_stable_json_shape() {
             selected_leader_rank: Some("1".into()),
             selected_leader_pnl: Some("123.45".into()),
             selected_leader_username: Some("alpha".into()),
+            selected_leader_review_status: Some("stable".into()),
+            selected_leader_review_reasons: Some("none".into()),
+            selected_leader_core_pool_count: Some("3".into()),
+            selected_leader_core_pool_wallets: Some("0xaaa:95,0xbbb:88".into()),
+            selected_leader_active_pool_count: Some("2".into()),
+            selected_leader_active_pool_wallets: Some("0xaaa:95".into()),
             selected_leader_latest_activity_timestamp: Some("1776303488".into()),
             selected_leader_latest_activity_side: Some("BUY".into()),
             selected_leader_latest_activity_slug: Some("market-slug".into()),
@@ -56,6 +62,8 @@ fn snapshot_bundle_renders_stable_json_shape() {
     assert!(json.contains("\"selected_leader_rank\":\"1\""));
     assert!(json.contains("\"selected_leader_pnl\":\"123.45\""));
     assert!(json.contains("\"selected_leader_username\":\"alpha\""));
+    assert!(json.contains("\"selected_leader_review_status\":\"stable\""));
+    assert!(json.contains("\"selected_leader_core_pool_count\":\"3\""));
     assert!(json.contains("\"selected_leader_latest_activity_side\":\"BUY\""));
     assert!(json.contains("\"verification_pending\":2"));
     assert!(json.contains("\"last_correlation_id\":\"corr-7\""));
@@ -82,6 +90,12 @@ fn snapshot_bundle_renders_nulls_and_escaped_strings_for_operator_reports() {
             selected_leader_rank: None,
             selected_leader_pnl: None,
             selected_leader_username: None,
+            selected_leader_review_status: None,
+            selected_leader_review_reasons: None,
+            selected_leader_core_pool_count: None,
+            selected_leader_core_pool_wallets: None,
+            selected_leader_active_pool_count: None,
+            selected_leader_active_pool_wallets: None,
             selected_leader_latest_activity_timestamp: None,
             selected_leader_latest_activity_side: None,
             selected_leader_latest_activity_slug: None,

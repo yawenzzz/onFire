@@ -21,6 +21,12 @@ pub struct RuntimeSnapshot {
     pub selected_leader_rank: Option<String>,
     pub selected_leader_pnl: Option<String>,
     pub selected_leader_username: Option<String>,
+    pub selected_leader_review_status: Option<String>,
+    pub selected_leader_review_reasons: Option<String>,
+    pub selected_leader_core_pool_count: Option<String>,
+    pub selected_leader_core_pool_wallets: Option<String>,
+    pub selected_leader_active_pool_count: Option<String>,
+    pub selected_leader_active_pool_wallets: Option<String>,
     pub selected_leader_latest_activity_timestamp: Option<String>,
     pub selected_leader_latest_activity_side: Option<String>,
     pub selected_leader_latest_activity_slug: Option<String>,
@@ -47,6 +53,16 @@ impl SnapshotBundle {
         let selected_leader_rank = opt_json(&self.runtime.selected_leader_rank);
         let selected_leader_pnl = opt_json(&self.runtime.selected_leader_pnl);
         let selected_leader_username = opt_json(&self.runtime.selected_leader_username);
+        let selected_leader_review_status = opt_json(&self.runtime.selected_leader_review_status);
+        let selected_leader_review_reasons = opt_json(&self.runtime.selected_leader_review_reasons);
+        let selected_leader_core_pool_count =
+            opt_json(&self.runtime.selected_leader_core_pool_count);
+        let selected_leader_core_pool_wallets =
+            opt_json(&self.runtime.selected_leader_core_pool_wallets);
+        let selected_leader_active_pool_count =
+            opt_json(&self.runtime.selected_leader_active_pool_count);
+        let selected_leader_active_pool_wallets =
+            opt_json(&self.runtime.selected_leader_active_pool_wallets);
         let selected_leader_latest_activity_timestamp =
             opt_json(&self.runtime.selected_leader_latest_activity_timestamp);
         let selected_leader_latest_activity_side =
@@ -76,6 +92,12 @@ impl SnapshotBundle {
                 "\"selected_leader_rank\":{},",
                 "\"selected_leader_pnl\":{},",
                 "\"selected_leader_username\":{},",
+                "\"selected_leader_review_status\":{},",
+                "\"selected_leader_review_reasons\":{},",
+                "\"selected_leader_core_pool_count\":{},",
+                "\"selected_leader_core_pool_wallets\":{},",
+                "\"selected_leader_active_pool_count\":{},",
+                "\"selected_leader_active_pool_wallets\":{},",
                 "\"selected_leader_latest_activity_timestamp\":{},",
                 "\"selected_leader_latest_activity_side\":{},",
                 "\"selected_leader_latest_activity_slug\":{},",
@@ -101,6 +123,12 @@ impl SnapshotBundle {
             selected_leader_rank,
             selected_leader_pnl,
             selected_leader_username,
+            selected_leader_review_status,
+            selected_leader_review_reasons,
+            selected_leader_core_pool_count,
+            selected_leader_core_pool_wallets,
+            selected_leader_active_pool_count,
+            selected_leader_active_pool_wallets,
             selected_leader_latest_activity_timestamp,
             selected_leader_latest_activity_side,
             selected_leader_latest_activity_slug,
