@@ -16,6 +16,17 @@ struct Options {
     discover_bin: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CategoryScanResult {
+    category: String,
+    status: &'static str,
+    selected_wallet: Option<String>,
+    selected_score: Option<i64>,
+    top_rejected_wallet: Option<String>,
+    top_rejection_reasons: Option<String>,
+    section: String,
+}
+
 impl Default for Options {
     fn default() -> Self {
         Self {
@@ -125,6 +136,7 @@ fn run_scan(options: &Options) -> Result<(PathBuf, bool), String> {
     }
 
     let mut sections = Vec::new();
+    let mut results = Vec::new();
     let mut has_pass = false;
     for category in categories {
         let output = run_command(
@@ -168,12 +180,119 @@ fn run_scan(options: &Options) -> Result<(PathBuf, bool), String> {
                     .unwrap_or_default()
             ),
         };
+        let selected_wallet = parse_key_from_section(&section, "selected_wallet");
+        let selected_score =
+            parse_key_from_section(&section, "selected_score").and_then(|value| value.parse().ok());
+        let top_rejected_wallet = parse_key_from_error(&section, "top_rejected_wallet=");
+        let top_rejection_reasons = parse_key_from_error(&section, "top_rejection_reasons=");
+        results.push(CategoryScanResult {
+            category: category.clone(),
+            status: if section.contains("\nstatus=passed\n") {
+                "passed"
+            } else {
+                "rejected"
+            },
+            selected_wallet,
+            selected_score,
+            top_rejected_wallet,
+            top_rejection_reasons,
+            section: section.clone(),
+        });
         sections.push(section);
     }
 
-    fs::write(&summary_path, sections.join("\n\n"))
+    let summary = render_summary(&results);
+    fs::write(&summary_path, summary)
         .map_err(|error| format!("failed to write {}: {error}", summary_path.display()))?;
     Ok((summary_path, has_pass))
+}
+
+fn render_summary(results: &[CategoryScanResult]) -> String {
+    let passed = results
+        .iter()
+        .filter(|result| result.status == "passed")
+        .collect::<Vec<_>>();
+    let rejected = results
+        .iter()
+        .filter(|result| result.status == "rejected")
+        .collect::<Vec<_>>();
+    let best_pass = passed
+        .iter()
+        .max_by_key(|result| result.selected_score.unwrap_or(i64::MIN));
+    let best_reject = rejected
+        .iter()
+        .max_by_key(|result| result.selected_score.unwrap_or(i64::MIN));
+
+    let mut lines = vec![
+        "wallet_filter_summary_strategy=wallet_filter_v1".to_string(),
+        format!("categories_scanned={}", results.len()),
+        format!("categories_passed={}", passed.len()),
+        format!("categories_rejected={}", rejected.len()),
+        format!(
+            "best_pass_category={}",
+            best_pass
+                .map(|result| result.category.as_str())
+                .unwrap_or("none")
+        ),
+        format!(
+            "best_pass_wallet={}",
+            best_pass
+                .and_then(|result| result.selected_wallet.as_deref())
+                .unwrap_or("none")
+        ),
+        format!(
+            "best_rejected_category={}",
+            best_reject
+                .map(|result| result.category.as_str())
+                .unwrap_or("none")
+        ),
+        format!(
+            "best_rejected_wallet={}",
+            best_reject
+                .and_then(|result| {
+                    result
+                        .top_rejected_wallet
+                        .as_deref()
+                        .or(result.selected_wallet.as_deref())
+                })
+                .unwrap_or("none")
+        ),
+        format!(
+            "best_rejected_reasons={}",
+            best_reject
+                .and_then(|result| result.top_rejection_reasons.as_deref())
+                .unwrap_or("none")
+        ),
+    ];
+    for result in results {
+        lines.push(String::new());
+        lines.push(result.section.clone());
+    }
+    lines.join("\n")
+}
+
+fn parse_key_from_section(section: &str, key: &str) -> Option<String> {
+    section
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}=")))
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "none")
+        .map(ToString::to_string)
+}
+
+fn parse_key_from_error(section: &str, prefix: &str) -> Option<String> {
+    section
+        .lines()
+        .find_map(|line| line.split(prefix).nth(1))
+        .map(|value| {
+            value
+                .split_whitespace()
+                .next()
+                .unwrap_or(value)
+                .trim()
+                .to_string()
+        })
+        .filter(|value| !value.is_empty())
 }
 
 fn build_discover_args(options: &Options, category: &str) -> Vec<String> {
@@ -359,6 +478,11 @@ mod tests {
         let (summary_path, has_pass) = run_scan(&options).expect("scan should finish");
         assert!(has_pass);
         let summary = fs::read_to_string(summary_path).expect("summary exists");
+        assert!(summary.contains("categories_scanned=2"));
+        assert!(summary.contains("categories_passed=1"));
+        assert!(summary.contains("categories_rejected=1"));
+        assert!(summary.contains("best_pass_category=SPORTS"));
+        assert!(summary.contains("best_rejected_category=CRYPTO"));
         assert!(summary.contains("== category SPORTS =="));
         assert!(summary.contains("status=passed"));
         assert!(summary.contains("== category CRYPTO =="));
