@@ -1,12 +1,14 @@
 use crate::adapters::auth::{AuthRuntimeState, L2AuthHeaders};
 use crate::adapters::http_submit::{
-    CommandRunner, HttpSubmitCommandError, HttpSubmitExecutor, HttpSubmitRequestBuilder,
-    HttpSubmitRequestError, HttpSubmitResponse, OrderBatchRequest, OrderType,
+    CommandRunner, HttpSubmitBuildError, HttpSubmitClientConfig, HttpSubmitCommandError,
+    HttpSubmitExecutor, HttpSubmitRequestBuilder, HttpSubmitRequestError, HttpSubmitResponse,
+    OrderBatchRequest, OrderType,
 };
 use crate::adapters::signing::{
     AuthMaterial, AuthMaterialError, OrderSigner, SigningError, UnsignedOrderPayload,
     prepare_signed_order,
 };
+use crate::config::LiveExecutionWiring;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedSubmitRequest {
@@ -16,14 +18,17 @@ pub struct PreparedSubmitRequest {
     pub order_type: OrderType,
     pub defer_exec: bool,
     pub sdk_available: bool,
-    pub header_signature: String,
-    pub header_timestamp: String,
+}
+
+pub trait L2HeaderProvider {
+    fn l2_headers(&mut self, material: &AuthMaterial) -> Result<L2AuthHeaders, SigningError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmitPipelineError {
     AuthMaterial(AuthMaterialError),
     Signing(SigningError),
+    HeaderSigning(SigningError),
     Request(HttpSubmitRequestError),
     Command(HttpSubmitCommandError),
 }
@@ -42,10 +47,31 @@ impl SubmitPipeline {
         }
     }
 
-    pub fn execute<S: OrderSigner, R: CommandRunner>(
+    pub fn from_live_execution_wiring(
+        wiring: &LiveExecutionWiring,
+    ) -> Result<Self, HttpSubmitBuildError> {
+        if wiring.submit_base_url.trim().is_empty() {
+            return Err(HttpSubmitBuildError::MissingBaseUrl);
+        }
+        if !wiring.submit.configured() {
+            return Err(HttpSubmitBuildError::MissingCommandProgram);
+        }
+
+        Ok(Self {
+            request_builder: HttpSubmitRequestBuilder::new(&wiring.submit_base_url),
+            submit_executor: HttpSubmitExecutor::from_config(
+                HttpSubmitClientConfig::new(wiring.submit.program.clone())
+                    .with_connect_timeout_ms(wiring.submit_connect_timeout_ms)
+                    .with_max_time_ms(wiring.submit_max_time_ms),
+            ),
+        })
+    }
+
+    pub fn execute<S: OrderSigner, H: L2HeaderProvider, R: CommandRunner>(
         &self,
         request: PreparedSubmitRequest,
         signer: &mut S,
+        header_provider: &mut H,
         runner: &mut R,
     ) -> Result<HttpSubmitResponse, SubmitPipelineError> {
         request
@@ -71,12 +97,9 @@ impl SubmitPipeline {
             request.auth_material.signature_type,
             request.auth_material.funder.is_some(),
         );
-        let headers = L2AuthHeaders::from_material(
-            &request.auth_material,
-            request.header_signature,
-            request.header_timestamp,
-        )
-        .map_err(SubmitPipelineError::AuthMaterial)?;
+        let headers = header_provider
+            .l2_headers(&request.auth_material)
+            .map_err(SubmitPipelineError::HeaderSigning)?;
         let batch = OrderBatchRequest::single(signed);
         let spec = self
             .request_builder

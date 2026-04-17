@@ -1,8 +1,14 @@
 use crate::adapters::auth::{AuthRuntimeState, L2AuthHeaders};
+use crate::config::{
+    CommandAdapterConfig, ExecutionAdapterConfig, LiveExecutionWiring, RootEnvLoadError,
+    SubmitAdapterConfig,
+};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::process::Command;
 
 const HTTP_STATUS_MARKER: &str = "\n__HTTP_STATUS__:";
+const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 50;
 const DEFAULT_MAX_TIME_MS: u64 = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +116,20 @@ impl HttpSubmitRequestBuilder {
         }
     }
 
+    pub fn from_submit_adapter_config(
+        config: &SubmitAdapterConfig,
+    ) -> Result<Self, HttpSubmitBuildError> {
+        match config {
+            SubmitAdapterConfig::Replay => Err(HttpSubmitBuildError::MissingBaseUrl),
+            SubmitAdapterConfig::Http { base_url, .. } => {
+                if base_url.trim().is_empty() {
+                    return Err(HttpSubmitBuildError::MissingBaseUrl);
+                }
+                Ok(Self::new(base_url))
+            }
+        }
+    }
+
     pub fn build(
         &self,
         auth: &AuthRuntimeState,
@@ -129,6 +149,7 @@ impl HttpSubmitRequestBuilder {
         }
 
         let mut spec_headers = BTreeMap::new();
+        spec_headers.insert("Accept".to_string(), "application/json".to_string());
         spec_headers.insert("Content-Type".to_string(), "application/json".to_string());
         spec_headers.insert("POLY_ADDRESS".to_string(), headers.poly_address.clone());
         spec_headers.insert("POLY_API_KEY".to_string(), headers.poly_api_key.clone());
@@ -162,6 +183,51 @@ pub struct CommandOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpSubmitClientConfig {
+    pub program: String,
+    pub base_args: Vec<String>,
+    pub connect_timeout_ms: u64,
+    pub max_time_ms: u64,
+    pub fail_on_http_error: bool,
+}
+
+impl HttpSubmitClientConfig {
+    pub fn new(program: impl Into<String>) -> Self {
+        Self {
+            program: program.into(),
+            base_args: Vec::new(),
+            connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
+            max_time_ms: DEFAULT_MAX_TIME_MS,
+            fail_on_http_error: true,
+        }
+    }
+
+    pub fn from_command_config(command: &CommandAdapterConfig) -> Self {
+        Self::new(command.program.clone()).with_base_args(command.args.clone())
+    }
+
+    pub fn with_base_args(mut self, base_args: Vec<String>) -> Self {
+        self.base_args = base_args;
+        self
+    }
+
+    pub fn with_connect_timeout_ms(mut self, connect_timeout_ms: u64) -> Self {
+        self.connect_timeout_ms = connect_timeout_ms.max(1);
+        self
+    }
+
+    pub fn with_max_time_ms(mut self, max_time_ms: u64) -> Self {
+        self.max_time_ms = max_time_ms.max(1);
+        self
+    }
+
+    pub fn with_fail_on_http_error(mut self, fail_on_http_error: bool) -> Self {
+        self.fail_on_http_error = fail_on_http_error;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpSubmitResponse {
     pub status_code: u16,
     pub body: String,
@@ -169,12 +235,69 @@ pub struct HttpSubmitResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpSubmitLiveResult {
+    pub request: HttpRequestSpec,
+    pub response: HttpSubmitResponse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HttpSubmitCommandError {
     Io(String),
-    NonZeroExit { code: i32, stderr: String },
+    NonZeroExit {
+        code: i32,
+        stderr: String,
+    },
+    NonZeroExitWithOutput {
+        code: i32,
+        stdout: String,
+        stderr: String,
+    },
     MissingStatusMarker,
     InvalidStatusCode(String),
+    HttpStatus {
+        status_code: u16,
+        body: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpSubmitTransportError {
+    Io(String),
+    CommandExit {
+        code: i32,
+        stderr: String,
+    },
+    CommandExitWithOutput {
+        code: i32,
+        stdout: String,
+        stderr: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpSubmitResponseProtocolError {
+    MissingStatusMarker,
+    InvalidStatusCode(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpSubmitLiveError {
+    Request(HttpSubmitRequestError),
+    Transport(HttpSubmitTransportError),
+    ResponseProtocol(HttpSubmitResponseProtocolError),
     HttpStatus { status_code: u16, body: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpSubmitBuildError {
+    MissingBaseUrl,
+    MissingCommandProgram,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpSubmitRootBuildError {
+    Config(RootEnvLoadError),
+    Build(HttpSubmitBuildError),
 }
 
 pub trait CommandRunner {
@@ -200,8 +323,9 @@ impl CommandRunner for StdCommandRunner {
                 stderr,
             })
         } else {
-            Err(HttpSubmitCommandError::NonZeroExit {
+            Err(HttpSubmitCommandError::NonZeroExitWithOutput {
                 code: exit_code,
+                stdout,
                 stderr,
             })
         }
@@ -210,31 +334,61 @@ impl CommandRunner for StdCommandRunner {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpSubmitExecutor {
-    curl_program: String,
-    max_time_ms: u64,
+    config: HttpSubmitClientConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpSubmitter {
+    request_builder: HttpSubmitRequestBuilder,
+    executor: HttpSubmitExecutor,
 }
 
 impl HttpSubmitExecutor {
     pub fn new(program: impl Into<String>) -> Self {
-        Self {
-            curl_program: program.into(),
-            max_time_ms: DEFAULT_MAX_TIME_MS,
+        Self::from_config(HttpSubmitClientConfig::new(program))
+    }
+
+    pub fn from_config(config: HttpSubmitClientConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn from_command_config(
+        command: &CommandAdapterConfig,
+    ) -> Result<Self, HttpSubmitBuildError> {
+        if !command.configured() {
+            return Err(HttpSubmitBuildError::MissingCommandProgram);
         }
+
+        Ok(Self::from_config(
+            HttpSubmitClientConfig::from_command_config(command),
+        ))
+    }
+
+    pub fn with_connect_timeout_ms(mut self, connect_timeout_ms: u64) -> Self {
+        self.config.connect_timeout_ms = connect_timeout_ms.max(1);
+        self
     }
 
     pub fn with_max_time_ms(mut self, max_time_ms: u64) -> Self {
-        self.max_time_ms = max_time_ms.max(1);
+        self.config.max_time_ms = max_time_ms.max(1);
         self
     }
 
     pub fn build_command(&self, spec: &HttpRequestSpec) -> CurlCommandSpec {
-        let mut args = vec![
-            "-sS".to_string(),
+        let mut args = self.config.base_args.clone();
+        args.extend([
+            "--silent".to_string(),
+            "--show-error".to_string(),
             "-X".to_string(),
             method_label(spec.method).to_string(),
+            "--connect-timeout".to_string(),
+            format_seconds(self.config.connect_timeout_ms),
             "--max-time".to_string(),
-            format_seconds(self.max_time_ms),
-        ];
+            format_seconds(self.config.max_time_ms),
+        ]);
+        if self.config.fail_on_http_error {
+            args.push("--fail-with-body".to_string());
+        }
         for (name, value) in &spec.headers {
             args.push("-H".to_string());
             args.push(format!("{}: {}", name, value));
@@ -245,7 +399,7 @@ impl HttpSubmitExecutor {
         args.push(format!("{HTTP_STATUS_MARKER}%{{http_code}}"));
         args.push(spec.url.clone());
         CurlCommandSpec {
-            program: self.curl_program.clone(),
+            program: self.config.program.clone(),
             args,
         }
     }
@@ -255,8 +409,115 @@ impl HttpSubmitExecutor {
         runner: &mut R,
         spec: &HttpRequestSpec,
     ) -> Result<HttpSubmitResponse, HttpSubmitCommandError> {
-        let output = runner.run(&self.build_command(spec))?;
+        let output = match runner.run(&self.build_command(spec)) {
+            Ok(output) => output,
+            Err(HttpSubmitCommandError::NonZeroExitWithOutput {
+                code,
+                stdout,
+                stderr,
+            }) => {
+                if let Err(HttpSubmitCommandError::HttpStatus { status_code, body }) =
+                    parse_http_response(CommandOutput {
+                        exit_code: code,
+                        stdout: stdout.clone(),
+                        stderr: stderr.clone(),
+                    })
+                {
+                    return Err(HttpSubmitCommandError::HttpStatus { status_code, body });
+                }
+                return Err(HttpSubmitCommandError::NonZeroExitWithOutput {
+                    code,
+                    stdout,
+                    stderr,
+                });
+            }
+            Err(err) => return Err(err),
+        };
         parse_http_response(output)
+    }
+}
+
+impl HttpSubmitter {
+    pub fn new(base_url: impl Into<String>, command_program: impl Into<String>) -> Self {
+        Self::from_parts(
+            HttpSubmitRequestBuilder::new(base_url),
+            HttpSubmitExecutor::new(command_program),
+        )
+    }
+
+    pub fn from_parts(
+        request_builder: HttpSubmitRequestBuilder,
+        executor: HttpSubmitExecutor,
+    ) -> Self {
+        Self {
+            request_builder,
+            executor,
+        }
+    }
+
+    pub fn from_live_execution_wiring(
+        wiring: &LiveExecutionWiring,
+    ) -> Result<Self, HttpSubmitBuildError> {
+        build_submitter(
+            &wiring.submit_base_url,
+            &wiring.submit,
+            wiring.submit_connect_timeout_ms,
+            wiring.submit_max_time_ms,
+        )
+    }
+
+    pub fn from_submit_adapter_config(
+        config: &SubmitAdapterConfig,
+    ) -> Result<Self, HttpSubmitBuildError> {
+        match config {
+            SubmitAdapterConfig::Replay => Err(HttpSubmitBuildError::MissingBaseUrl),
+            SubmitAdapterConfig::Http {
+                base_url,
+                command,
+                connect_timeout_ms,
+                max_time_ms,
+            } => build_submitter(base_url, command, *connect_timeout_ms, *max_time_ms),
+        }
+    }
+
+    pub fn from_execution_config(
+        config: &ExecutionAdapterConfig,
+    ) -> Result<Self, HttpSubmitBuildError> {
+        Self::from_submit_adapter_config(&config.submit)
+    }
+
+    pub fn from_root(root: impl AsRef<Path>) -> Result<Self, HttpSubmitRootBuildError> {
+        let execution_config =
+            ExecutionAdapterConfig::from_root(root).map_err(HttpSubmitRootBuildError::Config)?;
+        Self::from_execution_config(&execution_config).map_err(HttpSubmitRootBuildError::Build)
+    }
+
+    pub fn submit<R: CommandRunner>(
+        &self,
+        auth: &AuthRuntimeState,
+        headers: &L2AuthHeaders,
+        batch: &OrderBatchRequest,
+        runner: &mut R,
+    ) -> Result<HttpSubmitLiveResult, HttpSubmitLiveError> {
+        let request = self
+            .request_builder
+            .build(auth, headers, batch)
+            .map_err(HttpSubmitLiveError::Request)?;
+        let response = self
+            .executor
+            .execute(runner, &request)
+            .map_err(classify_live_error)?;
+        Ok(HttpSubmitLiveResult { request, response })
+    }
+
+    pub fn preview_command(
+        &self,
+        auth: &AuthRuntimeState,
+        headers: &L2AuthHeaders,
+        batch: &OrderBatchRequest,
+    ) -> Result<CurlCommandSpec, HttpSubmitRequestError> {
+        let request = self.request_builder.build(auth, headers, batch)?;
+        Ok(self.executor.build_command(&request))
     }
 }
 
@@ -264,6 +525,27 @@ fn method_label(method: HttpMethod) -> &'static str {
     match method {
         HttpMethod::Post => "POST",
     }
+}
+
+fn build_submitter(
+    base_url: &str,
+    command: &CommandAdapterConfig,
+    connect_timeout_ms: u64,
+    max_time_ms: u64,
+) -> Result<HttpSubmitter, HttpSubmitBuildError> {
+    if base_url.trim().is_empty() {
+        return Err(HttpSubmitBuildError::MissingBaseUrl);
+    }
+    if !command.configured() {
+        return Err(HttpSubmitBuildError::MissingCommandProgram);
+    }
+
+    Ok(HttpSubmitter::from_parts(
+        HttpSubmitRequestBuilder::new(base_url),
+        HttpSubmitExecutor::from_command_config(command)?
+            .with_connect_timeout_ms(connect_timeout_ms)
+            .with_max_time_ms(max_time_ms),
+    ))
 }
 
 fn format_seconds(timeout_ms: u64) -> String {
@@ -290,6 +572,35 @@ fn parse_http_response(
         })
     } else {
         Err(HttpSubmitCommandError::HttpStatus { status_code, body })
+    }
+}
+
+fn classify_live_error(err: HttpSubmitCommandError) -> HttpSubmitLiveError {
+    match err {
+        HttpSubmitCommandError::Io(message) => {
+            HttpSubmitLiveError::Transport(HttpSubmitTransportError::Io(message))
+        }
+        HttpSubmitCommandError::NonZeroExit { code, stderr } => {
+            HttpSubmitLiveError::Transport(HttpSubmitTransportError::CommandExit { code, stderr })
+        }
+        HttpSubmitCommandError::NonZeroExitWithOutput {
+            code,
+            stdout,
+            stderr,
+        } => HttpSubmitLiveError::Transport(HttpSubmitTransportError::CommandExitWithOutput {
+            code,
+            stdout,
+            stderr,
+        }),
+        HttpSubmitCommandError::MissingStatusMarker => HttpSubmitLiveError::ResponseProtocol(
+            HttpSubmitResponseProtocolError::MissingStatusMarker,
+        ),
+        HttpSubmitCommandError::InvalidStatusCode(status) => HttpSubmitLiveError::ResponseProtocol(
+            HttpSubmitResponseProtocolError::InvalidStatusCode(status),
+        ),
+        HttpSubmitCommandError::HttpStatus { status_code, body } => {
+            HttpSubmitLiveError::HttpStatus { status_code, body }
+        }
     }
 }
 

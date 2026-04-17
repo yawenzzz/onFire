@@ -45,11 +45,88 @@ impl OperatorReport {
             .blocked_reason
             .as_deref()
             .unwrap_or("none");
+        let selected_leader_wallet = self
+            .snapshot
+            .runtime
+            .selected_leader_wallet
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_source = self
+            .snapshot
+            .runtime
+            .selected_leader_source
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_rank = self
+            .snapshot
+            .runtime
+            .selected_leader_rank
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_pnl = self
+            .snapshot
+            .runtime
+            .selected_leader_pnl
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_username = self
+            .snapshot
+            .runtime
+            .selected_leader_username
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_review_status = self
+            .snapshot
+            .runtime
+            .selected_leader_review_status
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_review_reasons = self
+            .snapshot
+            .runtime
+            .selected_leader_review_reasons
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_core_pool_count = self
+            .snapshot
+            .runtime
+            .selected_leader_core_pool_count
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_active_pool_count = self
+            .snapshot
+            .runtime
+            .selected_leader_active_pool_count
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_latest_activity_side = self
+            .snapshot
+            .runtime
+            .selected_leader_latest_activity_side
+            .as_deref()
+            .unwrap_or("none");
+        let selected_leader_latest_activity_slug = self
+            .snapshot
+            .runtime
+            .selected_leader_latest_activity_slug
+            .as_deref()
+            .unwrap_or("none");
         format!(
             concat!(
                 "mode={} ",
                 "live_mode_unlocked={} ",
                 "blocked_reason={} ",
+                "selected_leader_wallet={} ",
+                "selected_leader_source={} ",
+                "selected_leader_rank={} ",
+                "selected_leader_pnl={} ",
+                "selected_leader_username={} ",
+                "selected_leader_review_status={} ",
+                "selected_leader_review_reasons={} ",
+                "selected_leader_core_pool_count={} ",
+                "selected_leader_active_pool_count={} ",
+                "selected_leader_latest_activity_side={} ",
+                "selected_leader_latest_activity_slug={} ",
                 "last_submit_status={} ",
                 "submitted={} ",
                 "verified_total={} ",
@@ -60,6 +137,17 @@ impl OperatorReport {
             self.snapshot.runtime.mode,
             self.snapshot.runtime.live_mode_unlocked,
             blocked_reason,
+            selected_leader_wallet,
+            selected_leader_source,
+            selected_leader_rank,
+            selected_leader_pnl,
+            selected_leader_username,
+            selected_leader_review_status,
+            selected_leader_review_reasons,
+            selected_leader_core_pool_count,
+            selected_leader_active_pool_count,
+            selected_leader_latest_activity_side,
+            selected_leader_latest_activity_slug,
             self.snapshot.runtime.last_submit_status,
             self.metrics.submitted(),
             self.metrics.verified_total(),

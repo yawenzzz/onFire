@@ -2,7 +2,10 @@ use crate::adapters::transport::{
     ActivityTransport, PositionsTransport, select_transport_boundary,
 };
 use crate::config::TransportBoundaryConfig;
-use crate::config::{ActivityMode, LiveModeGate};
+use crate::config::{
+    ActivityMode, CommandAdapterConfig, ExecutionAdapterConfig, LiveExecutionWiring, LiveModeGate,
+    RootEnvLoadError, merged_root_env,
+};
 use crate::persistence::jsonl::{RotatingJsonlWriter, SessionLogKind};
 use crate::persistence::snapshots::{
     LeaderStateSnapshot, RuntimeSnapshot, SessionSnapshotWriter, SnapshotBundle,
@@ -12,6 +15,8 @@ use crate::replay::fixture::ReplayFixture;
 use crate::telemetry::latency::LatencyReport;
 use crate::telemetry::metrics::RuntimeMetrics;
 use crate::telemetry::report::{OperatorArtifactPaths, OperatorReport};
+use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -24,10 +29,31 @@ pub enum BootstrapDecision {
     Blocked(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedLeaderContext {
+    pub wallet: String,
+    pub source: String,
+    pub rank: Option<String>,
+    pub pnl: Option<String>,
+    pub username: Option<String>,
+    pub review_status: Option<String>,
+    pub review_reasons: Option<String>,
+    pub core_pool_count: Option<String>,
+    pub core_pool_wallets: Option<String>,
+    pub active_pool_count: Option<String>,
+    pub active_pool_wallets: Option<String>,
+    pub latest_activity_timestamp: Option<String>,
+    pub latest_activity_side: Option<String>,
+    pub latest_activity_slug: Option<String>,
+    pub latest_activity_tx: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeBootstrap {
     requested_mode: ActivityMode,
     gate: LiveModeGate,
+    execution_config: Option<ExecutionAdapterConfig>,
+    selected_leader: Option<SelectedLeaderContext>,
 }
 
 impl RuntimeBootstrap {
@@ -35,13 +61,75 @@ impl RuntimeBootstrap {
         Self {
             requested_mode,
             gate,
+            execution_config: None,
+            selected_leader: None,
         }
+    }
+
+    pub fn with_execution_config(
+        requested_mode: ActivityMode,
+        gate: LiveModeGate,
+        execution_config: ExecutionAdapterConfig,
+    ) -> Self {
+        Self {
+            requested_mode,
+            gate,
+            execution_config: Some(execution_config),
+            selected_leader: None,
+        }
+    }
+
+    pub fn from_root(
+        requested_mode: ActivityMode,
+        gate: LiveModeGate,
+        root: impl AsRef<Path>,
+    ) -> Result<Self, RootEnvLoadError> {
+        let root = root.as_ref();
+        let env = merged_root_env(root)?;
+        Ok(Self {
+            requested_mode,
+            gate,
+            execution_config: Some(ExecutionAdapterConfig::from_env_map(&env)?),
+            selected_leader: selected_leader_context_from_root(root, &env)?,
+        })
+    }
+
+    fn effective_gate(&self) -> LiveModeGate {
+        let mut gate = self.gate.clone();
+        if let Some(execution_config) = &self.execution_config {
+            gate.execution_surface_ready &= execution_config.live_ready();
+        }
+        gate
+    }
+
+    pub fn live_execution_wiring(&self) -> Option<LiveExecutionWiring> {
+        if self.requested_mode != ActivityMode::LiveListen {
+            return None;
+        }
+
+        self.execution_config
+            .as_ref()
+            .and_then(ExecutionAdapterConfig::live_execution_wiring)
+    }
+
+    pub fn live_l2_header_helper(&self) -> Option<CommandAdapterConfig> {
+        if self.requested_mode != ActivityMode::LiveListen {
+            return None;
+        }
+
+        self.execution_config
+            .as_ref()
+            .and_then(ExecutionAdapterConfig::live_l2_header_helper)
+    }
+
+    pub fn selected_leader(&self) -> Option<&SelectedLeaderContext> {
+        self.selected_leader.as_ref()
     }
 
     pub fn decide(&self) -> BootstrapDecision {
         match self.requested_mode {
             ActivityMode::LiveListen => self
-                .gate
+                .effective_gate()
                 .blocked_reason()
                 .map(BootstrapDecision::Blocked)
                 .unwrap_or(BootstrapDecision::LiveListen),
@@ -186,11 +274,52 @@ impl RuntimeSession {
         }
     }
 
+    pub fn with_execution_config(
+        requested_mode: ActivityMode,
+        gate: LiveModeGate,
+        execution_config: ExecutionAdapterConfig,
+    ) -> Self {
+        Self {
+            bootstrap: RuntimeBootstrap::with_execution_config(
+                requested_mode,
+                gate,
+                execution_config,
+            ),
+            orchestrator: HotPathOrchestrator::default(),
+            metrics: RuntimeMetrics::default(),
+            latency: LatencyReport::default(),
+            latest_snapshot: None,
+        }
+    }
+
+    pub fn from_root(
+        requested_mode: ActivityMode,
+        gate: LiveModeGate,
+        root: impl AsRef<Path>,
+    ) -> Result<Self, RootEnvLoadError> {
+        Ok(Self {
+            bootstrap: RuntimeBootstrap::from_root(requested_mode, gate, root)?,
+            orchestrator: HotPathOrchestrator::default(),
+            metrics: RuntimeMetrics::default(),
+            latency: LatencyReport::default(),
+            latest_snapshot: None,
+        })
+    }
+
     pub fn process_replay(&mut self, fixture: &ReplayFixture) -> SessionOutcome {
         self.process_fixture(fixture)
     }
 
     pub fn process_fixture(&mut self, fixture: &ReplayFixture) -> SessionOutcome {
+        let effective_fixture = if self.bootstrap.requested_mode == ActivityMode::Replay {
+            self.bootstrap
+                .selected_leader()
+                .map(|leader| fixture.clone().with_leader_wallet(leader.wallet.clone()))
+                .unwrap_or_else(|| fixture.clone())
+        } else {
+            fixture.clone()
+        };
+        let fixture = &effective_fixture;
         let decision = self.bootstrap.decide();
         let blocked_snapshot = LeaderStateSnapshot {
             leader_id: fixture.activity.proxy_wallet.clone(),
@@ -198,6 +327,66 @@ impl RuntimeSession {
             last_transaction_hash: fixture.activity.transaction_hash.clone(),
             last_position_size: fixture.current_position.current_size,
         };
+        let selected_leader_wallet = self
+            .bootstrap
+            .selected_leader()
+            .map(|leader| leader.wallet.clone());
+        let selected_leader_source = self
+            .bootstrap
+            .selected_leader()
+            .map(|leader| leader.source.clone());
+        let selected_leader_rank = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.rank.clone());
+        let selected_leader_pnl = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.pnl.clone());
+        let selected_leader_username = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.username.clone());
+        let selected_leader_review_status = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.review_status.clone());
+        let selected_leader_review_reasons = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.review_reasons.clone());
+        let selected_leader_core_pool_count = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.core_pool_count.clone());
+        let selected_leader_core_pool_wallets = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.core_pool_wallets.clone());
+        let selected_leader_active_pool_count = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.active_pool_count.clone());
+        let selected_leader_active_pool_wallets = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.active_pool_wallets.clone());
+        let selected_leader_latest_activity_timestamp = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.latest_activity_timestamp.clone());
+        let selected_leader_latest_activity_side = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.latest_activity_side.clone());
+        let selected_leader_latest_activity_slug = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.latest_activity_slug.clone());
+        let selected_leader_latest_activity_tx = self
+            .bootstrap
+            .selected_leader()
+            .and_then(|leader| leader.latest_activity_tx.clone());
 
         if let BootstrapDecision::Blocked(ref reason) = decision {
             self.latest_snapshot = Some(SnapshotBundle {
@@ -206,6 +395,25 @@ impl RuntimeSession {
                     mode: mode_label(&decision).to_string(),
                     live_mode_unlocked: false,
                     blocked_reason: Some(reason.clone()),
+                    selected_leader_wallet: selected_leader_wallet.clone(),
+                    selected_leader_source: selected_leader_source.clone(),
+                    selected_leader_rank: selected_leader_rank.clone(),
+                    selected_leader_pnl: selected_leader_pnl.clone(),
+                    selected_leader_username: selected_leader_username.clone(),
+                    selected_leader_review_status: selected_leader_review_status.clone(),
+                    selected_leader_review_reasons: selected_leader_review_reasons.clone(),
+                    selected_leader_core_pool_count: selected_leader_core_pool_count.clone(),
+                    selected_leader_core_pool_wallets: selected_leader_core_pool_wallets.clone(),
+                    selected_leader_active_pool_count: selected_leader_active_pool_count.clone(),
+                    selected_leader_active_pool_wallets: selected_leader_active_pool_wallets
+                        .clone(),
+                    selected_leader_latest_activity_timestamp:
+                        selected_leader_latest_activity_timestamp.clone(),
+                    selected_leader_latest_activity_side: selected_leader_latest_activity_side
+                        .clone(),
+                    selected_leader_latest_activity_slug: selected_leader_latest_activity_slug
+                        .clone(),
+                    selected_leader_latest_activity_tx: selected_leader_latest_activity_tx.clone(),
                     verification_pending: 0,
                     last_submit_status: format!("blocked:{reason}"),
                     last_correlation_id: None,
@@ -219,7 +427,7 @@ impl RuntimeSession {
 
         let transport = match select_transport_boundary(
             TransportBoundaryConfig::for_mode(self.bootstrap.requested_mode),
-            self.bootstrap.gate.clone(),
+            self.bootstrap.effective_gate(),
             fixture,
         ) {
             Ok(transport) => transport,
@@ -230,6 +438,28 @@ impl RuntimeSession {
                         mode: "blocked".to_string(),
                         live_mode_unlocked: false,
                         blocked_reason: Some(reason.clone()),
+                        selected_leader_wallet: selected_leader_wallet.clone(),
+                        selected_leader_source: selected_leader_source.clone(),
+                        selected_leader_rank: selected_leader_rank.clone(),
+                        selected_leader_pnl: selected_leader_pnl.clone(),
+                        selected_leader_username: selected_leader_username.clone(),
+                        selected_leader_review_status: selected_leader_review_status.clone(),
+                        selected_leader_review_reasons: selected_leader_review_reasons.clone(),
+                        selected_leader_core_pool_count: selected_leader_core_pool_count.clone(),
+                        selected_leader_core_pool_wallets: selected_leader_core_pool_wallets
+                            .clone(),
+                        selected_leader_active_pool_count: selected_leader_active_pool_count
+                            .clone(),
+                        selected_leader_active_pool_wallets: selected_leader_active_pool_wallets
+                            .clone(),
+                        selected_leader_latest_activity_timestamp:
+                            selected_leader_latest_activity_timestamp.clone(),
+                        selected_leader_latest_activity_side: selected_leader_latest_activity_side
+                            .clone(),
+                        selected_leader_latest_activity_slug: selected_leader_latest_activity_slug
+                            .clone(),
+                        selected_leader_latest_activity_tx: selected_leader_latest_activity_tx
+                            .clone(),
                         verification_pending: 0,
                         last_submit_status: format!("blocked:{reason}"),
                         last_correlation_id: None,
@@ -305,6 +535,21 @@ impl RuntimeSession {
             mode: mode_label(&decision).to_string(),
             live_mode_unlocked: matches!(decision, BootstrapDecision::LiveListen),
             blocked_reason: None,
+            selected_leader_wallet,
+            selected_leader_source,
+            selected_leader_rank,
+            selected_leader_pnl,
+            selected_leader_username,
+            selected_leader_review_status,
+            selected_leader_review_reasons,
+            selected_leader_core_pool_count,
+            selected_leader_core_pool_wallets,
+            selected_leader_active_pool_count,
+            selected_leader_active_pool_wallets,
+            selected_leader_latest_activity_timestamp,
+            selected_leader_latest_activity_side,
+            selected_leader_latest_activity_slug,
+            selected_leader_latest_activity_tx,
             verification_pending,
             last_submit_status,
             last_correlation_id: Some(if rejected_reason.is_some() {
@@ -346,6 +591,161 @@ fn mode_label(decision: &BootstrapDecision) -> &'static str {
     }
 }
 
+fn selected_leader_context_from_root(
+    root: &Path,
+    env_map: &BTreeMap<String, String>,
+) -> Result<Option<SelectedLeaderContext>, RootEnvLoadError> {
+    if let Ok(wallet) = env::var("COPYTRADER_DISCOVERY_WALLET")
+        && !wallet.trim().is_empty()
+    {
+        return Ok(Some(SelectedLeaderContext {
+            wallet,
+            source: "env:COPYTRADER_DISCOVERY_WALLET".to_string(),
+            rank: None,
+            pnl: None,
+            username: None,
+            review_status: None,
+            review_reasons: None,
+            core_pool_count: None,
+            core_pool_wallets: None,
+            active_pool_count: None,
+            active_pool_wallets: None,
+            latest_activity_timestamp: None,
+            latest_activity_side: None,
+            latest_activity_slug: None,
+            latest_activity_tx: None,
+        }));
+    }
+
+    let selected_leader_path = root.join(".omx/discovery/selected-leader.env");
+    if selected_leader_path.exists() {
+        let content =
+            fs::read_to_string(&selected_leader_path).map_err(|error| RootEnvLoadError::Io {
+                path: selected_leader_path.clone(),
+                error: error.to_string(),
+            })?;
+        for line in content.lines() {
+            if let Some((key, value)) = line.split_once('=') {
+                let key = key.trim();
+                let value = value.trim();
+                if (key == "COPYTRADER_DISCOVERY_WALLET" || key == "COPYTRADER_LEADER_WALLET")
+                    && !value.is_empty()
+                {
+                    return Ok(Some(SelectedLeaderContext {
+                        wallet: value.to_string(),
+                        source: "file:.omx/discovery/selected-leader.env".to_string(),
+                        rank: env_file_value(&content, &["COPYTRADER_SELECTED_RANK"]),
+                        pnl: env_file_value(&content, &["COPYTRADER_SELECTED_PNL"]),
+                        username: env_file_value(&content, &["COPYTRADER_SELECTED_USERNAME"]),
+                        review_status: env_file_value(
+                            &content,
+                            &["COPYTRADER_SELECTED_REVIEW_STATUS"],
+                        ),
+                        review_reasons: env_file_value(
+                            &content,
+                            &["COPYTRADER_SELECTED_REVIEW_REASONS"],
+                        ),
+                        core_pool_count: env_file_value(&content, &["COPYTRADER_CORE_POOL_COUNT"]),
+                        core_pool_wallets: env_file_value(
+                            &content,
+                            &["COPYTRADER_CORE_POOL_WALLETS"],
+                        ),
+                        active_pool_count: env_file_value(
+                            &content,
+                            &["COPYTRADER_ACTIVE_POOL_COUNT"],
+                        ),
+                        active_pool_wallets: env_file_value(
+                            &content,
+                            &["COPYTRADER_ACTIVE_POOL_WALLETS"],
+                        ),
+                        latest_activity_timestamp: env_file_value(
+                            &content,
+                            &["COPYTRADER_LATEST_ACTIVITY_TIMESTAMP"],
+                        ),
+                        latest_activity_side: env_file_value(
+                            &content,
+                            &["COPYTRADER_LATEST_ACTIVITY_SIDE"],
+                        ),
+                        latest_activity_slug: env_file_value(
+                            &content,
+                            &["COPYTRADER_LATEST_ACTIVITY_SLUG"],
+                        ),
+                        latest_activity_tx: env_file_value(
+                            &content,
+                            &["COPYTRADER_LATEST_ACTIVITY_TX"],
+                        ),
+                    }));
+                }
+            }
+        }
+    }
+
+    for (key, source) in [
+        (
+            "COPYTRADER_DISCOVERY_WALLET",
+            "env_map:COPYTRADER_DISCOVERY_WALLET",
+        ),
+        (
+            "COPYTRADER_LEADER_WALLET",
+            "env_map:COPYTRADER_LEADER_WALLET",
+        ),
+        ("POLY_ADDRESS", "env_map:POLY_ADDRESS"),
+        ("SIGNER_ADDRESS", "env_map:SIGNER_ADDRESS"),
+    ] {
+        if let Some(value) = env_map
+            .get(key)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            return Ok(Some(SelectedLeaderContext {
+                wallet: value.to_string(),
+                source: source.to_string(),
+                rank: env_map_value(env_map, &["COPYTRADER_SELECTED_RANK"]),
+                pnl: env_map_value(env_map, &["COPYTRADER_SELECTED_PNL"]),
+                username: env_map_value(env_map, &["COPYTRADER_SELECTED_USERNAME"]),
+                review_status: env_map_value(env_map, &["COPYTRADER_SELECTED_REVIEW_STATUS"]),
+                review_reasons: env_map_value(env_map, &["COPYTRADER_SELECTED_REVIEW_REASONS"]),
+                core_pool_count: env_map_value(env_map, &["COPYTRADER_CORE_POOL_COUNT"]),
+                core_pool_wallets: env_map_value(env_map, &["COPYTRADER_CORE_POOL_WALLETS"]),
+                active_pool_count: env_map_value(env_map, &["COPYTRADER_ACTIVE_POOL_COUNT"]),
+                active_pool_wallets: env_map_value(env_map, &["COPYTRADER_ACTIVE_POOL_WALLETS"]),
+                latest_activity_timestamp: env_map_value(
+                    env_map,
+                    &["COPYTRADER_LATEST_ACTIVITY_TIMESTAMP"],
+                ),
+                latest_activity_side: env_map_value(env_map, &["COPYTRADER_LATEST_ACTIVITY_SIDE"]),
+                latest_activity_slug: env_map_value(env_map, &["COPYTRADER_LATEST_ACTIVITY_SLUG"]),
+                latest_activity_tx: env_map_value(env_map, &["COPYTRADER_LATEST_ACTIVITY_TX"]),
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
+fn env_map_value(env_map: &BTreeMap<String, String>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| env_map.get(*key))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn env_file_value(content: &str, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        content
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .find_map(|(candidate, value)| {
+                if candidate.trim() == *key {
+                    let value = value.trim();
+                    (!value.is_empty()).then(|| value.to_string())
+                } else {
+                    None
+                }
+            })
+    })
+}
+
 fn stage_label(stage: crate::pipeline::trace_context::Stage) -> String {
     match stage {
         crate::pipeline::trace_context::Stage::ActivityObserved => "activity_observed",
@@ -363,11 +763,76 @@ fn activity_record(snapshot: &SnapshotBundle) -> String {
         concat!(
             "{{",
             "\"leader_id\":\"{}\",",
+            "\"selected_leader_wallet\":{},",
+            "\"selected_leader_source\":{},",
+            "\"selected_leader_rank\":{},",
+            "\"selected_leader_pnl\":{},",
+            "\"selected_leader_username\":{},",
+            "\"selected_leader_review_status\":{},",
+            "\"selected_leader_review_reasons\":{},",
+            "\"selected_leader_core_pool_count\":{},",
+            "\"selected_leader_core_pool_wallets\":{},",
+            "\"selected_leader_active_pool_count\":{},",
+            "\"selected_leader_active_pool_wallets\":{},",
+            "\"selected_leader_latest_activity_timestamp\":{},",
+            "\"selected_leader_latest_activity_side\":{},",
+            "\"selected_leader_latest_activity_slug\":{},",
+            "\"selected_leader_latest_activity_tx\":{},",
             "\"last_activity_at_ms\":{},",
             "\"last_transaction_hash\":\"{}\"",
             "}}"
         ),
         escape_json(&snapshot.leader.leader_id),
+        opt_json(snapshot.runtime.selected_leader_wallet.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_source.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_rank.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_pnl.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_username.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_review_status.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_review_reasons.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_core_pool_count.as_deref()),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_core_pool_wallets
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_active_pool_count
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_active_pool_wallets
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_timestamp
+                .as_deref(),
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_side
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_slug
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_tx
+                .as_deref()
+        ),
         snapshot.leader.last_activity_at_ms,
         escape_json(&snapshot.leader.last_transaction_hash),
     )
@@ -377,12 +842,70 @@ fn order_record(snapshot: &SnapshotBundle) -> String {
     format!(
         concat!(
             "{{",
+            "\"selected_leader_wallet\":{},",
+            "\"selected_leader_source\":{},",
+            "\"selected_leader_rank\":{},",
+            "\"selected_leader_pnl\":{},",
+            "\"selected_leader_username\":{},",
+            "\"selected_leader_review_status\":{},",
+            "\"selected_leader_review_reasons\":{},",
+            "\"selected_leader_core_pool_count\":{},",
+            "\"selected_leader_core_pool_wallets\":{},",
+            "\"selected_leader_active_pool_count\":{},",
+            "\"selected_leader_active_pool_wallets\":{},",
+            "\"selected_leader_latest_activity_side\":{},",
+            "\"selected_leader_latest_activity_slug\":{},",
+            "\"selected_leader_latest_activity_tx\":{},",
             "\"last_submit_status\":\"{}\",",
             "\"last_correlation_id\":{},",
             "\"last_reject_reason\":{},",
             "\"last_stage\":{},",
             "\"last_total_elapsed_ms\":{}",
             "}}"
+        ),
+        opt_json(snapshot.runtime.selected_leader_wallet.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_source.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_rank.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_pnl.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_username.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_review_status.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_review_reasons.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_core_pool_count.as_deref()),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_core_pool_wallets
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_active_pool_count
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_active_pool_wallets
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_side
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_slug
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_tx
+                .as_deref()
         ),
         escape_json(&snapshot.runtime.last_submit_status),
         opt_json(snapshot.runtime.last_correlation_id.as_deref()),
@@ -396,10 +919,68 @@ fn verification_record(snapshot: &SnapshotBundle) -> String {
     format!(
         concat!(
             "{{",
+            "\"selected_leader_wallet\":{},",
+            "\"selected_leader_source\":{},",
+            "\"selected_leader_rank\":{},",
+            "\"selected_leader_pnl\":{},",
+            "\"selected_leader_username\":{},",
+            "\"selected_leader_review_status\":{},",
+            "\"selected_leader_review_reasons\":{},",
+            "\"selected_leader_core_pool_count\":{},",
+            "\"selected_leader_core_pool_wallets\":{},",
+            "\"selected_leader_active_pool_count\":{},",
+            "\"selected_leader_active_pool_wallets\":{},",
+            "\"selected_leader_latest_activity_side\":{},",
+            "\"selected_leader_latest_activity_slug\":{},",
+            "\"selected_leader_latest_activity_tx\":{},",
             "\"verification_pending\":{},",
             "\"last_submit_status\":\"{}\",",
             "\"last_correlation_id\":{}",
             "}}"
+        ),
+        opt_json(snapshot.runtime.selected_leader_wallet.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_source.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_rank.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_pnl.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_username.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_review_status.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_review_reasons.as_deref()),
+        opt_json(snapshot.runtime.selected_leader_core_pool_count.as_deref()),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_core_pool_wallets
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_active_pool_count
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_active_pool_wallets
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_side
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_slug
+                .as_deref()
+        ),
+        opt_json(
+            snapshot
+                .runtime
+                .selected_leader_latest_activity_tx
+                .as_deref()
         ),
         snapshot.runtime.verification_pending,
         escape_json(&snapshot.runtime.last_submit_status),
