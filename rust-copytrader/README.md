@@ -273,6 +273,10 @@ stdout 里会有类似：
 selected_wallet=0x...
 selected_category=SPORTS
 selected_score=87
+core_pool_count=3
+core_pool_wallets=0xaaa:95,0xbbb:88,0xccc:83
+active_pool_count=2
+active_pool_wallets=0xaaa:95,0xbbb:88
 selected_rank=12
 selected_week_rank=8
 selected_month_rank=12
@@ -302,6 +306,16 @@ cat ../.omx/discovery/wallet-filter-v1-report.txt
 - category purity
 - unique markets / traded markets
 - 以及被踢掉的原因
+
+如果这个类别里真的有通过硬过滤的钱包，现在还会额外给你两层池子：
+
+- `core_pool_*`
+  - 通过硬过滤的钱包里，按分数排前 **最多 5 个**
+- `active_pool_*`
+  - 在 core pool 里，再只保留 **当前还有仓位** 的钱包，按分数取前 **最多 2 个**
+
+也就是说：
+> 现在不是只能给你一个 wallet，而是开始把“核心池 / 激活池”也顺手算出来了。
 
 如果你看这些字段还是嫌抽象，可以直接看这份解释文档：
 

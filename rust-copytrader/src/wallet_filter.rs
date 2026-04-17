@@ -128,6 +128,13 @@ pub struct WalletSelection {
     pub candidates: Vec<WalletScoreCard>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalletPoolEntry {
+    pub wallet: String,
+    pub score_total: i64,
+    pub current_value: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct HoldLot {
     timestamp: u64,
@@ -556,15 +563,44 @@ pub fn choose_wallet(candidates: &[WalletScoreCard], index: usize) -> Option<Wal
     })
 }
 
+pub fn core_pool(selection: &WalletSelection) -> Vec<WalletPoolEntry> {
+    passed_candidates(selection)
+        .into_iter()
+        .take(5)
+        .map(pool_entry)
+        .collect()
+}
+
+pub fn active_pool(selection: &WalletSelection) -> Vec<WalletPoolEntry> {
+    passed_candidates(selection)
+        .into_iter()
+        .filter(|candidate| candidate.metrics.current_value > 0.0)
+        .take(2)
+        .map(pool_entry)
+        .collect()
+}
+
 pub fn render_selected_leader_env(selection: &WalletSelection, source: &str) -> String {
     let selected = &selection.selected;
     let metrics = &selected.metrics;
+    let core_pool = core_pool(selection);
+    let active_pool = active_pool(selection);
     let mut lines = vec![
         format!("COPYTRADER_DISCOVERY_WALLET={}", selected.seed.wallet),
         format!("COPYTRADER_LEADER_WALLET={}", selected.seed.wallet),
         format!("COPYTRADER_SELECTED_FROM={source}"),
         format!("COPYTRADER_SELECTED_CATEGORY={}", selected.seed.category),
         format!("COPYTRADER_SELECTED_SCORE={}", selected.score_total),
+        format!("COPYTRADER_CORE_POOL_COUNT={}", core_pool.len()),
+        format!(
+            "COPYTRADER_CORE_POOL_WALLETS={}",
+            render_pool_wallets(&core_pool)
+        ),
+        format!("COPYTRADER_ACTIVE_POOL_COUNT={}", active_pool.len()),
+        format!(
+            "COPYTRADER_ACTIVE_POOL_WALLETS={}",
+            render_pool_wallets(&active_pool)
+        ),
         format!(
             "COPYTRADER_SELECTED_WEEK_RANK={}",
             format_optional_u64(selected.seed.week_rank)
@@ -684,6 +720,8 @@ pub fn render_selected_leader_env(selection: &WalletSelection, source: &str) -> 
 }
 
 pub fn render_wallet_filter_report(selection: &WalletSelection, source_label: &str) -> String {
+    let core_pool = core_pool(selection);
+    let active_pool = active_pool(selection);
     let mut lines = vec![
         "wallet_filter_strategy=wallet_filter_v1".to_string(),
         format!("wallet_filter_source={source_label}"),
@@ -691,6 +729,10 @@ pub fn render_wallet_filter_report(selection: &WalletSelection, source_label: &s
         format!("selected_wallet={}", selection.selected.seed.wallet),
         format!("selected_category={}", selection.selected.seed.category),
         format!("selected_score={}", selection.selected.score_total),
+        format!("core_pool_count={}", core_pool.len()),
+        format!("core_pool_wallets={}", render_pool_wallets(&core_pool)),
+        format!("active_pool_count={}", active_pool.len()),
+        format!("active_pool_wallets={}", render_pool_wallets(&active_pool)),
     ];
     lines.extend(render_candidate_sections(
         &selection.selected.seed.wallet,
@@ -807,6 +849,52 @@ fn render_candidate_sections(selected_wallet: &str, candidates: &[WalletScoreCar
         }
     }
     lines
+}
+
+fn passed_candidates(selection: &WalletSelection) -> Vec<&WalletScoreCard> {
+    let mut passed = selection
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.rejection_reasons.is_empty())
+        .collect::<Vec<_>>();
+    passed.sort_by(|left, right| {
+        right
+            .score_total
+            .cmp(&left.score_total)
+            .then_with(|| {
+                right
+                    .metrics
+                    .current_value
+                    .partial_cmp(&left.metrics.current_value)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                right
+                    .seed
+                    .month_pnl
+                    .partial_cmp(&left.seed.month_pnl)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    passed
+}
+
+fn pool_entry(candidate: &WalletScoreCard) -> WalletPoolEntry {
+    WalletPoolEntry {
+        wallet: candidate.seed.wallet.clone(),
+        score_total: candidate.score_total,
+        current_value: format!("{:.6}", candidate.metrics.current_value),
+    }
+}
+
+fn render_pool_wallets(pool: &[WalletPoolEntry]) -> String {
+    if pool.is_empty() {
+        return "none".to_string();
+    }
+    pool.iter()
+        .map(|entry| format!("{}:{}", entry.wallet, entry.score_total))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 pub fn now_unix_secs() -> u64 {
@@ -1167,10 +1255,11 @@ struct HoldMetrics {
 mod tests {
     use super::{
         ActivityRecord, LatestTradeSummary, MarketRecord, PositionRecord, WalletCandidateSeed,
-        build_candidate_seeds, choose_wallet, enrich_market_record_from_event, evaluate_candidate,
-        parse_activity_records, parse_iso8601_timestamp, parse_leaderboard_entries,
-        parse_market_record, parse_position_records, parse_total_value, parse_traded_count,
-        render_selected_leader_env, resolve_category_scope,
+        active_pool, build_candidate_seeds, choose_wallet, core_pool,
+        enrich_market_record_from_event, evaluate_candidate, parse_activity_records,
+        parse_iso8601_timestamp, parse_leaderboard_entries, parse_market_record,
+        parse_position_records, parse_total_value, parse_traded_count, render_selected_leader_env,
+        resolve_category_scope,
     };
     use std::collections::BTreeMap;
 
@@ -1404,8 +1493,15 @@ mod tests {
         let selection = choose_wallet(&[fail, pass.clone()], 0).expect("selection");
         assert_eq!(selection.selected.seed.wallet, "0xwallet");
         let env = render_selected_leader_env(&selection, "wallet_filter_v1");
+        let core = core_pool(&selection);
+        let active = active_pool(&selection);
         assert!(env.contains("COPYTRADER_SELECTED_CATEGORY=SPORTS"));
         assert!(env.contains("COPYTRADER_SELECTED_SCORE=95"));
+        assert!(env.contains("COPYTRADER_CORE_POOL_COUNT=1"));
+        assert!(env.contains("COPYTRADER_ACTIVE_POOL_COUNT=1"));
+        assert_eq!(core.len(), 1);
+        assert_eq!(active.len(), 1);
+        assert_eq!(core[0].wallet, "0xwallet");
     }
 
     #[test]

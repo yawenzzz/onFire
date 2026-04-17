@@ -1,9 +1,10 @@
 use rust_copytrader::wallet_filter::{
     ActivityRecord, LeaderboardEntry, MarketRecord, PositionRecord, WalletCandidateSeed,
-    WalletScoreCard, build_candidate_seeds, choose_wallet, evaluate_candidate, json_objects,
-    now_unix_secs, parse_activity_records, parse_leaderboard_entries, parse_market_record,
-    parse_position_records, parse_total_value, parse_traded_count, render_selected_leader_env,
-    render_wallet_filter_rejection_report, render_wallet_filter_report, resolve_category_scope,
+    WalletScoreCard, active_pool, build_candidate_seeds, choose_wallet, core_pool,
+    evaluate_candidate, json_objects, now_unix_secs, parse_activity_records,
+    parse_leaderboard_entries, parse_market_record, parse_position_records, parse_total_value,
+    parse_traded_count, render_selected_leader_env, render_wallet_filter_rejection_report,
+    render_wallet_filter_report, resolve_category_scope,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::env;
@@ -91,6 +92,10 @@ struct DiscoveryArtifacts {
     selected_leader_env_path: PathBuf,
     selected_category: String,
     selected_score: i64,
+    core_pool_count: usize,
+    core_pool_wallets: String,
+    active_pool_count: usize,
+    active_pool_wallets: String,
     selected_rank: Option<String>,
     selected_week_rank: Option<String>,
     selected_month_rank: Option<String>,
@@ -142,6 +147,10 @@ fn main() -> ExitCode {
             println!("selected_wallet={}", artifacts.selected_wallet);
             println!("selected_category={}", artifacts.selected_category);
             println!("selected_score={}", artifacts.selected_score);
+            println!("core_pool_count={}", artifacts.core_pool_count);
+            println!("core_pool_wallets={}", artifacts.core_pool_wallets);
+            println!("active_pool_count={}", artifacts.active_pool_count);
+            println!("active_pool_wallets={}", artifacts.active_pool_wallets);
             println!("leaderboard_path={}", artifacts.leaderboard_path.display());
             println!("activity_path={}", artifacts.activity_path.display());
             println!("positions_path={}", artifacts.positions_path.display());
@@ -386,6 +395,8 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
         "wallet_filter_v1:{}#{}",
         selected.seed.category, options.index
     );
+    let core_pool = core_pool(&selection);
+    let active_pool = active_pool(&selection);
     let report_body = render_wallet_filter_report(&selection, &report_source);
     write_output_file(&report_path, report_body.as_bytes())
         .map_err(|error| format!("failed to write {}: {error}", report_path.display()))?;
@@ -419,6 +430,10 @@ fn execute(options: &Options) -> Result<DiscoveryArtifacts, String> {
         selected_leader_env_path,
         selected_category: selected.seed.category.clone(),
         selected_score: selected.score_total,
+        core_pool_count: core_pool.len(),
+        core_pool_wallets: render_pool_wallets(&core_pool),
+        active_pool_count: active_pool.len(),
+        active_pool_wallets: render_pool_wallets(&active_pool),
         selected_rank: selected.seed.month_rank.map(|value| value.to_string()),
         selected_week_rank: selected.seed.week_rank.map(|value| value.to_string()),
         selected_month_rank: selected.seed.month_rank.map(|value| value.to_string()),
@@ -837,6 +852,16 @@ fn encode_component(value: &str) -> String {
     encoded
 }
 
+fn render_pool_wallets(pool: &[rust_copytrader::wallet_filter::WalletPoolEntry]) -> String {
+    if pool.is_empty() {
+        return "none".to_string();
+    }
+    pool.iter()
+        .map(|entry| format!("{}:{}", entry.wallet, entry.score_total))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 #[derive(Debug, Clone)]
 struct LeaderboardSnapshot {
     path: PathBuf,
@@ -994,6 +1019,10 @@ mod tests {
 
         assert_eq!(artifacts.selected_wallet, "0xgood");
         assert_eq!(artifacts.selected_category, "SPORTS");
+        assert_eq!(artifacts.core_pool_count, 1);
+        assert_eq!(artifacts.active_pool_count, 1);
+        assert!(artifacts.core_pool_wallets.contains("0xgood"));
+        assert!(artifacts.active_pool_wallets.contains("0xgood"));
         assert!(artifacts.activity_path.exists());
         assert!(artifacts.positions_path.exists());
         assert!(artifacts.value_path.exists());
