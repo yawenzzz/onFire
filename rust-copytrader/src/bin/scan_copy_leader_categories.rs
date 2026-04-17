@@ -245,6 +245,26 @@ fn render_summary(results: &[CategoryScanResult]) -> String {
             Reverse(result.top_rejected_score.unwrap_or(i64::MIN)),
         )
     });
+    let mut rejected_ranked = rejected.to_vec();
+    rejected_ranked.sort_by_key(|result| {
+        (
+            result.rejection_reason_count(),
+            Reverse(result.top_rejected_score.unwrap_or(i64::MIN)),
+        )
+    });
+    let closest_rejected = rejected_ranked
+        .iter()
+        .take(3)
+        .map(|result| {
+            format!(
+                "{}:{}:{}",
+                result.category,
+                result.rejection_reason_count(),
+                result.top_rejected_score.unwrap_or(i64::MIN)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
 
     let mut lines = vec![
         "wallet_filter_summary_strategy=wallet_filter_v1".to_string(),
@@ -291,6 +311,14 @@ fn render_summary(results: &[CategoryScanResult]) -> String {
             best_reject
                 .map(|result| result.rejection_reason_count().to_string())
                 .unwrap_or_else(|| "none".to_string())
+        ),
+        format!(
+            "closest_rejected_categories={}",
+            if closest_rejected.is_empty() {
+                "none".to_string()
+            } else {
+                closest_rejected
+            }
         ),
     ];
     for result in results {
@@ -533,6 +561,7 @@ mod tests {
         assert!(summary.contains("best_rejected_category=CRYPTO"));
         assert!(summary.contains("best_rejected_wallet=none"));
         assert!(summary.contains("best_rejected_reason_count=0"));
+        assert!(summary.contains("closest_rejected_categories=CRYPTO:0:-9223372036854775808"));
         assert!(summary.contains("== category SPORTS =="));
         assert!(summary.contains("status=passed"));
         assert!(summary.contains("== category CRYPTO =="));
