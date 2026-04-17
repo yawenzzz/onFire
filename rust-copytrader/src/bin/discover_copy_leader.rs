@@ -513,15 +513,28 @@ fn load_candidate_data(
                 format!("failed to read market artifact {}: {error}", path.display())
             })?
         } else {
-            let body =
-                fetch_simple_json(&build_market_url(&options.market_base_url, &slug), options)?;
-            write_output_file(&path, body.as_bytes()).map_err(|error| {
-                format!(
-                    "failed to write market artifact {}: {error}",
-                    path.display()
-                )
-            })?;
-            body
+            match fetch_simple_json(&build_market_url(&options.market_base_url, &slug), options) {
+                Ok(body) => {
+                    write_output_file(&path, body.as_bytes()).map_err(|error| {
+                        format!(
+                            "failed to write market artifact {}: {error}",
+                            path.display()
+                        )
+                    })?;
+                    body
+                }
+                Err(error) if missing_market_slug_error(&error) => {
+                    let fallback = render_missing_market_stub(&slug, &seed.category);
+                    write_output_file(&path, fallback.as_bytes()).map_err(|write_error| {
+                        format!(
+                            "failed to write fallback market artifact {}: {write_error}",
+                            path.display()
+                        )
+                    })?;
+                    fallback
+                }
+                Err(error) => return Err(error),
+            }
         };
         if let Some(market) = parse_market_record(&body, &slug) {
             market_cache.insert(slug.clone(), market.clone());
@@ -555,6 +568,16 @@ fn load_or_fetch_json(
     write_output_file(path, body.as_bytes())
         .map_err(|error| format!("failed to write artifact {}: {error}", path.display()))?;
     Ok(body)
+}
+
+fn missing_market_slug_error(error: &str) -> bool {
+    error.contains("slug not found") || error.contains("404 page not found")
+}
+
+fn render_missing_market_stub(slug: &str, category: &str) -> String {
+    format!(
+        "{{\"slug\":\"{slug}\",\"category\":\"{category}\",\"acceptingOrders\":false,\"enableOrderBook\":false,\"liquidityClob\":0,\"volumeClob\":0,\"negRisk\":false}}"
+    )
 }
 
 fn collect_market_slugs(
@@ -596,6 +619,7 @@ fn fetch_activity_history(options: &Options, wallet: &str, now_ts: u64) -> Resul
         let url = build_activity_url(
             &options.activity_base_url,
             wallet,
+            &options.activity_type,
             start_ts,
             now_ts,
             ACTIVITY_PAGE_LIMIT,
@@ -690,19 +714,21 @@ fn build_leaderboard_url(
 fn build_activity_url(
     base_url: &str,
     wallet: &str,
+    activity_type: &str,
     start_ts: u64,
     end_ts: u64,
     limit: usize,
     offset: usize,
 ) -> String {
     format!(
-        "{}?user={}&limit={}&offset={}&sortBy=TIMESTAMP&sortDirection=DESC&start={}&end={}",
+        "{}?user={}&limit={}&offset={}&sortBy=TIMESTAMP&sortDirection=DESC&start={}&end={}&type={}",
         base_url.trim_end_matches('/'),
         encode_component(wallet),
         limit,
         offset,
         start_ts,
         end_ts,
+        encode_component(&format!("{},MAKER_REBATE", activity_type)),
     )
 }
 
@@ -872,7 +898,8 @@ struct LeaderboardSnapshot {
 mod tests {
     use super::{
         ACTIVITY_PAGE_LIMIT, build_activity_url, build_leaderboard_url, execute,
-        is_retryable_transport_error, parse_args, seconds_from_ms,
+        is_retryable_transport_error, missing_market_slug_error, parse_args,
+        render_missing_market_stub, seconds_from_ms,
     };
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -929,6 +956,7 @@ mod tests {
         let activity = build_activity_url(
             "https://data-api.polymarket.com/activity",
             "0xwallet",
+            "TRADE",
             100,
             200,
             ACTIVITY_PAGE_LIMIT,
@@ -940,6 +968,7 @@ mod tests {
         assert!(activity.contains("user=0xwallet"));
         assert!(activity.contains("start=100"));
         assert!(activity.contains("end=200"));
+        assert!(activity.contains("type=TRADE%2CMAKER_REBATE"));
     }
 
     #[test]
@@ -1225,6 +1254,17 @@ mod tests {
         assert!(!is_retryable_transport_error(
             "curl exited with 22: HTTP 404"
         ));
+    }
+
+    #[test]
+    fn missing_market_slug_errors_fall_back_to_stub_market() {
+        assert!(missing_market_slug_error(
+            "https://gamma-api.polymarket.com/markets/slug/foo -> curl exited with 22: curl: (22) The requested URL returned error: 404 {\"type\":\"not found error\",\"error\":\"slug not found\"}"
+        ));
+        let stub = render_missing_market_stub("market-slug", "SPORTS");
+        assert!(stub.contains("\"slug\":\"market-slug\""));
+        assert!(stub.contains("\"category\":\"SPORTS\""));
+        assert!(stub.contains("\"acceptingOrders\":false"));
     }
 
     #[test]
