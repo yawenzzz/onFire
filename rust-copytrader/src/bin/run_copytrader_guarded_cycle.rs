@@ -175,6 +175,24 @@ fn run_guarded_cycle(options: &Options) -> Result<Vec<String>, String> {
     if let Some(value) = &snapshot.runtime.selected_leader_username {
         lines.push(format!("selected_leader_username={value}"));
     }
+    if let Some(value) = &snapshot.runtime.selected_leader_review_status {
+        lines.push(format!("selected_leader_review_status={value}"));
+    }
+    if let Some(value) = &snapshot.runtime.selected_leader_review_reasons {
+        lines.push(format!("selected_leader_review_reasons={value}"));
+    }
+    if let Some(value) = &snapshot.runtime.selected_leader_core_pool_count {
+        lines.push(format!("selected_leader_core_pool_count={value}"));
+    }
+    if let Some(value) = &snapshot.runtime.selected_leader_core_pool_wallets {
+        lines.push(format!("selected_leader_core_pool_wallets={value}"));
+    }
+    if let Some(value) = &snapshot.runtime.selected_leader_active_pool_count {
+        lines.push(format!("selected_leader_active_pool_count={value}"));
+    }
+    if let Some(value) = &snapshot.runtime.selected_leader_active_pool_wallets {
+        lines.push(format!("selected_leader_active_pool_wallets={value}"));
+    }
     if let Some(value) = &snapshot.runtime.selected_leader_latest_activity_side {
         lines.push(format!("selected_leader_latest_activity_side={value}"));
     }
