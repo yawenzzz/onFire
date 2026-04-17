@@ -28,11 +28,13 @@ struct Options {
     skip_activity: bool,
     skip_discovery: bool,
     skip_guarded_cycle: bool,
+    position_targeting_demo: bool,
     live_submit_gate: bool,
     allow_live_submit: bool,
     discover_bin: Option<String>,
     watch_bin: Option<String>,
     guarded_bin: Option<String>,
+    position_targeting_bin: Option<String>,
     live_submit_bin: Option<String>,
     operator_bin: Option<String>,
 }
@@ -61,11 +63,13 @@ impl Default for Options {
             skip_activity: false,
             skip_discovery: false,
             skip_guarded_cycle: false,
+            position_targeting_demo: false,
             live_submit_gate: false,
             allow_live_submit: false,
             discover_bin: None,
             watch_bin: None,
             guarded_bin: None,
+            position_targeting_bin: None,
             live_submit_bin: None,
             operator_bin: None,
         }
@@ -107,7 +111,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--watch-poll-count <n>] [--watch-poll-interval-ms <n>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--skip-activity] [--skip-discovery] [--skip-guarded-cycle] [--live-submit-gate] [--allow-live-submit] [--discover-bin <path>] [--watch-bin <path>] [--guarded-bin <path>] [--live-submit-bin <path>] [--operator-bin <path>]"
+        "usage: run_copytrader_operator_flow [--root <path>] [--discovery-dir <path>] [--leaderboard-base-url <url>] [--activity-base-url <url>] [--proxy <url>] [--category <value>] [--time-period <value>] [--order-by <value>] [--limit <n>] [--offset <n>] [--index <n>] [--activity-type <value>] [--watch-poll-count <n>] [--watch-poll-interval-ms <n>] [--connect-timeout-ms <n>] [--max-time-ms <n>] [--retry-count <n>] [--retry-delay-ms <n>] [--skip-activity] [--skip-discovery] [--skip-guarded-cycle] [--position-targeting-demo] [--live-submit-gate] [--allow-live-submit] [--discover-bin <path>] [--watch-bin <path>] [--guarded-bin <path>] [--position-targeting-bin <path>] [--live-submit-bin <path>] [--operator-bin <path>]"
     );
 }
 
@@ -154,11 +158,15 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--skip-activity" => options.skip_activity = true,
             "--skip-discovery" => options.skip_discovery = true,
             "--skip-guarded-cycle" => options.skip_guarded_cycle = true,
+            "--position-targeting-demo" => options.position_targeting_demo = true,
             "--live-submit-gate" => options.live_submit_gate = true,
             "--allow-live-submit" => options.allow_live_submit = true,
             "--discover-bin" => options.discover_bin = Some(next_value(&mut iter, arg)?),
             "--watch-bin" => options.watch_bin = Some(next_value(&mut iter, arg)?),
             "--guarded-bin" => options.guarded_bin = Some(next_value(&mut iter, arg)?),
+            "--position-targeting-bin" => {
+                options.position_targeting_bin = Some(next_value(&mut iter, arg)?)
+            }
             "--live-submit-bin" => options.live_submit_bin = Some(next_value(&mut iter, arg)?),
             "--operator-bin" => options.operator_bin = Some(next_value(&mut iter, arg)?),
             other => return Err(format!("unknown argument: {other}")),
@@ -263,6 +271,28 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
         })
     };
 
+    let position_targeting_result = if !discovery_ready {
+        Ok("skipped position targeting because discovery failed".to_string())
+    } else if !options.position_targeting_demo {
+        Ok("skipped position targeting demo".to_string())
+    } else {
+        let position_targeting_bin = resolve_bin_path(
+            "run_position_targeting_demo",
+            options.position_targeting_bin.as_deref(),
+        )
+        .map_err(|error| format!("failed to resolve run_position_targeting_demo: {error}"))?;
+        run_command(
+            &position_targeting_bin,
+            &["--root".to_string(), options.root.clone()],
+            Some(Path::new(".")),
+        )
+        .and_then(|output| {
+            String::from_utf8(output.stdout).map_err(|error| {
+                format!("run_position_targeting_demo stdout was not utf-8: {error}")
+            })
+        })
+    };
+
     let live_submit_result = if !discovery_ready {
         Ok("skipped live submit gate because discovery failed".to_string())
     } else if options.live_submit_gate
@@ -327,6 +357,11 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
             guarded_result.as_ref().err(),
         ),
         (
+            "run_position_targeting_demo",
+            position_targeting_result.as_deref(),
+            position_targeting_result.as_ref().err(),
+        ),
+        (
             "run_copytrader_live_submit_gate",
             live_submit_result.as_deref(),
             live_submit_result.as_ref().err(),
@@ -344,13 +379,14 @@ fn run_operator_flow(options: &Options) -> Result<(PathBuf, Option<String>), Str
         .err()
         .or_else(|| watch_result.err())
         .or_else(|| guarded_result.err())
+        .or_else(|| position_targeting_result.err())
         .or_else(|| live_submit_result.err())
         .or_else(|| operator_result.err());
     Ok((report_path, error))
 }
 
 fn build_flow_report(
-    stages: [(&'static str, Result<&str, &String>, Option<&String>); 5],
+    stages: [(&'static str, Result<&str, &String>, Option<&String>); 6],
 ) -> String {
     let mut report = stages
         .iter()
@@ -589,6 +625,7 @@ mod tests {
             "--skip-activity".into(),
             "--skip-discovery".into(),
             "--skip-guarded-cycle".into(),
+            "--position-targeting-demo".into(),
             "--live-submit-gate".into(),
             "--allow-live-submit".into(),
         ])
@@ -612,6 +649,7 @@ mod tests {
         assert!(options.skip_activity);
         assert!(options.skip_discovery);
         assert!(options.skip_guarded_cycle);
+        assert!(options.position_targeting_demo);
         assert!(options.live_submit_gate);
         assert!(options.allow_live_submit);
     }
@@ -707,6 +745,11 @@ mod tests {
             &guarded,
             "#!/usr/bin/env bash\nprintf 'mode=guarded-cycle\\nlast_submit_status=verified\\n'\n",
         );
+        let position_targeting = root.join("run_position_targeting_demo");
+        write_executable(
+            &position_targeting,
+            "#!/usr/bin/env bash\nprintf 'mode=position-targeting-demo\\ntarget_count=2\\ndelta_count=1\\n'\n",
+        );
         let live_submit = root.join("run_copytrader_live_submit_gate");
         write_executable(
             &live_submit,
@@ -726,6 +769,9 @@ mod tests {
             "1".into(),
             "--guarded-bin".into(),
             guarded.display().to_string(),
+            "--position-targeting-bin".into(),
+            position_targeting.display().to_string(),
+            "--position-targeting-demo".into(),
             "--live-submit-bin".into(),
             live_submit.display().to_string(),
             "--live-submit-gate".into(),
@@ -744,6 +790,8 @@ mod tests {
         assert!(report.contains("watch_user=0xleader"));
         assert!(report.contains("== run_copytrader_guarded_cycle =="));
         assert!(report.contains("mode=guarded-cycle"));
+        assert!(report.contains("== run_position_targeting_demo =="));
+        assert!(report.contains("mode=position-targeting-demo"));
         assert!(report.contains("== run_copytrader_live_submit_gate =="));
         assert!(report.contains("live_submit_status=preview_only"));
         assert!(report.contains("== operator_demo =="));
@@ -841,6 +889,7 @@ mod tests {
         assert!(report.contains("flow_failure_stage=discover_copy_leader"));
         assert!(report.contains("discover_copy_leader"));
         assert!(report.contains("skipped watcher step because discovery failed"));
+        assert!(report.contains("skipped position targeting because discovery failed"));
         assert!(report.contains("skipped operator demo because discovery failed"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
@@ -1003,6 +1052,49 @@ mod tests {
         let report = fs::read_to_string(&report_path).expect("report exists");
         assert!(report.contains("flow_failure_stage=run_copytrader_live_submit_gate"));
         assert!(report.contains("run_copytrader_live_submit_gate"));
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn run_operator_flow_persists_failure_report_when_position_targeting_demo_fails() {
+        let root = unique_temp_dir("position-targeting-failure");
+        fs::create_dir_all(root.join(".omx/operator-demo")).expect("operator dir created");
+
+        let discover = root.join("discover_copy_leader");
+        write_executable(
+            &discover,
+            "#!/usr/bin/env bash\nprintf 'selected_wallet=0xleader\\nselected_leader_env_path=../.omx/discovery/selected-leader.env\\n'\nmkdir -p ../.omx/discovery\nprintf 'COPYTRADER_DISCOVERY_WALLET=0xleader\\n' > ../.omx/discovery/selected-leader.env\n",
+        );
+        let position_targeting = root.join("run_position_targeting_demo");
+        write_executable(
+            &position_targeting,
+            "#!/usr/bin/env bash\necho 'position targeting failed' >&2\nexit 1\n",
+        );
+        let operator = root.join("rust-copytrader");
+        write_executable(
+            &operator,
+            "#!/usr/bin/env bash\nprintf 'mode=operator-demo\\n'\n",
+        );
+
+        let options = parse_args(&[
+            "--root".into(),
+            root.display().to_string(),
+            "--discover-bin".into(),
+            discover.display().to_string(),
+            "--position-targeting-bin".into(),
+            position_targeting.display().to_string(),
+            "--position-targeting-demo".into(),
+            "--operator-bin".into(),
+            operator.display().to_string(),
+        ])
+        .expect("parse");
+
+        let (report_path, error) = run_operator_flow(&options).expect("flow should return report");
+        assert!(error.is_some());
+        let report = fs::read_to_string(&report_path).expect("report exists");
+        assert!(report.contains("flow_failure_stage=run_position_targeting_demo"));
+        assert!(report.contains("run_position_targeting_demo"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
