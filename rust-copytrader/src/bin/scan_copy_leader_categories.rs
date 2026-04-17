@@ -22,6 +22,7 @@ struct CategoryScanResult {
     status: &'static str,
     selected_wallet: Option<String>,
     selected_score: Option<i64>,
+    top_rejected_score: Option<i64>,
     top_rejected_wallet: Option<String>,
     top_rejection_reasons: Option<String>,
     section: String,
@@ -183,6 +184,8 @@ fn run_scan(options: &Options) -> Result<(PathBuf, bool), String> {
         let selected_wallet = parse_key_from_section(&section, "selected_wallet");
         let selected_score =
             parse_key_from_section(&section, "selected_score").and_then(|value| value.parse().ok());
+        let top_rejected_score =
+            parse_first_candidate_score(&section).and_then(|value| value.parse().ok());
         let top_rejected_wallet = parse_key_from_error(&section, "top_rejected_wallet=");
         let top_rejection_reasons = parse_key_from_error(&section, "top_rejection_reasons=");
         results.push(CategoryScanResult {
@@ -194,6 +197,7 @@ fn run_scan(options: &Options) -> Result<(PathBuf, bool), String> {
             },
             selected_wallet,
             selected_score,
+            top_rejected_score,
             top_rejected_wallet,
             top_rejection_reasons,
             section: section.clone(),
@@ -221,7 +225,7 @@ fn render_summary(results: &[CategoryScanResult]) -> String {
         .max_by_key(|result| result.selected_score.unwrap_or(i64::MIN));
     let best_reject = rejected
         .iter()
-        .max_by_key(|result| result.selected_score.unwrap_or(i64::MIN));
+        .max_by_key(|result| result.top_rejected_score.unwrap_or(i64::MIN));
 
     let mut lines = vec![
         "wallet_filter_summary_strategy=wallet_filter_v1".to_string(),
@@ -293,6 +297,25 @@ fn parse_key_from_error(section: &str, prefix: &str) -> Option<String> {
                 .to_string()
         })
         .filter(|value| !value.is_empty())
+}
+
+fn parse_first_candidate_score(section: &str) -> Option<String> {
+    let mut in_first_candidate = false;
+    for line in section.lines() {
+        if line.starts_with("== candidate 0 ==") {
+            in_first_candidate = true;
+            continue;
+        }
+        if in_first_candidate {
+            if line.starts_with("== candidate ") {
+                break;
+            }
+            if let Some(value) = line.strip_prefix("score_total=") {
+                return Some(value.trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 fn build_discover_args(options: &Options, category: &str) -> Vec<String> {
@@ -483,6 +506,7 @@ mod tests {
         assert!(summary.contains("categories_rejected=1"));
         assert!(summary.contains("best_pass_category=SPORTS"));
         assert!(summary.contains("best_rejected_category=CRYPTO"));
+        assert!(summary.contains("best_rejected_wallet=none"));
         assert!(summary.contains("== category SPORTS =="));
         assert!(summary.contains("status=passed"));
         assert!(summary.contains("== category CRYPTO =="));

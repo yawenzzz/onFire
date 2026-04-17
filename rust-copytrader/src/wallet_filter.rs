@@ -70,6 +70,7 @@ pub struct PositionRecord {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MarketRecord {
     pub slug: String,
+    pub event_id: Option<String>,
     pub condition_id: Option<String>,
     pub category: Option<String>,
     pub end_date: Option<String>,
@@ -247,20 +248,73 @@ pub fn parse_market_record(content: &str, slug_hint: &str) -> Option<MarketRecor
     let object = json_objects(content).into_iter().next()?;
     Some(MarketRecord {
         slug: extract_json_field(&object, "slug").unwrap_or_else(|| slug_hint.to_string()),
+        event_id: extract_nested_event_field(content, "id"),
         condition_id: extract_json_field(&object, "conditionId"),
-        category: extract_json_field(&object, "category"),
+        category: extract_json_field(&object, "category")
+            .or_else(|| extract_category_from_tags(content)),
         end_date: extract_json_field(&object, "endDate")
             .or_else(|| extract_json_field(&object, "endDateIso")),
         accepting_orders: extract_json_bool_field(&object, "acceptingOrders").unwrap_or(false),
         enable_order_book: extract_json_bool_field(&object, "enableOrderBook").unwrap_or(false),
         liquidity_clob: extract_json_field(&object, "liquidityClob")
+            .or_else(|| extract_json_field(&object, "liquidity"))
+            .or_else(|| extract_json_field(&object, "volumeClob"))
+            .or_else(|| extract_json_field(&object, "volume"))
             .and_then(|value| parse_f64(&value))
             .unwrap_or(0.0),
         volume24hr_clob: extract_json_field(&object, "volume24hrClob")
+            .or_else(|| extract_json_field(&object, "volume24hr"))
+            .or_else(|| extract_json_field(&object, "volumeClob"))
+            .or_else(|| extract_json_field(&object, "volume"))
             .and_then(|value| parse_f64(&value))
             .unwrap_or(0.0),
         negative_risk: extract_json_bool_field(&object, "negRisk"),
     })
+}
+
+pub fn enrich_market_record_from_event(market: &MarketRecord, content: &str) -> MarketRecord {
+    let mut enriched = market.clone();
+    if enriched.category.is_none() {
+        enriched.category = extract_category_from_tags(content);
+    }
+    if enriched.event_id.is_none() {
+        enriched.event_id = extract_json_field(content, "id");
+    }
+    if let Some(market_object) = extract_market_object_from_event(content, &market.slug) {
+        if !enriched.accepting_orders {
+            enriched.accepting_orders =
+                extract_json_bool_field(&market_object, "acceptingOrders").unwrap_or(false);
+        }
+        if !enriched.enable_order_book {
+            enriched.enable_order_book =
+                extract_json_bool_field(&market_object, "enableOrderBook").unwrap_or(false);
+        }
+        if enriched.liquidity_clob <= 0.0 {
+            enriched.liquidity_clob = extract_json_field(&market_object, "liquidityClob")
+                .or_else(|| extract_json_field(&market_object, "liquidity"))
+                .and_then(|value| parse_f64(&value))
+                .unwrap_or(0.0);
+        }
+        if enriched.volume24hr_clob <= 0.0 {
+            enriched.volume24hr_clob = extract_json_field(&market_object, "volume24hrClob")
+                .or_else(|| extract_json_field(&market_object, "volume24hr"))
+                .or_else(|| extract_json_field(&market_object, "volumeClob"))
+                .or_else(|| extract_json_field(&market_object, "volume"))
+                .and_then(|value| parse_f64(&value))
+                .unwrap_or(0.0);
+        }
+        if enriched.end_date.is_none() {
+            enriched.end_date = extract_json_field(&market_object, "endDate")
+                .or_else(|| extract_json_field(&market_object, "endDateIso"));
+        }
+        if enriched.condition_id.is_none() {
+            enriched.condition_id = extract_json_field(&market_object, "conditionId");
+        }
+        if enriched.negative_risk.is_none() {
+            enriched.negative_risk = extract_json_bool_field(&market_object, "negRisk");
+        }
+    }
+    enriched
 }
 
 pub fn build_candidate_seeds(
@@ -385,12 +439,14 @@ pub fn evaluate_candidate(
         if let Some(slug) = event.slug.as_ref()
             && let Some(market) = markets.get(slug)
         {
-            if market_is_copyable(market) {
+            if market_is_copyable(market, event.timestamp) {
                 copyable_usdc += buy_usdc;
             }
-            if let Some(category) = market.category.as_ref() {
-                *by_category.entry(category.to_string()).or_insert(0.0) += buy_usdc;
-            }
+            let category = market
+                .category
+                .clone()
+                .unwrap_or_else(|| seed.category.clone());
+            *by_category.entry(category).or_insert(0.0) += buy_usdc;
             if let Some(end_date) = market.end_date.as_ref()
                 && let Some(end_ts) = parse_iso8601_timestamp(end_date)
             {
@@ -794,6 +850,40 @@ pub fn json_objects(content: &str) -> Vec<String> {
     objects
 }
 
+fn extract_nested_event_field(content: &str, field: &str) -> Option<String> {
+    let anchor = content.find("\"events\":[")?;
+    let event_section = &content[anchor..];
+    let event_object = json_objects(event_section).into_iter().next()?;
+    extract_json_field(&event_object, field)
+}
+
+fn extract_market_object_from_event(content: &str, slug: &str) -> Option<String> {
+    let anchor = content.find("\"markets\":[")?;
+    let section = &content[anchor..];
+    json_objects(section)
+        .into_iter()
+        .find(|object| extract_json_field(object, "slug").as_deref() == Some(slug))
+}
+
+fn extract_category_from_tags(content: &str) -> Option<String> {
+    let anchor = content.find("\"tags\":[")?;
+    let section = &content[anchor..];
+    for object in json_objects(section) {
+        let slug = extract_json_field(&object, "slug")
+            .unwrap_or_default()
+            .to_uppercase();
+        let label = extract_json_field(&object, "label")
+            .unwrap_or_default()
+            .to_uppercase();
+        for category in DEFAULT_SPECIALIST_CATEGORIES {
+            if slug == category || label == category {
+                return Some(category.to_string());
+            }
+        }
+    }
+    None
+}
+
 pub fn extract_json_field(object: &str, field: &str) -> Option<String> {
     let needle = format!("\"{field}\":");
     let start = object.find(&needle)?;
@@ -866,8 +956,15 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> Option<u64> {
     (days >= 0).then_some(days as u64)
 }
 
-fn market_is_copyable(market: &MarketRecord) -> bool {
-    market.accepting_orders
+fn market_is_copyable(market: &MarketRecord, observed_at: u64) -> bool {
+    let order_window_open = market.accepting_orders
+        || market
+            .end_date
+            .as_deref()
+            .and_then(parse_iso8601_timestamp)
+            .map(|end_ts| observed_at <= end_ts)
+            .unwrap_or(false);
+    order_window_open
         && market.enable_order_book
         && market.liquidity_clob >= MIN_COPYABLE_LIQUIDITY_CLOB
         && market.volume24hr_clob >= MIN_COPYABLE_VOLUME_24H_CLOB
@@ -1070,10 +1167,10 @@ struct HoldMetrics {
 mod tests {
     use super::{
         ActivityRecord, LatestTradeSummary, MarketRecord, PositionRecord, WalletCandidateSeed,
-        build_candidate_seeds, choose_wallet, evaluate_candidate, parse_activity_records,
-        parse_iso8601_timestamp, parse_leaderboard_entries, parse_market_record,
-        parse_position_records, parse_total_value, parse_traded_count, render_selected_leader_env,
-        resolve_category_scope,
+        build_candidate_seeds, choose_wallet, enrich_market_record_from_event, evaluate_candidate,
+        parse_activity_records, parse_iso8601_timestamp, parse_leaderboard_entries,
+        parse_market_record, parse_position_records, parse_total_value, parse_traded_count,
+        render_selected_leader_env, resolve_category_scope,
     };
     use std::collections::BTreeMap;
 
@@ -1144,6 +1241,23 @@ mod tests {
     }
 
     #[test]
+    fn event_enrichment_pulls_category_and_volume_fallbacks() {
+        let market = parse_market_record(
+            r#"{"id":"1606200","slug":"market-a","conditionId":"0xcond","acceptingOrders":false,"enableOrderBook":true,"volumeClob":60000,"events":[{"id":"275896"}]}"#,
+            "market-a",
+        )
+        .expect("market");
+        let enriched = enrich_market_record_from_event(
+            &market,
+            r#"{"id":"275896","tags":[{"label":"Finance","slug":"finance"}],"markets":[{"slug":"market-a","conditionId":"0xcond","acceptingOrders":false,"enableOrderBook":true,"volumeClob":60000,"negRisk":false,"endDate":"2026-12-31T00:00:00Z"}]}"#,
+        );
+
+        assert_eq!(enriched.event_id.as_deref(), Some("275896"));
+        assert_eq!(enriched.category.as_deref(), Some("FINANCE"));
+        assert_eq!(enriched.volume24hr_clob, 60000.0);
+    }
+
+    #[test]
     fn candidate_evaluation_rejects_maker_like_wallets() {
         let seed = WalletCandidateSeed {
             category: "SPORTS".into(),
@@ -1198,6 +1312,7 @@ mod tests {
             "market-a".into(),
             MarketRecord {
                 slug: "market-a".into(),
+                event_id: None,
                 condition_id: Some("0xcond".into()),
                 category: Some("SPORTS".into()),
                 end_date: Some("2026-05-01T00:00:00Z".into()),
