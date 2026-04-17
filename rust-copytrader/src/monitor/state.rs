@@ -429,6 +429,13 @@ impl MonState {
                     core_pool,
                     active_pool,
                 };
+                self.push_log(format!(
+                    "selected leader wallet={} category={} score={} review={}",
+                    self.selected_leader.wallet,
+                    self.selected_leader.category,
+                    self.selected_leader.score,
+                    self.selected_leader.review_status
+                ));
             }
             MonEvent::HttpDone {
                 svc,
@@ -606,6 +613,14 @@ impl MonState {
                     blocked_asset_count,
                     blocker_summary,
                 };
+                self.push_log(format!(
+                    "position diagnostics targets={} deltas={} stale={} blocked={} blockers={}",
+                    self.position_targeting.target_count,
+                    self.position_targeting.delta_count,
+                    self.position_targeting.stale_asset_count,
+                    self.position_targeting.blocked_asset_count,
+                    self.position_targeting.blocker_summary
+                ));
             }
             MonEvent::OrderIntent { .. } => {
                 self.exec.last_submit_status = "intent".to_string();

@@ -278,6 +278,20 @@ fn persist_snapshot_artifacts(cfg: &MonitorCfg, snapshot: &UiSnapshot) -> io::Re
 
 fn journal_line(now_ms: u64, event: &MonEvent) -> String {
     match event {
+        MonEvent::LeaderSelected {
+            wallet,
+            category,
+            score,
+            review_status,
+            ..
+        } => format!(
+            "{{\"ts\":{},\"k\":\"leader_selected\",\"wallet\":\"{}\",\"category\":\"{}\",\"score\":\"{}\",\"review\":\"{}\"}}",
+            now_ms,
+            escape_json(wallet),
+            escape_json(category),
+            escape_json(score),
+            escape_json(review_status),
+        ),
         MonEvent::ActivityHit {
             leader,
             asset,
@@ -311,6 +325,21 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             latency_ms,
             positions,
             value_usdc,
+        ),
+        MonEvent::PositionDiagnostics {
+            target_count,
+            delta_count,
+            stale_asset_count,
+            blocked_asset_count,
+            blocker_summary,
+        } => format!(
+            "{{\"ts\":{},\"k\":\"position_diagnostics\",\"target_count\":{},\"delta_count\":{},\"stale_asset_count\":{},\"blocked_asset_count\":{},\"blocker_summary\":\"{}\"}}",
+            now_ms,
+            target_count,
+            delta_count,
+            stale_asset_count,
+            blocked_asset_count,
+            escape_json(blocker_summary),
         ),
         MonEvent::OrderMatched {
             order_id,
