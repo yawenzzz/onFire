@@ -164,6 +164,17 @@ pub enum MonEvent {
         tx_hash: String,
         slug: Option<String>,
     },
+    TrackedActivityProjection {
+        asset: String,
+        current_position_value_usdc: i64,
+        current_position_size: i64,
+        current_avg_price_ppm: i32,
+        algo_target_risk_usdc: i64,
+        algo_delta_risk_usdc: i64,
+        algo_confidence_bps: u16,
+        algo_tte_bucket: String,
+        algo_reason: String,
+    },
     ReconcileStart {
         leader: String,
     },

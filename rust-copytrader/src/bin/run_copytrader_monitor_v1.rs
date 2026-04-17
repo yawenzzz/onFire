@@ -265,7 +265,13 @@ fn run_monitor(options: &Options) -> Result<String, String> {
 
         let now_ms = now_ms_u64();
         if index == 0 || now_ms.saturating_sub(last_reconcile_ms) >= options.reconcile_interval_ms {
-            run_position_cycle(&runtime, &position_bin, &root, &wallet)?;
+            run_position_cycle(
+                &runtime,
+                &position_bin,
+                &root,
+                &wallet,
+                watch_output.get("latest_new_asset").map(String::as_str),
+            )?;
             emit_operator_exec_metrics(&runtime, &root, &mut last_operator_signature)?;
             last_reconcile_ms = now_ms;
         }
@@ -387,7 +393,7 @@ fn run_watch_cycle(
     });
     let stdout = String::from_utf8(output.stdout)
         .map_err(|error| format!("watch stdout was not utf-8: {error}"))?;
-    let values = parse_key_values(&stdout);
+    let mut values = parse_key_values(&stdout);
     let latest_path = values
         .get("watch_latest_path")
         .map(PathBuf::from)
@@ -422,6 +428,9 @@ fn run_watch_cycle(
                 slug: event.slug.clone(),
             });
         }
+        if let Some(event) = events.first() {
+            values.insert("latest_new_asset".to_string(), event.asset.clone());
+        }
     }
     Ok(values)
 }
@@ -447,13 +456,28 @@ fn run_position_cycle(
     position_bin: &Path,
     root: &Path,
     wallet: &str,
+    focus_asset: Option<&str>,
 ) -> Result<(), String> {
     runtime.handle.emit(MonEvent::ReconcileStart {
         leader: wallet.to_string(),
     });
-    let args = vec!["--root".to_string(), root.display().to_string()];
+    let mut args = vec!["--root".to_string(), root.display().to_string()];
+    if let Some(focus_asset) = focus_asset {
+        args.push("--focus-asset".to_string());
+        args.push(focus_asset.to_string());
+    }
     let started = std::time::Instant::now();
-    let output = run_command(position_bin, &args, Some(Path::new(".")))?;
+    let output = match run_command(position_bin, &args, Some(Path::new("."))) {
+        Ok(output) => output,
+        Err(error)
+            if focus_asset.is_some()
+                && (error.contains("unknown argument: --focus-asset")
+                    || error.contains("No such file or directory")) =>
+        {
+            run_position_via_cargo(&args)?
+        }
+        Err(error) => return Err(error),
+    };
     let elapsed_ms = started.elapsed().as_millis().min(u32::MAX as u128) as u32;
     let stdout = String::from_utf8(output.stdout)
         .map_err(|error| format!("position targeting stdout was not utf-8: {error}"))?;
@@ -504,6 +528,44 @@ fn run_position_cycle(
         blocked_asset_count,
         blocker_summary: blocker_summary.clone(),
     });
+
+    if let Some(asset) = values.get("focus.asset") {
+        runtime.handle.emit(MonEvent::TrackedActivityProjection {
+            asset: asset.clone(),
+            current_position_value_usdc: values
+                .get("focus.position_value_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0),
+            current_position_size: values
+                .get("focus.position_size")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0),
+            current_avg_price_ppm: values
+                .get("focus.avg_price_ppm")
+                .and_then(|value| value.parse::<i32>().ok())
+                .unwrap_or(0),
+            algo_target_risk_usdc: values
+                .get("focus.target_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0),
+            algo_delta_risk_usdc: values
+                .get("focus.delta_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0),
+            algo_confidence_bps: values
+                .get("focus.confidence_bps")
+                .and_then(|value| value.parse::<u16>().ok())
+                .unwrap_or(0),
+            algo_tte_bucket: values
+                .get("focus.tte_bucket")
+                .cloned()
+                .unwrap_or_else(|| "none".to_string()),
+            algo_reason: values
+                .get("focus.reason")
+                .cloned()
+                .unwrap_or_else(|| "none".to_string()),
+        });
+    }
 
     if let Some(asset) = values
         .get("target[0].slug")
@@ -675,6 +737,18 @@ fn emit_operator_exec_metrics(
         });
     }
     Ok(())
+}
+
+fn run_position_via_cargo(args: &[String]) -> Result<Output, String> {
+    let mut cargo_args = vec![
+        "run".to_string(),
+        "--quiet".to_string(),
+        "--bin".to_string(),
+        "run_position_targeting_demo".to_string(),
+        "--".to_string(),
+    ];
+    cargo_args.extend(args.iter().cloned());
+    run_command(Path::new("cargo"), &cargo_args, Some(Path::new(".")))
 }
 
 fn parse_key_values(content: &str) -> BTreeMap<String, String> {
@@ -854,7 +928,7 @@ mod tests {
         let position = root.join("run_position_targeting_demo");
         write_executable(
             &position,
-            "#!/bin/sh\nprintf 'leader_position_count=1\nleader_spot_value_usdc=5500000\ntarget_count=1\ndelta_count=0\ndiagnostic_total_target_risk_usdc=2000000\ndiagnostic_stale_asset_count=1\ndiagnostic_blocked_asset_count=1\ndiagnostic_blocker_summary=zero_target:1,tail_lt24h:1\ntarget[0].asset=asset-1\ntarget[0].slug=market-a\n'\n",
+            "#!/bin/sh\nprintf 'leader_position_count=1\nleader_spot_value_usdc=5500000\ntarget_count=1\ndelta_count=0\ndiagnostic_total_target_risk_usdc=2000000\ndiagnostic_stale_asset_count=1\ndiagnostic_blocked_asset_count=1\ndiagnostic_blocker_summary=zero_target:1,tail_lt24h:1\ntarget[0].asset=asset-1\ntarget[0].slug=market-a\nfocus.asset=asset-1\nfocus.slug=market-a\nfocus.position_value_usdc=5500000\nfocus.position_size=10000000\nfocus.avg_price_ppm=440000\nfocus.target_risk_usdc=0\nfocus.delta_risk_usdc=0\nfocus.confidence_bps=10000\nfocus.tte_bucket=none\nfocus.reason=risk_cap\n'\n",
         );
 
         let options = super::Options {
@@ -887,6 +961,12 @@ mod tests {
         assert!(frame.contains("category=TECH"));
         assert!(frame.contains("tracked activity"));
         assert!(frame.contains("asset=asset-1"));
+        assert!(frame.contains("time="));
+        assert!(frame.contains("price=0.4400"));
+        assert!(frame.contains("leader_pos=5.50"));
+        assert!(frame.contains("algo_target=0.00"));
+        assert!(frame.contains("reason=risk_cap"));
+        assert!(frame.contains("recent trades"));
         assert!(frame.contains("SKIP risk_cap"));
         assert!(frame.contains("position targeting"));
         assert!(frame.contains("blocker_summary="));

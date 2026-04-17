@@ -114,8 +114,29 @@ pub struct TrackedActivityView {
     pub slug: String,
     pub asset: String,
     pub usdc_size: i64,
+    pub price_ppm: i32,
     pub event_age_ms: u64,
     pub event_ts_ms: i64,
+    pub local_time_gmt8: String,
+    pub current_position_value_usdc: i64,
+    pub current_position_size: i64,
+    pub current_avg_price_ppm: i32,
+    pub algo_target_risk_usdc: i64,
+    pub algo_delta_risk_usdc: i64,
+    pub algo_confidence_bps: u16,
+    pub algo_tte_bucket: String,
+    pub algo_reason: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TradeTapeView {
+    pub local_time_gmt8: String,
+    pub tx: String,
+    pub side: String,
+    pub slug: String,
+    pub asset: String,
+    pub usdc_size: i64,
+    pub price_ppm: i32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -211,6 +232,7 @@ pub struct UiSnapshot {
     pub feeds: FeedView,
     pub selected_leader: SelectedLeaderView,
     pub tracked_activity: TrackedActivityView,
+    pub recent_trades: Vec<TradeTapeView>,
     pub leaders: Vec<LeaderView>,
     pub books: Vec<BookViewUi>,
     pub signals: Vec<SignalView>,

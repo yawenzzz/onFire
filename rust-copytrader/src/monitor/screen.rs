@@ -134,12 +134,49 @@ pub fn render(snapshot: &UiSnapshot) -> String {
     );
     let _ = writeln!(
         out,
-        "  asset={} usdc={:.2} event_age={}ms event_ts={}",
+        "  time={} asset={} usdc={:.2} price={:.4}",
+        empty_as_none(&snapshot.tracked_activity.local_time_gmt8),
         empty_as_none(&snapshot.tracked_activity.asset),
         usdc(snapshot.tracked_activity.usdc_size),
+        ppm_price(snapshot.tracked_activity.price_ppm),
+    );
+    let _ = writeln!(
+        out,
+        "  event_age={}ms event_ts={} leader_pos={:.2} size={:.4} avg={:.4}",
         snapshot.tracked_activity.event_age_ms,
         snapshot.tracked_activity.event_ts_ms,
+        usdc(snapshot.tracked_activity.current_position_value_usdc),
+        shares(snapshot.tracked_activity.current_position_size),
+        ppm_price(snapshot.tracked_activity.current_avg_price_ppm),
     );
+    let _ = writeln!(
+        out,
+        "  algo_target={:.2} algo_delta={:.2} conf={}bp tte={} reason={}",
+        usdc(snapshot.tracked_activity.algo_target_risk_usdc),
+        usdc(snapshot.tracked_activity.algo_delta_risk_usdc),
+        snapshot.tracked_activity.algo_confidence_bps,
+        empty_as_none(&snapshot.tracked_activity.algo_tte_bucket),
+        empty_as_none(&snapshot.tracked_activity.algo_reason),
+    );
+    out.push('\n');
+
+    section_header(&mut out, "recent trades");
+    if snapshot.recent_trades.is_empty() {
+        let _ = writeln!(out, "  none");
+    } else {
+        for trade in &snapshot.recent_trades {
+            let _ = writeln!(
+                out,
+                "  {} {} {} usdc={:.2} px={:.4} tx={}",
+                empty_as_none(&trade.local_time_gmt8),
+                empty_as_none(&trade.side),
+                empty_as_none(&trade.slug),
+                usdc(trade.usdc_size),
+                ppm_price(trade.price_ppm),
+                short_tx(&trade.tx),
+            );
+        }
+    }
     out.push('\n');
 
     section_header(&mut out, "leaders");
@@ -433,6 +470,22 @@ fn yn(value: bool) -> &'static str {
 
 fn usdc(value: i64) -> f64 {
     value as f64 / 1_000_000.0
+}
+
+fn shares(value: i64) -> f64 {
+    value as f64 / 1_000_000.0
+}
+
+fn ppm_price(value: i32) -> f64 {
+    value as f64 / 1_000_000.0
+}
+
+fn short_tx(value: &str) -> String {
+    if value.len() <= 18 {
+        value.to_string()
+    } else {
+        format!("{}…{}", &value[..10], &value[value.len() - 6..])
+    }
 }
 
 fn escape_json(value: &str) -> String {

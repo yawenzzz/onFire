@@ -4,7 +4,7 @@ use super::rolling::RollingCounter;
 use super::snapshot::{
     AlertView, BookViewUi, ExecView, FeedChannelView, FeedHttpView, FeedView, Health, LeaderView,
     Mode, PositionTargetingView, ProcView, RiskView, SelectedLeaderView, SignalView,
-    TrackedActivityView, UiSnapshot,
+    TrackedActivityView, TradeTapeView, UiSnapshot,
 };
 use super::{MonitorCfg, now_ms_u64};
 use std::collections::{BTreeMap, VecDeque};
@@ -256,8 +256,29 @@ struct TrackedActivityMon {
     slug: String,
     asset: String,
     usdc_size: i64,
+    price_ppm: i32,
     event_age_ms: u64,
     event_ts_ms: i64,
+    local_time_gmt8: String,
+    current_position_value_usdc: i64,
+    current_position_size: i64,
+    current_avg_price_ppm: i32,
+    algo_target_risk_usdc: i64,
+    algo_delta_risk_usdc: i64,
+    algo_confidence_bps: u16,
+    algo_tte_bucket: String,
+    algo_reason: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TradeTapeMon {
+    local_time_gmt8: String,
+    tx: String,
+    side: String,
+    slug: String,
+    asset: String,
+    usdc_size: i64,
+    price_ppm: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -363,6 +384,7 @@ pub struct MonState {
     position_targeting: PositionTargetingMon,
     selected_leader: SelectedLeaderMon,
     tracked_activity: TrackedActivityMon,
+    recent_trades: VecDeque<TradeTapeMon>,
     alerts: Vec<AlertView>,
     logs: VecDeque<String>,
 }
@@ -381,6 +403,7 @@ impl MonState {
             position_targeting: PositionTargetingMon::default(),
             selected_leader: SelectedLeaderMon::default(),
             tracked_activity: TrackedActivityMon::default(),
+            recent_trades: VecDeque::new(),
             alerts: Vec::new(),
             logs: VecDeque::new(),
             cfg,
@@ -475,6 +498,7 @@ impl MonState {
                 asset,
                 side,
                 usdc_size,
+                leader_price_ppm,
                 event_ts_ms,
                 recv_ts_ms,
                 tx_hash,
@@ -488,21 +512,66 @@ impl MonState {
                 leader_mon.last_tx = Some(tx_hash.clone());
                 leader_mon.last_side = Some(side.as_str().to_string());
                 leader_mon.last_slug = slug.clone();
+                let local_time_gmt8 = format_gmt8(event_ts_ms);
                 self.tracked_activity = TrackedActivityMon {
                     tx: tx_hash.clone(),
                     side: side.as_str().to_string(),
                     slug: slug.unwrap_or_default(),
                     asset: asset.clone(),
                     usdc_size,
+                    price_ppm: leader_price_ppm,
                     event_age_ms: age_ms,
                     event_ts_ms,
+                    local_time_gmt8: local_time_gmt8.clone(),
+                    current_position_value_usdc: 0,
+                    current_position_size: 0,
+                    current_avg_price_ppm: 0,
+                    algo_target_risk_usdc: 0,
+                    algo_delta_risk_usdc: 0,
+                    algo_confidence_bps: 0,
+                    algo_tte_bucket: String::new(),
+                    algo_reason: String::new(),
                 };
+                self.recent_trades.push_back(TradeTapeMon {
+                    local_time_gmt8,
+                    tx: tx_hash.clone(),
+                    side: side.as_str().to_string(),
+                    slug: self.tracked_activity.slug.clone(),
+                    asset: asset.clone(),
+                    usdc_size,
+                    price_ppm: leader_price_ppm,
+                });
+                while self.recent_trades.len() > 8 {
+                    self.recent_trades.pop_front();
+                }
                 self.push_log(format!(
                     "leader {leader} activity {} {} {}",
                     side.as_str(),
                     asset,
                     tx_hash
                 ));
+            }
+            MonEvent::TrackedActivityProjection {
+                asset,
+                current_position_value_usdc,
+                current_position_size,
+                current_avg_price_ppm,
+                algo_target_risk_usdc,
+                algo_delta_risk_usdc,
+                algo_confidence_bps,
+                algo_tte_bucket,
+                algo_reason,
+            } => {
+                if self.tracked_activity.asset == asset {
+                    self.tracked_activity.current_position_value_usdc = current_position_value_usdc;
+                    self.tracked_activity.current_position_size = current_position_size;
+                    self.tracked_activity.current_avg_price_ppm = current_avg_price_ppm;
+                    self.tracked_activity.algo_target_risk_usdc = algo_target_risk_usdc;
+                    self.tracked_activity.algo_delta_risk_usdc = algo_delta_risk_usdc;
+                    self.tracked_activity.algo_confidence_bps = algo_confidence_bps;
+                    self.tracked_activity.algo_tte_bucket = algo_tte_bucket;
+                    self.tracked_activity.algo_reason = algo_reason;
+                }
             }
             MonEvent::ReconcileStart { leader } => {
                 self.leader_mut(&leader).dirty = true;
@@ -806,9 +875,34 @@ impl MonState {
                 slug: self.tracked_activity.slug.clone(),
                 asset: self.tracked_activity.asset.clone(),
                 usdc_size: self.tracked_activity.usdc_size,
+                price_ppm: self.tracked_activity.price_ppm,
                 event_age_ms: self.tracked_activity.event_age_ms,
                 event_ts_ms: self.tracked_activity.event_ts_ms,
+                local_time_gmt8: self.tracked_activity.local_time_gmt8.clone(),
+                current_position_value_usdc: self.tracked_activity.current_position_value_usdc,
+                current_position_size: self.tracked_activity.current_position_size,
+                current_avg_price_ppm: self.tracked_activity.current_avg_price_ppm,
+                algo_target_risk_usdc: self.tracked_activity.algo_target_risk_usdc,
+                algo_delta_risk_usdc: self.tracked_activity.algo_delta_risk_usdc,
+                algo_confidence_bps: self.tracked_activity.algo_confidence_bps,
+                algo_tte_bucket: self.tracked_activity.algo_tte_bucket.clone(),
+                algo_reason: self.tracked_activity.algo_reason.clone(),
             },
+            recent_trades: self
+                .recent_trades
+                .iter()
+                .rev()
+                .take(5)
+                .map(|trade| TradeTapeView {
+                    local_time_gmt8: trade.local_time_gmt8.clone(),
+                    tx: trade.tx.clone(),
+                    side: trade.side.clone(),
+                    slug: trade.slug.clone(),
+                    asset: trade.asset.clone(),
+                    usdc_size: trade.usdc_size,
+                    price_ppm: trade.price_ppm,
+                })
+                .collect(),
             leaders,
             books,
             signals,
@@ -865,4 +959,31 @@ pub fn reject_reason_from_status(value: &str) -> RejectReason {
     } else {
         RejectReason::Unknown(value.to_string())
     }
+}
+
+fn format_gmt8(timestamp_ms: i64) -> String {
+    if timestamp_ms <= 0 {
+        return "none".to_string();
+    }
+    let total_secs = timestamp_ms.div_euclid(1000) + 8 * 60 * 60;
+    let days = total_secs.div_euclid(86_400);
+    let secs_of_day = total_secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096).div_euclid(365);
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2).div_euclid(153);
+    let d = doy - (153 * mp + 2).div_euclid(5) + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+    let hour = secs_of_day / 3_600;
+    let minute = (secs_of_day % 3_600) / 60;
+    let second = secs_of_day % 60;
+    format!(
+        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} GMT+8",
+        month = m,
+        day = d
+    )
 }
