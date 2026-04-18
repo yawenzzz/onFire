@@ -190,6 +190,7 @@ pub fn spawn_monitor(cfg: MonitorCfg, mode: Mode) -> io::Result<MonitorRuntime> 
     let snapshot_for_thread = Arc::clone(&snapshot);
     let join = thread::spawn(move || {
         let mut state = MonState::new(cfg_for_thread.clone(), mode);
+        state.set_build_label(sample_build_label().unwrap_or_else(|| "dev-unknown".to_string()));
         let mut journal = MonitorJournal::new(
             cfg_for_thread.journal_dir.clone(),
             cfg_for_thread.journal_rotate_mb.saturating_mul(1024 * 1024),
@@ -232,8 +233,10 @@ pub fn spawn_monitor(cfg: MonitorCfg, mode: Mode) -> io::Result<MonitorRuntime> 
                     now_ms.saturating_sub(last_ui_ms.saturating_add(cfg_for_thread.ui_refresh_ms));
                 state.record_loop_lag(now_ms, lag_ms);
                 if now_ms.saturating_sub(last_proc_sample_ms) >= 5_000 {
-                    if let Some((rss_mb, open_fds, threads)) = sample_process_stats() {
-                        state.set_proc_stats(rss_mb, open_fds, threads);
+                    if let Some((cpu_tenths_pct, rss_mb, open_fds, threads)) =
+                        sample_process_stats()
+                    {
+                        state.set_proc_stats(cpu_tenths_pct, rss_mb, open_fds, threads);
                     }
                     last_proc_sample_ms = now_ms;
                 }
@@ -521,8 +524,17 @@ pub fn now_ms_u64() -> u64 {
         .as_millis() as u64
 }
 
-fn sample_process_stats() -> Option<(u64, u64, u64)> {
+fn sample_process_stats() -> Option<(u16, u64, u64, u64)> {
     let pid = std::process::id().to_string();
+    let cpu_tenths_pct = Command::new("ps")
+        .args(["-o", "%cpu=", "-p", &pid])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|text| text.split_whitespace().next().map(str::to_string))
+        .and_then(|value| value.replace('.', "").parse::<u16>().ok())
+        .unwrap_or(0);
     let rss_kb = Command::new("ps")
         .args(["-o", "rss=", "-p", &pid])
         .output()
@@ -544,5 +556,21 @@ fn sample_process_stats() -> Option<(u64, u64, u64)> {
         .ok()
         .map(|entries| entries.filter_map(Result::ok).count() as u64)
         .unwrap_or(0);
-    Some((rss_kb / 1024, open_fds, threads))
+    Some((cpu_tenths_pct, rss_kb / 1024, open_fds, threads))
+}
+
+fn sample_build_label() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let short = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if short.is_empty() {
+        None
+    } else {
+        Some(format!("dev-{short}"))
+    }
 }

@@ -13,9 +13,11 @@ use std::collections::{BTreeMap, VecDeque};
 struct ProcState {
     started_ms: u64,
     loop_lag_ms: RollingHistogram,
+    cpu_tenths_pct: u16,
     rss_mb: u64,
     open_fds: u64,
     threads: u64,
+    build_label: String,
 }
 
 impl ProcState {
@@ -23,9 +25,11 @@ impl ProcState {
         Self {
             started_ms: now_ms,
             loop_lag_ms: RollingHistogram::new(60_000),
+            cpu_tenths_pct: 0,
             rss_mb: 0,
             open_fds: 0,
             threads: 0,
+            build_label: String::new(),
         }
     }
 }
@@ -842,10 +846,21 @@ impl MonState {
         self.proc.loop_lag_ms.record(now_ms, lag_ms);
     }
 
-    pub fn set_proc_stats(&mut self, rss_mb: u64, open_fds: u64, threads: u64) {
+    pub fn set_proc_stats(
+        &mut self,
+        cpu_tenths_pct: u16,
+        rss_mb: u64,
+        open_fds: u64,
+        threads: u64,
+    ) {
+        self.proc.cpu_tenths_pct = cpu_tenths_pct;
         self.proc.rss_mb = rss_mb;
         self.proc.open_fds = open_fds;
         self.proc.threads = threads;
+    }
+
+    pub fn set_build_label(&mut self, build_label: String) {
+        self.proc.build_label = build_label;
     }
 
     pub fn build_snapshot(
@@ -861,9 +876,11 @@ impl MonState {
             monitor_dropped_total,
             monitor_q_depth,
             exec_q_depth,
+            cpu_tenths_pct: self.proc.cpu_tenths_pct,
             rss_mb: self.proc.rss_mb,
             open_fds: self.proc.open_fds,
             threads: self.proc.threads,
+            build_label: self.proc.build_label.clone(),
         };
 
         let feeds = FeedView {

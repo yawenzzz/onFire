@@ -63,9 +63,11 @@ pub struct ProcView {
     pub monitor_dropped_total: u64,
     pub monitor_q_depth: u64,
     pub exec_q_depth: u64,
+    pub cpu_tenths_pct: u16,
     pub rss_mb: u64,
     pub open_fds: u64,
     pub threads: u64,
+    pub build_label: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

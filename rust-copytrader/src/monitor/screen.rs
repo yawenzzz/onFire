@@ -84,14 +84,16 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
     );
     let _ = writeln!(
         out,
-        "loop_p95={}ms  mon_drop={}  q(mon)={}  q(exec)={}  rss={}MB  fds={}  threads={}  ready={}",
+        "loop_p95={}ms  mon_drop={}  q(mon)={}  q(exec)={}  cpu={:.1}%  rss={}MB  fds={}  threads={}  build={}  ready={}",
         snapshot.proc.loop_lag_p95_ms,
         snapshot.proc.monitor_dropped_total,
         snapshot.proc.monitor_q_depth,
         snapshot.proc.exec_q_depth,
+        snapshot.proc.cpu_tenths_pct as f64 / 10.0,
         snapshot.proc.rss_mb,
         snapshot.proc.open_fds,
         snapshot.proc.threads,
+        empty_as_none(&snapshot.proc.build_label),
         snapshot.ready,
     );
 
@@ -145,6 +147,11 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         format!(
             "proc rss={}MB fds={} threads={}",
             snapshot.proc.rss_mb, snapshot.proc.open_fds, snapshot.proc.threads
+        ),
+        format!(
+            "cpu={:.1}% build={}",
+            snapshot.proc.cpu_tenths_pct as f64 / 10.0,
+            empty_as_none(&snapshot.proc.build_label)
         ),
         "task_restart_1h=0 panic_count=0".to_string(),
         format!(
@@ -415,13 +422,15 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
     );
     let _ = writeln!(
         out,
-        "{}lag={}ms mon_drop={} q={}/{} rss={}MB ready={}{}",
+        "{}lag={}ms mon_drop={} q={}/{} cpu={:.1}% rss={}MB build={} ready={}{}",
         ANSI_CYAN,
         snapshot.proc.loop_lag_p95_ms,
         snapshot.proc.monitor_dropped_total,
         snapshot.proc.monitor_q_depth,
         snapshot.proc.exec_q_depth,
+        snapshot.proc.cpu_tenths_pct as f64 / 10.0,
         snapshot.proc.rss_mb,
+        empty_as_none(&snapshot.proc.build_label),
         snapshot.ready,
         ANSI_RESET,
     );
@@ -588,7 +597,7 @@ fn render_minimal(snapshot: &UiSnapshot) -> String {
     });
     let _ = writeln!(
         out,
-        "{}{}{} {} {} eq={:.2} dep={:.2}{}",
+        "{}{}{} {} {} eq={:.2} dep={:.2} build={}{}",
         ANSI_CLEAR,
         ANSI_BOLD,
         fmt_ts_gmt8(snapshot.now_ms),
@@ -596,6 +605,7 @@ fn render_minimal(snapshot: &UiSnapshot) -> String {
         color_health_label(snapshot.health),
         usdc(snapshot.risk.equity_usdc),
         usdc(snapshot.risk.deployed_usdc),
+        empty_as_none(&snapshot.proc.build_label),
         ANSI_RESET,
     );
     let _ = writeln!(
@@ -954,9 +964,11 @@ mod tests {
                 monitor_dropped_total: 0,
                 monitor_q_depth: 2,
                 exec_q_depth: 1,
+                cpu_tenths_pct: 113,
                 rss_mb: 12,
                 open_fds: 6,
                 threads: 3,
+                build_label: "dev-4f9a2c".into(),
             },
             feeds: FeedView {
                 market_ws: FeedChannelView {
