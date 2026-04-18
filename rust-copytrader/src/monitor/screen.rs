@@ -28,7 +28,6 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
     let leader_rows = snapshot.leaders.iter().take(5).collect::<Vec<_>>();
     let book_rows = snapshot.books.iter().take(5).collect::<Vec<_>>();
     let signal_rows = snapshot.signals.iter().take(6).collect::<Vec<_>>();
-    let recent_trade_rows = snapshot.recent_trades.iter().take(1).collect::<Vec<_>>();
     let mut alert_rows = snapshot.alerts.iter().collect::<Vec<_>>();
     alert_rows.sort_by(|left, right| {
         right
@@ -44,10 +43,10 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         .take(6)
         .rev()
         .collect::<Vec<_>>();
-    let mut rows: usize;
+
     let _ = writeln!(
         out,
-        "{}{}{} {} HEALTH={}{}{}  eq={:.2} cash={:.2} dep={:.2} gross={:.2} net={:.2} up={}",
+        "{}{}{}  {}  HEALTH={}{}{}  equity={:.2}  cash={:.2}  deployed={:.2}  gross={:.2}  net={:.2}  uptime={}",
         ANSI_CLEAR,
         ANSI_BOLD,
         fmt_ts_gmt8(snapshot.now_ms),
@@ -64,8 +63,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
     );
     let _ = writeln!(
         out,
-        "{}lag={}ms mon_drop={} q(mon)={} q(exec)={} rss={}MB fds={} threads={} ready={}{}",
-        ANSI_CYAN,
+        "loop_p95={}ms  mon_drop={}  q(mon)={}  q(exec)={}  rss={}MB  fds={}  threads={}  ready={}",
         snapshot.proc.loop_lag_p95_ms,
         snapshot.proc.monitor_dropped_total,
         snapshot.proc.monitor_q_depth,
@@ -74,350 +72,299 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         snapshot.proc.open_fds,
         snapshot.proc.threads,
         snapshot.ready,
-        ANSI_RESET,
     );
-    out.push('\n');
 
-    section_header(&mut out, "FEEDS");
-    rows = 0;
-    let _ = writeln!(
-        out,
-        "market_ws {} age={}ms pong_p95={}ms reconnect={} | user_ws {} age={}ms pong_p95={}ms reconnect={}",
-        up(
-            snapshot.feeds.market_ws.connected,
-            snapshot.feeds.market_ws.note.as_deref()
+    let feeds_lines = vec![
+        format!(
+            "market_ws: {} age={}ms pong_p95={}ms reconnect={}",
+            up(
+                snapshot.feeds.market_ws.connected,
+                snapshot.feeds.market_ws.note.as_deref()
+            ),
+            snapshot.feeds.market_ws.last_msg_age_ms,
+            snapshot.feeds.market_ws.pong_p95_ms,
+            snapshot.feeds.market_ws.reconnect_total
         ),
-        snapshot.feeds.market_ws.last_msg_age_ms,
-        snapshot.feeds.market_ws.pong_p95_ms,
-        snapshot.feeds.market_ws.reconnect_total,
-        up(
-            snapshot.feeds.user_ws.connected,
-            snapshot.feeds.user_ws.note.as_deref()
+        format!(
+            "user_ws  : {} age={}ms pong_p95={}ms reconnect={}",
+            up(
+                snapshot.feeds.user_ws.connected,
+                snapshot.feeds.user_ws.note.as_deref()
+            ),
+            snapshot.feeds.user_ws.last_msg_age_ms,
+            snapshot.feeds.user_ws.pong_p95_ms,
+            snapshot.feeds.user_ws.reconnect_total
         ),
-        snapshot.feeds.user_ws.last_msg_age_ms,
-        snapshot.feeds.user_ws.pong_p95_ms,
-        snapshot.feeds.user_ws.reconnect_total,
-    );
-    rows += 1;
-    let _ = writeln!(
-        out,
-        "activity p95={}ms | gamma p95={}ms | clob p95={}ms | 429_1m d/g/c={}/{}/{}",
-        snapshot.feeds.data_api.latency_p95_ms,
-        snapshot.feeds.gamma_api.latency_p95_ms,
-        snapshot.feeds.clob_api.latency_p95_ms,
-        snapshot.feeds.data_api.status_429_1m,
-        snapshot.feeds.gamma_api.status_429_1m,
-        snapshot.feeds.clob_api.status_429_1m,
-    );
-    rows += 1;
-    pad_rows(&mut out, rows, 2);
-    out.push('\n');
-
-    section_header(&mut out, "PROCESS");
-    rows = 0;
-    let _ = writeln!(
-        out,
-        "loop_p95={}ms mon_q={} exec_q={} dropped={} rss={}MB fds={} threads={}",
-        snapshot.proc.loop_lag_p95_ms,
-        snapshot.proc.monitor_q_depth,
-        snapshot.proc.exec_q_depth,
-        snapshot.proc.monitor_dropped_total,
-        snapshot.proc.rss_mb,
-        snapshot.proc.open_fds,
-        snapshot.proc.threads,
-    );
-    rows += 1;
-    let _ = writeln!(
-        out,
-        "selected={} category={} score={} review={} source={}",
-        empty_as_none(&snapshot.selected_leader.wallet),
-        empty_as_none(&snapshot.selected_leader.category),
-        empty_as_none(&snapshot.selected_leader.score),
-        empty_as_none(&snapshot.selected_leader.review_status),
-        empty_as_none(&snapshot.selected_leader.source),
-    );
-    rows += 1;
-    pad_rows(&mut out, rows, 2);
-    out.push('\n');
-
-    section_header_count(
-        &mut out,
-        "TRADE TAPE",
-        recent_trade_rows.len().max(1),
-        snapshot.recent_trades.len().max(1),
-    );
-    rows = 0;
-    let _ = writeln!(
-        out,
-        "latest tx={} side={} slug={}",
-        empty_as_none(&snapshot.tracked_activity.tx),
-        empty_as_none(&snapshot.tracked_activity.side),
-        empty_as_none(&snapshot.tracked_activity.slug),
-    );
-    rows += 1;
-    let _ = writeln!(
-        out,
-        "time={} asset={} usdc={:.2} px={:.4} age={}ms",
-        empty_as_none(&snapshot.tracked_activity.local_time_gmt8),
-        empty_as_none(&snapshot.tracked_activity.asset),
-        usdc(snapshot.tracked_activity.usdc_size),
-        ppm_price(snapshot.tracked_activity.price_ppm),
-        snapshot.tracked_activity.event_age_ms,
-    );
-    rows += 1;
-    let _ = writeln!(
-        out,
-        "leader_pos={:.2} size={:.4} avg={:.4} algo_target={:.2} algo_delta={:.2}",
-        usdc(snapshot.tracked_activity.current_position_value_usdc),
-        shares(snapshot.tracked_activity.current_position_size),
-        ppm_price(snapshot.tracked_activity.current_avg_price_ppm),
-        usdc(snapshot.tracked_activity.algo_target_risk_usdc),
-        usdc(snapshot.tracked_activity.algo_delta_risk_usdc),
-    );
-    rows += 1;
-    let _ = writeln!(
-        out,
-        "conf={}bp tte={} reason={}",
-        snapshot.tracked_activity.algo_confidence_bps,
-        empty_as_none(&snapshot.tracked_activity.algo_tte_bucket),
-        empty_as_none(&snapshot.tracked_activity.algo_reason),
-    );
-    rows += 1;
-    if recent_trade_rows.is_empty() {
-        let _ = writeln!(out, "recent=none");
-        rows += 1;
+        format!(
+            "activity : p95={}ms  429_1m={}  5xx_1m={}",
+            snapshot.feeds.data_api.latency_p95_ms,
+            snapshot.feeds.data_api.status_429_1m,
+            snapshot.feeds.data_api.status_5xx_1m
+        ),
+        format!(
+            "positions: p95={}ms  gamma_p95={}ms  books_p95={}ms",
+            snapshot
+                .leaders
+                .first()
+                .map(|leader| leader.reconcile_p95_ms)
+                .unwrap_or(0),
+            snapshot.feeds.gamma_api.latency_p95_ms,
+            snapshot.feeds.clob_api.latency_p95_ms
+        ),
+        format!(
+            "rl_fill d/g/c={}%/{}%/{}%",
+            snapshot.feeds.data_api.rl_fill_ratio_bps / 100,
+            snapshot.feeds.gamma_api.rl_fill_ratio_bps / 100,
+            snapshot.feeds.clob_api.rl_fill_ratio_bps / 100
+        ),
+    ];
+    let process_lines = vec![
+        format!("main_loop_lag_p95={}ms", snapshot.proc.loop_lag_p95_ms),
+        format!(
+            "strategy_q={}  monitor_q={}  exec_q={}",
+            snapshot.proc.exec_q_depth, snapshot.proc.monitor_q_depth, snapshot.proc.exec_q_depth
+        ),
+        format!("dropped_mon_events={}", snapshot.proc.monitor_dropped_total),
+        format!(
+            "proc rss={}MB fds={} threads={}",
+            snapshot.proc.rss_mb, snapshot.proc.open_fds, snapshot.proc.threads
+        ),
+        format!(
+            "selected={} {}",
+            elide(empty_as_none(&snapshot.selected_leader.wallet), 18),
+            elide(empty_as_none(&snapshot.selected_leader.category), 18)
+        ),
+    ];
+    let leaders_lines = if leader_rows.is_empty() {
+        vec!["none".to_string()]
     } else {
-        for trade in recent_trade_rows {
-            let _ = writeln!(
-                out,
-                "{} {} {} usdc={:.2} px={:.4} pos={:.2} tgt={:.2} Δ={:.2} {} tx={}",
-                empty_as_none(&trade.local_time_gmt8),
-                empty_as_none(&trade.side),
-                empty_as_none(&trade.slug),
-                usdc(trade.usdc_size),
-                ppm_price(trade.price_ppm),
-                usdc(trade.current_position_value_usdc),
-                usdc(trade.algo_target_risk_usdc),
-                usdc(trade.algo_delta_risk_usdc),
-                empty_as_none(&trade.algo_reason),
-                short_tx(&trade.tx),
-            );
-            rows += 1;
-        }
-    }
-    pad_rows(&mut out, rows, 5);
-    out.push('\n');
-
-    section_header_count(
-        &mut out,
-        "LEADERS",
-        leader_rows.len(),
-        snapshot.leaders.len(),
-    );
-    rows = 0;
-    if leader_rows.is_empty() {
-        let _ = writeln!(out, "none");
-        rows += 1;
+        leader_rows
+            .into_iter()
+            .map(|leader| {
+                format!(
+                    "{} stale={}ms dirty={} act_p95={}ms rec_p95={}ms drift={}bp pos={} val={:.2}",
+                    elide(&leader.leader, 16),
+                    leader.snap_age_ms,
+                    if leader.dirty { "yes" } else { "no" },
+                    leader.activity_p95_ms,
+                    leader.reconcile_p95_ms,
+                    leader.drift_p95_bps,
+                    leader.positions_count,
+                    usdc(leader.value_usdc),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let books_lines = if book_rows.is_empty() {
+        vec!["none".to_string()]
     } else {
-        for leader in leader_rows {
-            let _ = writeln!(
-                out,
-                "{} stale={}ms drift={}bp dirty={} act_p95={}ms rec_p95={}ms pos={} val={:.2} last={} {}",
-                elide(&leader.leader, 18),
-                leader.snap_age_ms,
-                leader.drift_p95_bps,
-                if leader.dirty { "yes" } else { "no" },
-                leader.activity_p95_ms,
-                leader.reconcile_p95_ms,
-                leader.positions_count,
-                usdc(leader.value_usdc),
-                leader.last_side.as_deref().unwrap_or("-"),
-                elide(leader.last_slug.as_deref().unwrap_or("none"), 28),
-            );
-            rows += 1;
-        }
-    }
-    pad_rows(&mut out, rows, 5);
-    out.push('\n');
-
-    section_header_count(
-        &mut out,
-        "HOT ASSETS",
-        book_rows.len(),
-        snapshot.books.len(),
-    );
-    rows = 0;
-    if book_rows.is_empty() {
-        let _ = writeln!(out, "none");
-        rows += 1;
-    } else {
-        for book in book_rows {
-            let _ = writeln!(
-                out,
-                "{} age={}ms spread={}bp levels={}/{} crossed={} resync={} hash_mismatch={}",
-                book.asset,
-                book.age_ms,
-                book.spread_bps,
-                book.levels_bid,
-                book.levels_ask,
-                book.resync_5m,
-                yn(book.crossed),
-                yn(book.hash_mismatch),
-            );
-            rows += 1;
-        }
-    }
-    pad_rows(&mut out, rows, 5);
-    out.push('\n');
-
-    section_header_count(
-        &mut out,
-        "SIGNALS",
-        signal_rows.len(),
-        snapshot.signals.len(),
-    );
-    rows = 0;
-    if signal_rows.is_empty() {
-        let _ = writeln!(out, "none");
-        rows += 1;
-    } else {
-        for signal in signal_rows {
+        book_rows
+            .into_iter()
+            .map(|book| {
+                format!(
+                    "{} age={}ms spread={}bp levels={}/{}",
+                    elide(&book.asset, 32),
+                    book.age_ms,
+                    book.spread_bps,
+                    book.levels_bid,
+                    book.levels_ask
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let signals_lines = {
+        let mut lines = vec![
+            format!(
+                "latest {} {} {}",
+                empty_as_none(&snapshot.tracked_activity.side),
+                elide(empty_as_none(&snapshot.tracked_activity.slug), 36),
+                short_tx(empty_as_none(&snapshot.tracked_activity.tx))
+            ),
+            format!(
+                "time={} usdc={:.2} px={:.4}",
+                empty_as_none(&snapshot.tracked_activity.local_time_gmt8),
+                usdc(snapshot.tracked_activity.usdc_size),
+                ppm_price(snapshot.tracked_activity.price_ppm)
+            ),
+            format!(
+                "leader_pos={:.2} tgt={:.2} Δ={:.2}",
+                usdc(snapshot.tracked_activity.current_position_value_usdc),
+                usdc(snapshot.tracked_activity.algo_target_risk_usdc),
+                usdc(snapshot.tracked_activity.algo_delta_risk_usdc)
+            ),
+            format!(
+                "conf={}bp tte={} reason={}",
+                snapshot.tracked_activity.algo_confidence_bps,
+                empty_as_none(&snapshot.tracked_activity.algo_tte_bucket),
+                empty_as_none(&snapshot.tracked_activity.algo_reason)
+            ),
+        ];
+        if let Some(signal) = signal_rows.first() {
             if signal.status == "SKIP" {
-                let _ = writeln!(
-                    out,
+                lines.push(format!(
                     "{} SKIP {} fresh={}ms",
-                    signal.asset,
+                    elide(&signal.asset, 32),
                     signal.reason.as_deref().unwrap_or("unknown"),
                     signal.fresh_ms
-                );
-                rows += 1;
+                ));
             } else {
-                let _ = writeln!(
-                    out,
-                    "{} raw={:+.2} final={:+.2} agree={}% fresh={}ms",
-                    signal.asset,
+                lines.push(format!(
+                    "{} raw={:+.2} final={:+.2} fresh={}ms",
+                    elide(&signal.asset, 32),
                     usdc(signal.raw_target_usdc),
                     usdc(signal.final_target_usdc),
-                    signal.agree_bps / 100,
-                    signal.fresh_ms,
-                );
-                rows += 1;
+                    signal.fresh_ms
+                ));
             }
         }
-    }
-    pad_rows(&mut out, rows, 6);
-    out.push('\n');
-
-    section_header(&mut out, "EXECUTION");
-    rows = 0;
-    let _ = writeln!(
-        out,
-        "a->i {}ms  i->post {}ms  post->match {}ms  conf {}ms",
-        snapshot.exec.activity_to_intent_p95_ms,
-        snapshot.exec.intent_to_post_p95_ms,
-        snapshot.exec.post_to_match_p95_ms,
-        snapshot.exec.match_to_confirm_p95_ms,
-    );
-    rows += 1;
-    let _ = writeln!(
-        out,
-        "gap {}bp  slip {}bp  fee_adj {}bp  fill {}%  last={}",
-        snapshot.exec.copy_gap_p95_bps,
-        snapshot.exec.slip_p95_bps,
-        snapshot.exec.fee_adj_slip_p95_bps,
-        snapshot.exec.fill_ratio_p50_ppm / 10_000,
-        snapshot.exec.last_submit_status,
-    );
-    rows += 1;
-    pad_rows(&mut out, rows, 2);
-    out.push('\n');
-
-    section_header(&mut out, "RISK");
-    rows = 0;
-    let _ = writeln!(
-        out,
-        "market_top1={:.2} event_top1={:.2} event_top3={:.2}",
-        usdc(snapshot.risk.market_top1_usdc),
-        usdc(snapshot.risk.event_top1_usdc),
-        usdc(snapshot.risk.event_top3_usdc),
-    );
-    rows += 1;
-    let _ = writeln!(
-        out,
-        "tail<24h={:.2} tail<72h={:.2} negRisk={:.2} hhi={}bp",
-        usdc(snapshot.risk.tail_24h_usdc),
-        usdc(snapshot.risk.tail_72h_usdc),
-        usdc(snapshot.risk.neg_risk_usdc),
-        snapshot.risk.hhi_bps,
-    );
-    rows += 1;
-    let _ = writeln!(
-        out,
-        "target_count={} delta_count={} stale_assets={} blocked_assets={}",
-        snapshot.position_targeting.target_count,
-        snapshot.position_targeting.delta_count,
-        snapshot.position_targeting.stale_asset_count,
-        snapshot.position_targeting.blocked_asset_count,
-    );
-    rows += 1;
-    let _ = writeln!(
-        out,
-        "blocker_summary={}",
-        empty_as_none(&snapshot.position_targeting.blocker_summary),
-    );
-    rows += 1;
-    pad_rows(&mut out, rows, 4);
-    out.push('\n');
-
-    section_header(&mut out, "TRACKING");
-    rows = 0;
-    let _ = writeln!(
-        out,
-        "track_err={}bp rmse_1m={}bp follow_ratio={}%",
-        snapshot.risk.tracking_err_bps,
-        snapshot.risk.rmse_1m_bps,
-        snapshot.risk.follow_ratio_bps / 100,
-    );
-    rows += 1;
-    let _ = writeln!(
-        out,
-        "eligible={:.2} copied={:.2} overcopy={:.2} undercopy={:.2}",
-        usdc(snapshot.risk.deployed_usdc),
-        usdc(snapshot.risk.deployed_usdc * snapshot.risk.follow_ratio_bps as i64 / 10_000),
-        0.0,
-        usdc(snapshot.risk.deployed_usdc)
-            - usdc(snapshot.risk.deployed_usdc * snapshot.risk.follow_ratio_bps as i64 / 10_000),
-    );
-    rows += 1;
-    pad_rows(&mut out, rows, 2);
-    out.push('\n');
-
-    section_header_count(&mut out, "ALERTS", alert_rows.len(), snapshot.alerts.len());
-    rows = 0;
-    if alert_rows.is_empty() {
-        let _ = writeln!(out, "none");
-        rows += 1;
+        lines
+    };
+    let execution_lines = vec![
+        format!(
+            "a->i {}ms  i->post {}ms",
+            snapshot.exec.activity_to_intent_p95_ms, snapshot.exec.intent_to_post_p95_ms
+        ),
+        format!(
+            "post->match {}ms  conf {}ms",
+            snapshot.exec.post_to_match_p95_ms, snapshot.exec.match_to_confirm_p95_ms
+        ),
+        format!(
+            "gap {}bp  slip {}bp  fee_adj {}bp",
+            snapshot.exec.copy_gap_p95_bps,
+            snapshot.exec.slip_p95_bps,
+            snapshot.exec.fee_adj_slip_p95_bps
+        ),
+        format!(
+            "fill {}%  last={}",
+            snapshot.exec.fill_ratio_p50_ppm / 10_000,
+            snapshot.exec.last_submit_status
+        ),
+    ];
+    let risk_lines = vec![
+        format!(
+            "market_top1={:.2} event_top1={:.2} event_top3={:.2}",
+            usdc(snapshot.risk.market_top1_usdc),
+            usdc(snapshot.risk.event_top1_usdc),
+            usdc(snapshot.risk.event_top3_usdc),
+        ),
+        format!(
+            "tail<24h={:.2} tail<72h={:.2} negRisk={:.2}",
+            usdc(snapshot.risk.tail_24h_usdc),
+            usdc(snapshot.risk.tail_72h_usdc),
+            usdc(snapshot.risk.neg_risk_usdc),
+        ),
+        format!("hhi={}bp", snapshot.risk.hhi_bps),
+        format!(
+            "limits target={} delta={} blocked={}",
+            snapshot.position_targeting.target_count,
+            snapshot.position_targeting.delta_count,
+            snapshot.position_targeting.blocked_asset_count,
+        ),
+    ];
+    let tracking_lines = vec![
+        format!(
+            "track_err_now={}bp rmse_1m={}bp rmse_5m={}bp",
+            snapshot.risk.tracking_err_bps, snapshot.risk.rmse_1m_bps, snapshot.risk.rmse_1m_bps
+        ),
+        format!(
+            "eligible={:.2} copied={:.2}",
+            usdc(snapshot.risk.deployed_usdc),
+            usdc(snapshot.risk.deployed_usdc * snapshot.risk.follow_ratio_bps as i64 / 10_000),
+        ),
+        format!("follow_ratio={}%", snapshot.risk.follow_ratio_bps / 100),
+        format!(
+            "overcopy={:.2} undercopy={:.2}",
+            0.0,
+            usdc(snapshot.risk.deployed_usdc)
+                - usdc(
+                    snapshot.risk.deployed_usdc * snapshot.risk.follow_ratio_bps as i64 / 10_000
+                ),
+        ),
+    ];
+    let alerts_lines = if alert_rows.is_empty() {
+        vec!["none".to_string()]
     } else {
-        for alert in alert_rows {
-            let _ = writeln!(out, "{} {} {}", alert.level, alert.key, alert.message);
-            rows += 1;
-        }
-    }
-    pad_rows(&mut out, rows, 4);
-    out.push('\n');
-
-    section_header_count(&mut out, "LOGS", log_rows.len(), snapshot.recent_logs.len());
-    rows = 0;
-    if log_rows.is_empty() {
-        let _ = writeln!(out, "none");
-        rows += 1;
+        alert_rows
+            .iter()
+            .map(|alert| {
+                format!(
+                    "{} {} {}",
+                    alert.level,
+                    alert.key,
+                    elide(&alert.message, 88)
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let logs_lines = if log_rows.is_empty() {
+        vec!["none".to_string()]
     } else {
-        for line in log_rows {
-            let _ = writeln!(out, "{line}");
-            rows += 1;
-        }
+        log_rows
+            .iter()
+            .map(|line| elide(line, 132))
+            .collect::<Vec<_>>()
+    };
+
+    for line in merge_two_panels(
+        render_panel("FEEDS", &feeds_lines, 84, 5, None),
+        render_panel("PROCESS", &process_lines, 46, 5, None),
+    ) {
+        let _ = writeln!(out, "{line}");
     }
-    pad_rows(&mut out, rows, 6);
+    for line in merge_two_panels(
+        render_panel(
+            "LEADERS",
+            &leaders_lines,
+            84,
+            6,
+            Some((leaders_lines.len(), snapshot.leaders.len())),
+        ),
+        render_panel(
+            "BOOKS",
+            &books_lines,
+            46,
+            6,
+            Some((books_lines.len(), snapshot.books.len())),
+        ),
+    ) {
+        let _ = writeln!(out, "{line}");
+    }
+    for line in merge_two_panels(
+        render_panel(
+            "SIGNALS",
+            &signals_lines,
+            84,
+            7,
+            Some((signal_rows.len(), snapshot.signals.len())),
+        ),
+        render_panel("EXECUTION", &execution_lines, 46, 7, None),
+    ) {
+        let _ = writeln!(out, "{line}");
+    }
+    for line in merge_two_panels(
+        render_panel("RISK", &risk_lines, 84, 5, None),
+        render_panel("TRACKING", &tracking_lines, 46, 5, None),
+    ) {
+        let _ = writeln!(out, "{line}");
+    }
+    for line in render_panel(
+        "ALERTS",
+        &alerts_lines,
+        132,
+        5,
+        Some((alert_rows.len(), snapshot.alerts.len())),
+    ) {
+        let _ = writeln!(out, "{line}");
+    }
+    for line in render_panel(
+        "LOGS",
+        &logs_lines,
+        132,
+        7,
+        Some((log_rows.len(), snapshot.recent_logs.len())),
+    ) {
+        let _ = writeln!(out, "{line}");
+    }
     out
 }
 
@@ -801,9 +748,59 @@ fn section_header_count(out: &mut String, title: &str, shown: usize, total: usiz
     );
 }
 
-fn pad_rows(out: &mut String, rendered: usize, min_rows: usize) {
-    for _ in rendered..min_rows {
-        let _ = writeln!(out);
+fn render_panel(
+    title: &str,
+    lines: &[String],
+    width: usize,
+    body_rows: usize,
+    count: Option<(usize, usize)>,
+) -> Vec<String> {
+    let inner = width.saturating_sub(2);
+    let title = match count {
+        Some((shown, total)) => format!("{title} [{shown} / {total}]"),
+        None => title.to_string(),
+    };
+    let mut out = vec![format!("┌{}┐", pad_right(&title, inner, '─'))];
+    for line in lines.iter().take(body_rows) {
+        out.push(format!("│{}│", pad_right(line, inner, ' ')));
+    }
+    for _ in lines.len().min(body_rows)..body_rows {
+        out.push(format!("│{}│", " ".repeat(inner)));
+    }
+    out.push(format!("└{}┘", "─".repeat(inner)));
+    out
+}
+
+fn merge_two_panels(left: Vec<String>, right: Vec<String>) -> Vec<String> {
+    let rows = left.len().max(right.len());
+    let left_width = left.first().map(|line| line.chars().count()).unwrap_or(0);
+    let right_width = right.first().map(|line| line.chars().count()).unwrap_or(0);
+    (0..rows)
+        .map(|index| {
+            let left_line = left
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| " ".repeat(left_width));
+            let right_line = right
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| " ".repeat(right_width));
+            format!("{left_line} {right_line}")
+        })
+        .collect()
+}
+
+fn pad_right(value: &str, width: usize, fill: char) -> String {
+    let len = value.chars().count();
+    if len >= width {
+        value.chars().take(width).collect()
+    } else {
+        let mut out = String::with_capacity(width);
+        out.push_str(value);
+        for _ in len..width {
+            out.push(fill);
+        }
+        out
     }
 }
 
@@ -861,15 +858,7 @@ fn fmt_ts_gmt8(timestamp_ms: i64) -> String {
     )
 }
 
-fn yn(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
-}
-
 fn usdc(value: i64) -> f64 {
-    value as f64 / 1_000_000.0
-}
-
-fn shares(value: i64) -> f64 {
     value as f64 / 1_000_000.0
 }
 
@@ -1086,13 +1075,14 @@ mod tests {
         let rendered = render_for_width(&sample_snapshot(), 140);
         assert!(rendered.contains("FEEDS"));
         assert!(rendered.contains("PROCESS"));
-        assert!(rendered.contains("TRADE TAPE"));
         assert!(rendered.contains("LEADERS"));
-        assert!(rendered.contains("HOT ASSETS"));
+        assert!(rendered.contains("BOOKS"));
         assert!(rendered.contains("SIGNALS"));
         assert!(rendered.contains("EXECUTION"));
         assert!(rendered.contains("RISK"));
         assert!(rendered.contains("TRACKING"));
+        assert!(rendered.contains("ALERTS"));
+        assert!(rendered.contains("LOGS"));
     }
 
     #[test]
