@@ -174,6 +174,11 @@ pub enum MonEvent {
         algo_confidence_bps: u16,
         algo_tte_bucket: String,
         algo_reason: String,
+        tracking_err_bps: u16,
+        follow_ratio_bps: u16,
+        copied_usdc: i64,
+        overcopy_usdc: i64,
+        undercopy_usdc: i64,
     },
     ReconcileStart {
         leader: String,

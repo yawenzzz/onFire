@@ -569,6 +569,11 @@ impl MonState {
                 algo_confidence_bps,
                 algo_tte_bucket,
                 algo_reason,
+                tracking_err_bps,
+                follow_ratio_bps,
+                copied_usdc,
+                overcopy_usdc,
+                undercopy_usdc,
             } => {
                 if self.tracked_activity.asset == asset {
                     self.tracked_activity.current_position_value_usdc = current_position_value_usdc;
@@ -580,6 +585,12 @@ impl MonState {
                     self.tracked_activity.algo_tte_bucket = algo_tte_bucket;
                     self.tracked_activity.algo_reason = algo_reason.clone();
                 }
+                self.risk.current.tracking_err_bps = tracking_err_bps;
+                self.risk.current.follow_ratio_bps = follow_ratio_bps;
+                self.risk.current.eligible_usdc = algo_target_risk_usdc.abs();
+                self.risk.current.copied_usdc = copied_usdc;
+                self.risk.current.overcopy_usdc = overcopy_usdc;
+                self.risk.current.undercopy_usdc = undercopy_usdc;
                 if let Some(trade) = self
                     .recent_trades
                     .iter_mut()

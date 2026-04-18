@@ -565,6 +565,67 @@ fn run_position_cycle(
                 .get("focus.reason")
                 .cloned()
                 .unwrap_or_else(|| "none".to_string()),
+            tracking_err_bps: values
+                .get("focus.target_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .zip(
+                    values
+                        .get("focus.position_value_usdc")
+                        .and_then(|value| value.parse::<i64>().ok()),
+                )
+                .map(|(target, current)| {
+                    ((target - current).abs() as f64 / value_usdc.max(1) as f64 * 10_000.0).round()
+                        as u16
+                })
+                .unwrap_or(0),
+            follow_ratio_bps: values
+                .get("focus.target_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .zip(
+                    values
+                        .get("focus.position_value_usdc")
+                        .and_then(|value| value.parse::<i64>().ok()),
+                )
+                .map(|(target, current)| {
+                    let target = target.abs();
+                    let current = current.abs();
+                    if target == 0 {
+                        0
+                    } else {
+                        ((target.min(current) as f64 / target as f64) * 10_000.0).round() as u16
+                    }
+                })
+                .unwrap_or(0),
+            copied_usdc: values
+                .get("focus.target_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .zip(
+                    values
+                        .get("focus.position_value_usdc")
+                        .and_then(|value| value.parse::<i64>().ok()),
+                )
+                .map(|(target, current)| target.abs().min(current.abs()))
+                .unwrap_or(0),
+            overcopy_usdc: values
+                .get("focus.target_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .zip(
+                    values
+                        .get("focus.position_value_usdc")
+                        .and_then(|value| value.parse::<i64>().ok()),
+                )
+                .map(|(target, current)| (current.abs() - target.abs()).max(0))
+                .unwrap_or(0),
+            undercopy_usdc: values
+                .get("focus.target_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .zip(
+                    values
+                        .get("focus.position_value_usdc")
+                        .and_then(|value| value.parse::<i64>().ok()),
+                )
+                .map(|(target, current)| (target.abs() - current.abs()).max(0))
+                .unwrap_or(0),
         });
     } else if let Some(focus_asset) = focus_asset {
         runtime.handle.emit(MonEvent::TrackedActivityProjection {
@@ -577,6 +638,11 @@ fn run_position_cycle(
             algo_confidence_bps: 0,
             algo_tte_bucket: "none".to_string(),
             algo_reason: "asset_missing_in_positions_snapshot".to_string(),
+            tracking_err_bps: 0,
+            follow_ratio_bps: 0,
+            copied_usdc: 0,
+            overcopy_usdc: 0,
+            undercopy_usdc: 0,
         });
     }
 

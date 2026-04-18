@@ -219,6 +219,10 @@ pub struct RiskView {
     pub tracking_err_bps: u16,
     pub rmse_1m_bps: u16,
     pub follow_ratio_bps: u16,
+    pub eligible_usdc: i64,
+    pub copied_usdc: i64,
+    pub overcopy_usdc: i64,
+    pub undercopy_usdc: i64,
     pub hhi_bps: u16,
 }
 

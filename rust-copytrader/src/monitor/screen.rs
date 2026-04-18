@@ -268,17 +268,14 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         ),
         format!(
             "eligible={:.2} copied={:.2}",
-            usdc(snapshot.risk.deployed_usdc),
-            usdc(snapshot.risk.deployed_usdc * snapshot.risk.follow_ratio_bps as i64 / 10_000),
+            usdc(snapshot.risk.eligible_usdc),
+            usdc(snapshot.risk.copied_usdc),
         ),
         format!("follow_ratio={}%", snapshot.risk.follow_ratio_bps / 100),
         format!(
             "overcopy={:.2} undercopy={:.2}",
-            0.0,
-            usdc(snapshot.risk.deployed_usdc)
-                - usdc(
-                    snapshot.risk.deployed_usdc * snapshot.risk.follow_ratio_bps as i64 / 10_000
-                ),
+            usdc(snapshot.risk.overcopy_usdc),
+            usdc(snapshot.risk.undercopy_usdc),
         ),
     ];
     let alerts_lines = if alert_rows.is_empty() {
@@ -1058,6 +1055,10 @@ mod tests {
                 tracking_err_bps: 47,
                 rmse_1m_bps: 63,
                 follow_ratio_bps: 8400,
+                eligible_usdc: 1_420_000_000,
+                copied_usdc: 1_193_000_000,
+                overcopy_usdc: 42_000_000,
+                undercopy_usdc: 185_000_000,
                 hhi_bps: 1380,
             },
             alerts: vec![AlertView {
