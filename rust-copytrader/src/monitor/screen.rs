@@ -40,7 +40,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         .recent_logs
         .iter()
         .rev()
-        .take(6)
+        .take(5)
         .rev()
         .collect::<Vec<_>>();
     let leader_reconcile = metric_slice(
@@ -331,14 +331,14 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
             "LEADERS (Top 5)",
             &leaders_lines,
             84,
-            6,
+            5,
             Some((leaders_lines.len(), snapshot.leaders.len())),
         ),
         render_panel(
             "BOOKS (Hot Assets Top 5)",
             &books_lines,
             46,
-            6,
+            5,
             Some((books_lines.len(), snapshot.books.len())),
         ),
     ) {
@@ -349,16 +349,16 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
             "SIGNALS",
             &signals_lines,
             84,
-            7,
+            5,
             Some((signal_rows.len(), snapshot.signals.len())),
         ),
-        render_panel("EXECUTION", &execution_lines, 46, 7, None),
+        render_panel("EXECUTION", &execution_lines, 46, 4, None),
     ) {
         let _ = writeln!(out, "{line}");
     }
     for line in merge_two_panels(
-        render_panel("RISK", &risk_lines, 84, 5, None),
-        render_panel("TRACKING", &tracking_lines, 46, 5, None),
+        render_panel("RISK", &risk_lines, 84, 4, None),
+        render_panel("TRACKING", &tracking_lines, 46, 4, None),
     ) {
         let _ = writeln!(out, "{line}");
     }
@@ -366,7 +366,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         "ALERTS",
         &alerts_lines,
         132,
-        5,
+        4,
         Some((alert_rows.len(), snapshot.alerts.len())),
     ) {
         let _ = writeln!(out, "{line}");
@@ -375,7 +375,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         "LOGS",
         &logs_lines,
         132,
-        7,
+        5,
         Some((log_rows.len(), snapshot.recent_logs.len())),
     ) {
         let _ = writeln!(out, "{line}");
