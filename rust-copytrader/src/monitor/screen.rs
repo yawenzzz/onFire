@@ -43,6 +43,30 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         .take(6)
         .rev()
         .collect::<Vec<_>>();
+    let leader_activity =
+        metric_slice(snapshot.leaders.iter().map(|leader| leader.activity_p95_ms));
+    let leader_reconcile = metric_slice(
+        snapshot
+            .leaders
+            .iter()
+            .map(|leader| leader.reconcile_p95_ms),
+    );
+    let book_age = metric_slice(snapshot.books.iter().map(|book| book.age_ms));
+    let book_resync_5m = snapshot
+        .books
+        .iter()
+        .map(|book| book.resync_5m)
+        .sum::<u64>();
+    let dirty_leaders = snapshot
+        .leaders
+        .iter()
+        .filter(|leader| leader.dirty)
+        .count();
+    let book_stale_count = snapshot
+        .books
+        .iter()
+        .filter(|book| book.age_ms > 1_000)
+        .count();
 
     let _ = writeln!(
         out,
@@ -96,26 +120,19 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
             snapshot.feeds.user_ws.reconnect_total
         ),
         format!(
-            "activity : p95={}ms  429_1m={}  5xx_1m={}",
+            "activity : p50={}ms p95={}ms err1m={} 429_1m={}",
+            leader_activity.0,
             snapshot.feeds.data_api.latency_p95_ms,
+            snapshot.feeds.data_api.status_5xx_1m,
             snapshot.feeds.data_api.status_429_1m,
-            snapshot.feeds.data_api.status_5xx_1m
         ),
         format!(
-            "positions: p95={}ms  gamma_p95={}ms  books_p95={}ms",
-            snapshot
-                .leaders
-                .first()
-                .map(|leader| leader.reconcile_p95_ms)
-                .unwrap_or(0),
-            snapshot.feeds.gamma_api.latency_p95_ms,
-            snapshot.feeds.clob_api.latency_p95_ms
+            "positions: p50={}ms p95={}ms dirty={} timeout_5m=0",
+            leader_reconcile.0, leader_reconcile.1, dirty_leaders
         ),
         format!(
-            "rl_fill d/g/c={}%/{}%/{}%",
-            snapshot.feeds.data_api.rl_fill_ratio_bps / 100,
-            snapshot.feeds.gamma_api.rl_fill_ratio_bps / 100,
-            snapshot.feeds.clob_api.rl_fill_ratio_bps / 100
+            "books    : p50={}ms p95={}ms stale={} resync_5m={}",
+            book_age.0, book_age.1, book_stale_count, book_resync_5m
         ),
     ];
     let process_lines = vec![
@@ -799,6 +816,20 @@ fn pad_right(value: &str, width: usize, fill: char) -> String {
         }
         out
     }
+}
+
+fn metric_slice<I>(values: I) -> (u64, u64)
+where
+    I: IntoIterator<Item = u64>,
+{
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    if values.is_empty() {
+        return (0, 0);
+    }
+    values.sort_unstable();
+    let p50 = values[(values.len() - 1) * 50 / 100];
+    let p95 = values[(values.len() - 1) * 95 / 100];
+    (p50, p95)
 }
 
 fn color_health(health: Health) -> &'static str {
