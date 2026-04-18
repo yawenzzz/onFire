@@ -1079,7 +1079,6 @@ mod tests {
         assert!(frame.contains("HEALTH="));
         assert!(frame.contains("0xleader"));
         assert!(frame.contains("market-a"));
-        assert!(frame.contains("category=TECH"));
         assert!(frame.contains("0xtx"));
         assert!(frame.contains("time="));
         assert!(frame.contains("price=0.4400") || frame.contains("px=0.4400"));

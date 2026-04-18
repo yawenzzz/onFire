@@ -416,7 +416,16 @@ impl MonState {
     }
 
     fn push_log(&mut self, message: impl Into<String>) {
-        self.logs.push_back(message.into());
+        let message = message.into();
+        if self
+            .logs
+            .back()
+            .map(|line| line == &message)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.logs.push_back(message);
         while self.logs.len() > self.cfg.log_lines {
             self.logs.pop_front();
         }
@@ -447,6 +456,10 @@ impl MonState {
                 core_pool,
                 active_pool,
             } => {
+                let changed = self.selected_leader.wallet != wallet
+                    || self.selected_leader.category != category
+                    || self.selected_leader.score != score
+                    || self.selected_leader.review_status != review_status;
                 self.selected_leader = SelectedLeaderMon {
                     wallet,
                     source,
@@ -456,13 +469,15 @@ impl MonState {
                     core_pool,
                     active_pool,
                 };
-                self.push_log(format!(
-                    "selected leader wallet={} category={} score={} review={}",
-                    self.selected_leader.wallet,
-                    self.selected_leader.category,
-                    self.selected_leader.score,
-                    self.selected_leader.review_status
-                ));
+                if changed {
+                    self.push_log(format!(
+                        "selected leader wallet={} category={} score={} review={}",
+                        self.selected_leader.wallet,
+                        self.selected_leader.category,
+                        self.selected_leader.score,
+                        self.selected_leader.review_status
+                    ));
+                }
             }
             MonEvent::HttpDone {
                 svc,
@@ -680,6 +695,10 @@ impl MonState {
                         reason: None,
                     },
                 );
+                self.push_log(format!(
+                    "signal planned {} raw={} final={} agree={}bp fresh={}ms",
+                    asset, raw_target_usdc, final_target_usdc, agree_bps, fresh_ms
+                ));
             }
             MonEvent::SignalSkipped {
                 asset,
@@ -697,6 +716,12 @@ impl MonState {
                         reason: Some(reason.as_str().to_string()),
                     },
                 );
+                self.push_log(format!(
+                    "signal skipped {} reason={} fresh={}ms",
+                    asset,
+                    reason.as_str(),
+                    fresh_ms
+                ));
             }
             MonEvent::PositionDiagnostics {
                 target_count,
@@ -731,6 +756,7 @@ impl MonState {
                     .record(now_ms, latency_ms as u64);
             }
             MonEvent::OrderMatched {
+                order_id,
                 matched_usdc,
                 fee_usdc,
                 copy_gap_bps,
@@ -746,12 +772,20 @@ impl MonState {
                     .saturating_add((fee_usdc.max(0) as u64) / matched_usdc.max(1) as u64);
                 self.exec.fee_adj_slip_bps.record(now_ms, fee_adj);
                 self.exec.fill_ratio_ppm.record(now_ms, 1_000_000);
+                self.push_log(format!(
+                    "order#{} matched usdc={} gap={}bp slip={}bp latency={}ms",
+                    order_id, matched_usdc, copy_gap_bps, slip_bps, latency_ms
+                ));
             }
-            MonEvent::OrderConfirmed { latency_ms, .. } => {
+            MonEvent::OrderConfirmed {
+                order_id,
+                latency_ms,
+            } => {
                 self.exec.last_submit_status = "confirmed".to_string();
                 self.exec
                     .match_to_confirm_ms
                     .record(now_ms, latency_ms as u64);
+                self.push_log(format!("order#{} confirmed {}ms", order_id, latency_ms));
             }
             MonEvent::OrderRejected { reason, .. } => {
                 self.exec.last_submit_status = format!("rejected:{}", reason.as_str());
