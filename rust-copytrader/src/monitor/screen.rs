@@ -489,7 +489,7 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
     }
     section_header_count(
         &mut out,
-        "BOOKS",
+        "HOT ASSETS",
         snapshot.books.iter().take(3).count(),
         snapshot.books.len(),
     );
@@ -616,14 +616,6 @@ fn render_minimal(snapshot: &UiSnapshot) -> String {
             .first()
             .map(|l| l.reconcile_p95_ms)
             .unwrap_or(0),
-    );
-    let _ = writeln!(
-        out,
-        "trade {} {} usdc={:.2} px={:.4}",
-        empty_as_none(&snapshot.tracked_activity.side),
-        empty_as_none(&snapshot.tracked_activity.slug),
-        usdc(snapshot.tracked_activity.usdc_size),
-        ppm_price(snapshot.tracked_activity.price_ppm),
     );
     let _ = writeln!(
         out,
@@ -1144,7 +1136,17 @@ mod tests {
         let rendered = render_for_width(&sample_snapshot(), 110);
         assert!(rendered.contains("FEEDS"));
         assert!(rendered.contains("TRADE"));
+        assert!(rendered.contains("HOT ASSETS"));
         assert!(rendered.contains("EXEC / RISK"));
         assert!(rendered.contains("ALERTS"));
+    }
+
+    #[test]
+    fn render_minimal_layout_hides_trade_section_per_v2_struct() {
+        let rendered = render_for_width(&sample_snapshot(), 90);
+        assert!(rendered.contains("feeds "));
+        assert!(rendered.contains("exec gap="));
+        assert!(rendered.contains("alerts "));
+        assert!(!rendered.contains("trade "));
     }
 }

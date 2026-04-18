@@ -737,6 +737,19 @@ cargo run --bin run_position_targeting_demo -- --root ..
 cargo run --bin run_copytrader_monitor_v1 -- --root .. --proxy http://127.0.0.1:7897
 ```
 
+或者直接一键跑：
+
+```bash
+bash scripts/run_rust_monitor_v2.sh
+```
+
+想切布局宽度：
+
+```bash
+MONITOR_COLUMNS=110 bash scripts/run_rust_monitor_v2.sh
+MONITOR_COLUMNS=90 bash scripts/run_rust_monitor_v2.sh
+```
+
 详细解释见：
 
 - `monitor_v1_explained.md`
