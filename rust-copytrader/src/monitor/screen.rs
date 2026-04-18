@@ -460,7 +460,7 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
     }
     section_header_count(
         &mut out,
-        "HOT ASSETS",
+        "BOOKS",
         snapshot.books.iter().take(3).count(),
         snapshot.books.len(),
     );
