@@ -137,6 +137,10 @@ pub struct TradeTapeView {
     pub asset: String,
     pub usdc_size: i64,
     pub price_ppm: i32,
+    pub current_position_value_usdc: i64,
+    pub algo_target_risk_usdc: i64,
+    pub algo_delta_risk_usdc: i64,
+    pub algo_reason: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

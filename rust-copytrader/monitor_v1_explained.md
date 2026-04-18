@@ -164,14 +164,32 @@ cargo run --bin run_copytrader_monitor_v1 -- \
   - `BUY / SELL`
 - `slug`
   - 对应市场 slug
+- `time`
+  - 这笔 activity 的本地时间，按 **GMT+8** 显示
 - `asset`
   - 对应 asset id
 - `usdc`
   - 这笔 activity 的 USDC 规模
+- `price`
+  - 这笔 activity 的成交价
+- `leader_pos / size / avg`
+  - 当前 positions 快照里能对回来的 leader 仓位镜像
+- `algo_target / algo_delta / conf / tte / reason`
+  - 当前算法对这笔 activity 对应资产给出的目标仓位、建议增量、置信度和原因
 - `event_age`
   - 这笔 activity 离现在多久
 
 这块是最直接的“实时追踪”面。
+
+另外现在还有一个 `recent trades` 区块，会把最近几笔交易按人能读的方式列出来：
+
+- GMT+8 时间
+- side
+- slug
+- usdc
+- px
+- tx
+- 尽量补上的 `leader_pos / algo_target / algo_delta / reason`
 
 ---
 

@@ -279,6 +279,10 @@ struct TradeTapeMon {
     asset: String,
     usdc_size: i64,
     price_ppm: i32,
+    current_position_value_usdc: i64,
+    algo_target_risk_usdc: i64,
+    algo_delta_risk_usdc: i64,
+    algo_reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -540,6 +544,10 @@ impl MonState {
                     asset: asset.clone(),
                     usdc_size,
                     price_ppm: leader_price_ppm,
+                    current_position_value_usdc: 0,
+                    algo_target_risk_usdc: 0,
+                    algo_delta_risk_usdc: 0,
+                    algo_reason: String::new(),
                 });
                 while self.recent_trades.len() > 8 {
                     self.recent_trades.pop_front();
@@ -570,7 +578,18 @@ impl MonState {
                     self.tracked_activity.algo_delta_risk_usdc = algo_delta_risk_usdc;
                     self.tracked_activity.algo_confidence_bps = algo_confidence_bps;
                     self.tracked_activity.algo_tte_bucket = algo_tte_bucket;
-                    self.tracked_activity.algo_reason = algo_reason;
+                    self.tracked_activity.algo_reason = algo_reason.clone();
+                }
+                if let Some(trade) = self
+                    .recent_trades
+                    .iter_mut()
+                    .rev()
+                    .find(|trade| trade.asset == asset)
+                {
+                    trade.current_position_value_usdc = current_position_value_usdc;
+                    trade.algo_target_risk_usdc = algo_target_risk_usdc;
+                    trade.algo_delta_risk_usdc = algo_delta_risk_usdc;
+                    trade.algo_reason = algo_reason.clone();
                 }
             }
             MonEvent::ReconcileStart { leader } => {
@@ -901,6 +920,10 @@ impl MonState {
                     asset: trade.asset.clone(),
                     usdc_size: trade.usdc_size,
                     price_ppm: trade.price_ppm,
+                    current_position_value_usdc: trade.current_position_value_usdc,
+                    algo_target_risk_usdc: trade.algo_target_risk_usdc,
+                    algo_delta_risk_usdc: trade.algo_delta_risk_usdc,
+                    algo_reason: trade.algo_reason.clone(),
                 })
                 .collect(),
             leaders,
