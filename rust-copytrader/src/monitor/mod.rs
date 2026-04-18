@@ -215,8 +215,10 @@ pub fn spawn_monitor(cfg: MonitorCfg, mode: Mode) -> io::Result<MonitorRuntime> 
                             Some(value.saturating_sub(1))
                         })
                         .ok();
-                    if let Some(journal) = journal.as_mut() {
-                        let _ = journal.append(&journal_line(now_ms_u64(), &event));
+                    if let Some(journal) = journal.as_mut()
+                        && let Some(line) = journal_line(now_ms_u64(), &event)
+                    {
+                        let _ = journal.append(&line);
                     }
                     state.apply(event);
                 }
@@ -280,7 +282,7 @@ fn persist_snapshot_artifacts(cfg: &MonitorCfg, snapshot: &UiSnapshot) -> io::Re
     Ok(())
 }
 
-fn journal_line(now_ms: u64, event: &MonEvent) -> String {
+fn journal_line(now_ms: u64, event: &MonEvent) -> Option<String> {
     match event {
         MonEvent::LeaderSelected {
             wallet,
@@ -288,14 +290,14 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             score,
             review_status,
             ..
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"leader_selected\",\"wallet\":\"{}\",\"category\":\"{}\",\"score\":\"{}\",\"review\":\"{}\"}}",
             now_ms,
             escape_json(wallet),
             escape_json(category),
             escape_json(score),
             escape_json(review_status),
-        ),
+        )),
         MonEvent::ActivityHit {
             leader,
             asset,
@@ -306,7 +308,7 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             leader_price_ppm,
             event_ts_ms,
             ..
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"activity_hit\",\"leader\":\"{}\",\"asset\":\"{}\",\"side\":\"{}\",\"slug\":{},\"tx\":\"{}\",\"usdc_size\":{},\"leader_price_ppm\":{},\"event_ts_ms\":{}}}",
             now_ms,
             escape_json(leader),
@@ -319,7 +321,7 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             usdc_size,
             leader_price_ppm,
             event_ts_ms,
-        ),
+        )),
         MonEvent::TrackedActivityProjection {
             asset,
             current_position_value_usdc,
@@ -330,7 +332,7 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             algo_confidence_bps,
             algo_tte_bucket,
             algo_reason,
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"tracked_activity_projection\",\"asset\":\"{}\",\"current_position_value_usdc\":{},\"current_position_size\":{},\"current_avg_price_ppm\":{},\"algo_target_risk_usdc\":{},\"algo_delta_risk_usdc\":{},\"algo_confidence_bps\":{},\"algo_tte_bucket\":\"{}\",\"algo_reason\":\"{}\"}}",
             now_ms,
             escape_json(asset),
@@ -342,7 +344,7 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             algo_confidence_bps,
             escape_json(algo_tte_bucket),
             escape_json(algo_reason),
-        ),
+        )),
         MonEvent::ReconcileDone {
             leader,
             ok,
@@ -350,7 +352,7 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             positions,
             value_usdc,
             ..
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"reconcile_done\",\"leader\":\"{}\",\"ok\":{},\"latency_ms\":{},\"positions\":{},\"value_usdc\":{}}}",
             now_ms,
             escape_json(leader),
@@ -358,14 +360,14 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             latency_ms,
             positions,
             value_usdc,
-        ),
+        )),
         MonEvent::PositionDiagnostics {
             target_count,
             delta_count,
             stale_asset_count,
             blocked_asset_count,
             blocker_summary,
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"position_diagnostics\",\"target_count\":{},\"delta_count\":{},\"stale_asset_count\":{},\"blocked_asset_count\":{},\"blocker_summary\":\"{}\"}}",
             now_ms,
             target_count,
@@ -373,7 +375,7 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             stale_asset_count,
             blocked_asset_count,
             escape_json(blocker_summary),
-        ),
+        )),
         MonEvent::SignalPlanned {
             asset,
             fresh_ms,
@@ -381,7 +383,7 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             raw_target_usdc,
             final_target_usdc,
             ..
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"signal_planned\",\"asset\":\"{}\",\"fresh_ms\":{},\"agree_bps\":{},\"raw_target_usdc\":{},\"final_target_usdc\":{}}}",
             now_ms,
             escape_json(asset),
@@ -389,24 +391,24 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             agree_bps,
             raw_target_usdc,
             final_target_usdc,
-        ),
+        )),
         MonEvent::SignalSkipped {
             asset,
             reason,
             fresh_ms,
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"signal_skipped\",\"asset\":\"{}\",\"reason\":\"{}\",\"fresh_ms\":{}}}",
             now_ms,
             escape_json(asset),
             reason.as_str(),
             fresh_ms,
-        ),
-        MonEvent::BookResync { asset, age_ms } => format!(
+        )),
+        MonEvent::BookResync { asset, age_ms } => Some(format!(
             "{{\"ts\":{},\"k\":\"book_resync\",\"asset\":\"{}\",\"age_ms\":{}}}",
             now_ms,
             escape_json(asset),
             age_ms,
-        ),
+        )),
         MonEvent::RiskSnapshot {
             equity_usdc,
             cash_usdc,
@@ -422,7 +424,7 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             tracking_err_bps,
             hhi_bps,
             follow_ratio_bps,
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"risk_snapshot\",\"equity_usdc\":{},\"cash_usdc\":{},\"deployed_usdc\":{},\"gross_usdc\":{},\"net_usdc\":{},\"market_top1_usdc\":{},\"event_top1_usdc\":{},\"event_top3_usdc\":{},\"tail_24h_usdc\":{},\"tail_72h_usdc\":{},\"neg_risk_usdc\":{},\"tracking_err_bps\":{},\"hhi_bps\":{},\"follow_ratio_bps\":{}}}",
             now_ms,
             equity_usdc,
@@ -439,42 +441,66 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             tracking_err_bps,
             hhi_bps,
             follow_ratio_bps,
-        ),
+        )),
+        MonEvent::OrderPosted {
+            order_id,
+            latency_ms,
+        } => Some(format!(
+            "{{\"ts\":{},\"k\":\"order_posted\",\"order_id\":{},\"latency_ms\":{}}}",
+            now_ms, order_id, latency_ms
+        )),
         MonEvent::OrderMatched {
             order_id,
             copy_gap_bps,
             slip_bps,
             fee_usdc,
             ..
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"order_matched\",\"order_id\":{},\"copy_gap_bps\":{},\"slip_bps\":{},\"fee_usdc\":{}}}",
             now_ms, order_id, copy_gap_bps, slip_bps, fee_usdc
-        ),
-        MonEvent::AlertNote { level, msg } => format!(
+        )),
+        MonEvent::OrderConfirmed {
+            order_id,
+            latency_ms,
+        } => Some(format!(
+            "{{\"ts\":{},\"k\":\"order_confirmed\",\"order_id\":{},\"latency_ms\":{}}}",
+            now_ms, order_id, latency_ms
+        )),
+        MonEvent::OrderRejected { order_id, reason } => Some(format!(
+            "{{\"ts\":{},\"k\":\"order_rejected\",\"order_id\":{},\"reason\":\"{}\"}}",
+            now_ms,
+            order_id,
+            escape_json(reason.as_str())
+        )),
+        MonEvent::AlertNote { level, msg } => Some(format!(
             "{{\"ts\":{},\"k\":\"alert\",\"level\":\"{}\",\"msg\":\"{}\"}}",
             now_ms,
             level,
             escape_json(msg)
-        ),
+        )),
         MonEvent::HttpDone {
             svc,
             route,
             status,
             latency_ms,
             ..
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"http_done\",\"svc\":\"{}\",\"route\":\"{}\",\"status\":{},\"latency_ms\":{}}}",
             now_ms,
             svc.as_str(),
             escape_json(route),
             status,
             latency_ms,
-        ),
-        other => format!(
-            "{{\"ts\":{},\"k\":\"event\",\"debug\":\"{}\"}}",
-            now_ms,
-            escape_json(&format!("{other:?}"))
-        ),
+        )),
+        MonEvent::Tick { .. }
+        | MonEvent::Shutdown
+        | MonEvent::WsConnected { .. }
+        | MonEvent::WsDisconnected { .. }
+        | MonEvent::WsPong { .. }
+        | MonEvent::WsMsg { .. }
+        | MonEvent::BookUpdate { .. }
+        | MonEvent::OrderIntent { .. }
+        | MonEvent::ReconcileStart { .. } => None,
     }
 }
 
