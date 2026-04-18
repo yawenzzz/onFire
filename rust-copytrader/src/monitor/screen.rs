@@ -328,14 +328,14 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
     }
     for line in merge_two_panels(
         render_panel(
-            "LEADERS",
+            "LEADERS (Top 5)",
             &leaders_lines,
             84,
             6,
             Some((leaders_lines.len(), snapshot.leaders.len())),
         ),
         render_panel(
-            "BOOKS",
+            "BOOKS (Hot Assets Top 5)",
             &books_lines,
             46,
             6,
@@ -480,7 +480,7 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
     }
     section_header_count(
         &mut out,
-        "BOOKS",
+        "HOT ASSETS",
         snapshot.books.iter().take(3).count(),
         snapshot.books.len(),
     );
