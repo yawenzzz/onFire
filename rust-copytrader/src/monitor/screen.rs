@@ -162,9 +162,9 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
             .into_iter()
             .map(|leader| {
                 format!(
-                    "{} stale={}ms dirty={} act_p95={}ms rec_p95={}ms drift={}bp pos={} val={:.2}",
+                    "{} stale={:.1}s dirty={} act_p95={}ms rec_p95={}ms drift={}bp pos={} val={:.0}",
                     elide(&leader.leader, 16),
-                    leader.snap_age_ms,
+                    leader.snap_age_ms as f64 / 1000.0,
                     if leader.dirty { "yes" } else { "no" },
                     leader.activity_p95_ms,
                     leader.reconcile_p95_ms,
@@ -183,7 +183,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
             .map(|book| {
                 format!(
                     "{} age={}ms spread={}bp levels={}/{}",
-                    elide(&book.asset, 32),
+                    elide(&book.asset, 28),
                     book.age_ms,
                     book.spread_bps,
                     book.levels_bid,
@@ -479,9 +479,9 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
     for leader in snapshot.leaders.iter().take(2) {
         let _ = writeln!(
             out,
-            "{} stale={}ms drift={}bp pos={} val={:.2}",
-            leader.leader,
-            leader.snap_age_ms,
+            "{} stale={:.1}s drift={}bp pos={} val={:.0}",
+            elide(&leader.leader, 16),
+            leader.snap_age_ms as f64 / 1000.0,
             leader.drift_p95_bps,
             leader.positions_count,
             usdc(leader.value_usdc),
@@ -502,7 +502,9 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
             .take(3)
             .map(|book| format!(
                 "{} age={}ms spread={}bp",
-                book.asset, book.age_ms, book.spread_bps
+                elide(&book.asset, 22),
+                book.age_ms,
+                book.spread_bps
             ))
             .collect::<Vec<_>>()
             .join(" | ")
