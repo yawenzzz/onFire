@@ -67,6 +67,7 @@ impl HttpSvcState {
 
     fn view(&mut self, now_ms: u64) -> FeedHttpView {
         FeedHttpView {
+            latency_p50_ms: self.latency_ms.p50(now_ms),
             latency_p95_ms: self.latency_ms.p95(now_ms),
             status_429_1m: self.http_429_1m.sum(now_ms),
             status_5xx_1m: self.http_5xx_1m.sum(now_ms),

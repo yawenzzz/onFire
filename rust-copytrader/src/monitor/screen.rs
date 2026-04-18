@@ -43,15 +43,12 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         .take(6)
         .rev()
         .collect::<Vec<_>>();
-    let leader_activity =
-        metric_slice(snapshot.leaders.iter().map(|leader| leader.activity_p95_ms));
     let leader_reconcile = metric_slice(
         snapshot
             .leaders
             .iter()
             .map(|leader| leader.reconcile_p95_ms),
     );
-    let book_age = metric_slice(snapshot.books.iter().map(|book| book.age_ms));
     let book_resync_5m = snapshot
         .books
         .iter()
@@ -121,7 +118,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         ),
         format!(
             "activity : p50={}ms p95={}ms err1m={} 429_1m={}",
-            leader_activity.0,
+            snapshot.feeds.data_api.latency_p50_ms,
             snapshot.feeds.data_api.latency_p95_ms,
             snapshot.feeds.data_api.status_5xx_1m,
             snapshot.feeds.data_api.status_429_1m,
@@ -132,7 +129,10 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         ),
         format!(
             "books    : p50={}ms p95={}ms stale={} resync_5m={}",
-            book_age.0, book_age.1, book_stale_count, book_resync_5m
+            snapshot.feeds.clob_api.latency_p50_ms,
+            snapshot.feeds.clob_api.latency_p95_ms,
+            book_stale_count,
+            book_resync_5m
         ),
     ];
     let process_lines = vec![
@@ -392,6 +392,12 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
             .cmp(&left.level)
             .then_with(|| left.key.cmp(&right.key))
     });
+    let leader_reconcile = metric_slice(
+        snapshot
+            .leaders
+            .iter()
+            .map(|leader| leader.reconcile_p95_ms),
+    );
     let _ = writeln!(
         out,
         "{}{}{} {} {} eq={:.2} cash={:.2} dep={:.2} gross={:.2} net={:.2} up={}",
@@ -423,7 +429,7 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
     section_header(&mut out, "FEEDS");
     let _ = writeln!(
         out,
-        "mkt_ws {} {}ms | user_ws {} {}ms | activity p95 {}ms | positions p95 {}ms | books age {}ms",
+        "mkt_ws {} {}ms | user_ws {} {}ms | activity {}/{}ms | positions {}/{}ms | books {}/{}ms",
         up(
             snapshot.feeds.market_ws.connected,
             snapshot.feeds.market_ws.note.as_deref()
@@ -434,13 +440,12 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
             snapshot.feeds.user_ws.note.as_deref()
         ),
         snapshot.feeds.user_ws.last_msg_age_ms,
+        snapshot.feeds.data_api.latency_p50_ms,
         snapshot.feeds.data_api.latency_p95_ms,
-        snapshot
-            .leaders
-            .first()
-            .map(|l| l.reconcile_p95_ms)
-            .unwrap_or(0),
-        snapshot.books.first().map(|b| b.age_ms).unwrap_or(0),
+        leader_reconcile.0,
+        leader_reconcile.1,
+        snapshot.feeds.clob_api.latency_p50_ms,
+        snapshot.feeds.clob_api.latency_p95_ms,
     );
     let _ = writeln!(
         out,
@@ -971,6 +976,7 @@ mod tests {
                     note: None,
                 },
                 data_api: FeedHttpView {
+                    latency_p50_ms: 110,
                     latency_p95_ms: 280,
                     status_429_1m: 0,
                     status_5xx_1m: 0,
@@ -979,6 +985,7 @@ mod tests {
                 },
                 gamma_api: FeedHttpView::default(),
                 clob_api: FeedHttpView {
+                    latency_p50_ms: 75,
                     latency_p95_ms: 160,
                     status_429_1m: 0,
                     status_5xx_1m: 0,

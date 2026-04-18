@@ -80,6 +80,7 @@ pub struct FeedChannelView {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FeedHttpView {
+    pub latency_p50_ms: u64,
     pub latency_p95_ms: u64,
     pub status_429_1m: u64,
     pub status_5xx_1m: u64,
