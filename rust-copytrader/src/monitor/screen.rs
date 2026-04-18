@@ -154,11 +154,6 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
             empty_as_none(&snapshot.proc.build_label)
         ),
         "task_restart_1h=0 panic_count=0".to_string(),
-        format!(
-            "selected={} {}",
-            elide(empty_as_none(&snapshot.selected_leader.wallet), 18),
-            elide(empty_as_none(&snapshot.selected_leader.category), 18)
-        ),
     ];
     let leaders_lines = if leader_rows.is_empty() {
         vec!["none".to_string()]
@@ -494,7 +489,7 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
     }
     section_header_count(
         &mut out,
-        "HOT ASSETS",
+        "BOOKS",
         snapshot.books.iter().take(3).count(),
         snapshot.books.len(),
     );
