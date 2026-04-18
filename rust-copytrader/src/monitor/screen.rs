@@ -295,9 +295,9 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
     let _ = writeln!(
         out,
         "market_top1={:.2} event_top1={:.2} event_top3={:.2}",
-        usdc(snapshot.risk.deployed_usdc.min(snapshot.risk.gross_usdc)),
-        usdc(snapshot.risk.gross_usdc.min(snapshot.risk.gross_usdc)),
-        usdc(snapshot.risk.gross_usdc),
+        usdc(snapshot.risk.market_top1_usdc),
+        usdc(snapshot.risk.event_top1_usdc),
+        usdc(snapshot.risk.event_top3_usdc),
     );
     let _ = writeln!(
         out,
@@ -982,6 +982,9 @@ mod tests {
                 deployed_usdc: 3_102_210_000,
                 gross_usdc: 3_880_100_000,
                 net_usdc: 1_844_200_000,
+                market_top1_usdc: 152_000_000,
+                event_top1_usdc: 214_000_000,
+                event_top3_usdc: 522_000_000,
                 tail_24h_usdc: 0,
                 tail_72h_usdc: 214_000_000,
                 neg_risk_usdc: 0,

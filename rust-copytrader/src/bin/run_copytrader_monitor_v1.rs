@@ -6,9 +6,10 @@ use rust_copytrader::monitor::snapshot::{Health, Mode};
 use rust_copytrader::monitor::state::{reject_reason_from_status, side_from_str};
 use rust_copytrader::monitor::{MonitorCfg, MonitorRuntime, now_ms_u64, spawn_monitor};
 use rust_copytrader::wallet_filter::{
-    parse_activity_records, parse_iso8601_timestamp, parse_position_records, parse_total_value,
+    parse_activity_records, parse_iso8601_timestamp, parse_market_record, parse_position_records,
+    parse_total_value,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::io;
@@ -654,11 +655,35 @@ fn emit_risk_snapshot(runtime: &MonitorRuntime, root: &Path, wallet: &str) -> Re
     let mut tail_24h = 0i64;
     let mut tail_72h = 0i64;
     let mut neg_risk = 0i64;
+    let markets_dir = discovery_dir.join("markets");
+    let mut market_top1 = 0i64;
+    let mut event_totals = HashMap::<String, i64>::new();
     for position in positions {
         let current_usdc = (position.current_value.max(0.0) * 1_000_000.0).round() as i64;
         gross = gross.saturating_add(current_usdc);
+        market_top1 = market_top1.max(current_usdc);
         if position.negative_risk {
             neg_risk = neg_risk.saturating_add(current_usdc);
+        }
+        if current_usdc > 0 {
+            let event_id = position
+                .slug
+                .as_deref()
+                .and_then(|slug| {
+                    let market_path =
+                        markets_dir.join(format!("{}.json", sanitize_for_filename(slug)));
+                    fs::read_to_string(&market_path)
+                        .ok()
+                        .and_then(|body| parse_market_record(&body, slug))
+                        .and_then(|market| market.event_id)
+                })
+                .unwrap_or_else(|| {
+                    position
+                        .slug
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string())
+                });
+            *event_totals.entry(event_id).or_default() += current_usdc;
         }
         if let Some(end_date) = position
             .end_date
@@ -675,17 +700,36 @@ fn emit_risk_snapshot(runtime: &MonitorRuntime, root: &Path, wallet: &str) -> Re
         }
     }
     let equity_usdc = (total_value * 1_000_000.0).round() as i64;
+    let mut event_values = event_totals.values().copied().collect::<Vec<_>>();
+    event_values.sort_unstable_by(|left, right| right.cmp(left));
+    let event_top1 = event_values.first().copied().unwrap_or(0);
+    let event_top3 = event_values.iter().take(3).sum::<i64>();
+    let hhi_bps = if gross > 0 {
+        event_values
+            .iter()
+            .fold(0.0, |acc, value| {
+                let weight = *value as f64 / gross as f64;
+                acc + weight * weight
+            })
+            .mul_add(10_000.0, 0.0)
+            .round() as u16
+    } else {
+        0
+    };
     runtime.handle.emit(MonEvent::RiskSnapshot {
         equity_usdc,
         cash_usdc: equity_usdc.saturating_sub(gross).max(0),
         deployed_usdc: gross,
         gross_usdc: gross,
         net_usdc: gross,
+        market_top1_usdc: market_top1,
+        event_top1_usdc: event_top1,
+        event_top3_usdc: event_top3,
         tail_24h_usdc: tail_24h,
         tail_72h_usdc: tail_72h,
         neg_risk_usdc: neg_risk,
         tracking_err_bps: 0,
-        hhi_bps: 0,
+        hhi_bps,
         follow_ratio_bps: 0,
     });
     Ok(())

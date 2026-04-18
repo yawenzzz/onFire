@@ -752,6 +752,9 @@ impl MonState {
                 deployed_usdc,
                 gross_usdc,
                 net_usdc,
+                market_top1_usdc,
+                event_top1_usdc,
+                event_top3_usdc,
                 tail_24h_usdc,
                 tail_72h_usdc,
                 neg_risk_usdc,
@@ -764,6 +767,9 @@ impl MonState {
                 self.risk.current.deployed_usdc = deployed_usdc;
                 self.risk.current.gross_usdc = gross_usdc;
                 self.risk.current.net_usdc = net_usdc;
+                self.risk.current.market_top1_usdc = market_top1_usdc;
+                self.risk.current.event_top1_usdc = event_top1_usdc;
+                self.risk.current.event_top3_usdc = event_top3_usdc;
                 self.risk.current.tail_24h_usdc = tail_24h_usdc;
                 self.risk.current.tail_72h_usdc = tail_72h_usdc;
                 self.risk.current.neg_risk_usdc = neg_risk_usdc;
