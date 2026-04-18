@@ -28,7 +28,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
     let leader_rows = snapshot.leaders.iter().take(5).collect::<Vec<_>>();
     let book_rows = snapshot.books.iter().take(5).collect::<Vec<_>>();
     let signal_rows = snapshot.signals.iter().take(6).collect::<Vec<_>>();
-    let recent_trade_rows = snapshot.recent_trades.iter().take(5).collect::<Vec<_>>();
+    let recent_trade_rows = snapshot.recent_trades.iter().take(1).collect::<Vec<_>>();
     let alert_rows = snapshot.alerts.iter().take(4).collect::<Vec<_>>();
     let log_rows = snapshot
         .recent_logs
@@ -168,21 +168,17 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         for trade in recent_trade_rows {
             let _ = writeln!(
                 out,
-                "{} {} {} usdc={:.2} px={:.4} tx={}",
+                "{} {} {} usdc={:.2} px={:.4} pos={:.2} tgt={:.2} Δ={:.2} {} tx={}",
                 empty_as_none(&trade.local_time_gmt8),
                 empty_as_none(&trade.side),
                 empty_as_none(&trade.slug),
                 usdc(trade.usdc_size),
                 ppm_price(trade.price_ppm),
-                short_tx(&trade.tx),
-            );
-            let _ = writeln!(
-                out,
-                "  leader_pos={:.2} algo_target={:.2} algo_delta={:.2} reason={}",
                 usdc(trade.current_position_value_usdc),
                 usdc(trade.algo_target_risk_usdc),
                 usdc(trade.algo_delta_risk_usdc),
                 empty_as_none(&trade.algo_reason),
+                short_tx(&trade.tx),
             );
         }
     }
@@ -200,8 +196,8 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         for leader in leader_rows {
             let _ = writeln!(
                 out,
-                "{} stale={}ms drift={}bp dirty={} act_p95={}ms rec_p95={}ms pos={} val={:.2}",
-                leader.leader,
+                "{} stale={}ms drift={}bp dirty={} act_p95={}ms rec_p95={}ms pos={} val={:.2} last={} {}",
+                elide(&leader.leader, 18),
                 leader.snap_age_ms,
                 leader.drift_p95_bps,
                 if leader.dirty { "yes" } else { "no" },
@@ -209,16 +205,9 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
                 leader.reconcile_p95_ms,
                 leader.positions_count,
                 usdc(leader.value_usdc),
+                leader.last_side.as_deref().unwrap_or("-"),
+                elide(leader.last_slug.as_deref().unwrap_or("none"), 28),
             );
-            if let Some(slug) = &leader.last_slug {
-                let _ = writeln!(
-                    out,
-                    "    last={} {} tx={}",
-                    leader.last_side.as_deref().unwrap_or("-"),
-                    slug,
-                    leader.last_tx.as_deref().unwrap_or("none")
-                );
-            }
         }
     }
     out.push('\n');
@@ -827,6 +816,17 @@ fn escape_json(value: &str) -> String {
 
 fn empty_as_none(value: &str) -> &str {
     if value.is_empty() { "none" } else { value }
+}
+
+fn elide(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        value.to_string()
+    } else if max_chars <= 1 {
+        "…".to_string()
+    } else {
+        let prefix = value.chars().take(max_chars - 1).collect::<String>();
+        format!("{prefix}…")
+    }
 }
 
 #[cfg(test)]
