@@ -132,6 +132,40 @@ def fmt_ratio(value: str) -> str:
         return value
 
 
+def to_float(value: str, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def to_int(value: str, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def classify_flags(candidate):
+    flags = []
+    if to_int(candidate.get('maker_rebate_count', '0')) > 0:
+        flags.append('MAKER')
+    if to_float(candidate.get('tail24', '0')) > 0.10 or to_float(candidate.get('tail72', '0')) > 0.25:
+        flags.append('TAIL')
+    if to_float(candidate.get('copyable_ratio', '0')) < 0.70:
+        flags.append('ILLIQ')
+    if to_float(candidate.get('neg_risk_share', '0')) > 0.20:
+        flags.append('NEG')
+    uniq = to_int(candidate.get('unique_markets_90d', '0'))
+    if uniq > 40:
+        flags.append('BROAD')
+    elif 0 < uniq < 8:
+        flags.append('NARROW')
+    if to_int(candidate.get('traded_markets', '0')) < 20:
+        flags.append('LOW_TRADES')
+    return ','.join(flags) if flags else 'OK'
+
+
 def pad(text: str, width: int) -> str:
     text = str(text)
     if len(text) > width:
@@ -199,6 +233,8 @@ for category_info in summary_categories:
         pad('#', 2) + ' ' +
         pad('status', 9) + ' ' +
         pad('wallet', 15) + ' ' +
+        pad('wk', 3) + ' ' +
+        pad('mo', 3) + ' ' +
         pad('score', 5) + ' ' +
         pad('review', 9) + ' ' +
         pad('maker', 5) + ' ' +
@@ -207,6 +243,7 @@ for category_info in summary_categories:
         pad('tail72', 7) + ' ' +
         pad('copy', 7) + ' ' +
         pad('uniq', 4) + ' ' +
+        pad('flags', 18) + ' ' +
         'reasons'
     )
     print(header)
@@ -215,6 +252,8 @@ for category_info in summary_categories:
             pad(c.get('candidate_index', '?'), 2) + ' ' +
             pad(c.get('status', 'unknown'), 9) + ' ' +
             pad(short_wallet(c.get('wallet', 'none')), 15) + ' ' +
+            pad(c.get('week_rank', 'na'), 3) + ' ' +
+            pad(c.get('month_rank', 'na'), 3) + ' ' +
             pad(c.get('score_total', 'na'), 5) + ' ' +
             pad(c.get('review_status', 'na'), 9) + ' ' +
             pad(c.get('maker_rebate_count', 'na'), 5) + ' ' +
@@ -223,6 +262,7 @@ for category_info in summary_categories:
             pad(fmt_ratio(c.get('tail72', 'na')), 7) + ' ' +
             pad(fmt_ratio(c.get('copyable_ratio', 'na')), 7) + ' ' +
             pad(c.get('unique_markets_90d', 'na'), 4) + ' ' +
+            pad(classify_flags(c), 18) + ' ' +
             c.get('rejection_reasons', 'none')
         )
     print()
