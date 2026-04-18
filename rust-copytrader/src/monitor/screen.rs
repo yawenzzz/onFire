@@ -37,6 +37,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         .take(6)
         .rev()
         .collect::<Vec<_>>();
+    let mut rows: usize;
     let _ = writeln!(
         out,
         "{}{}{} {} HEALTH={}{}{}  eq={:.2} cash={:.2} dep={:.2} gross={:.2} net={:.2} up={}",
@@ -71,6 +72,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
     out.push('\n');
 
     section_header(&mut out, "FEEDS");
+    rows = 0;
     let _ = writeln!(
         out,
         "market_ws {} age={}ms pong_p95={}ms reconnect={} | user_ws {} age={}ms pong_p95={}ms reconnect={}",
@@ -89,6 +91,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         snapshot.feeds.user_ws.pong_p95_ms,
         snapshot.feeds.user_ws.reconnect_total,
     );
+    rows += 1;
     let _ = writeln!(
         out,
         "activity p95={}ms | gamma p95={}ms | clob p95={}ms | 429_1m d/g/c={}/{}/{}",
@@ -99,9 +102,12 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         snapshot.feeds.gamma_api.status_429_1m,
         snapshot.feeds.clob_api.status_429_1m,
     );
+    rows += 1;
+    pad_rows(&mut out, rows, 2);
     out.push('\n');
 
     section_header(&mut out, "PROCESS");
+    rows = 0;
     let _ = writeln!(
         out,
         "loop_p95={}ms mon_q={} exec_q={} dropped={} rss={}MB fds={} threads={}",
@@ -113,6 +119,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         snapshot.proc.open_fds,
         snapshot.proc.threads,
     );
+    rows += 1;
     let _ = writeln!(
         out,
         "selected={} category={} score={} review={} source={}",
@@ -122,6 +129,8 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         empty_as_none(&snapshot.selected_leader.review_status),
         empty_as_none(&snapshot.selected_leader.source),
     );
+    rows += 1;
+    pad_rows(&mut out, rows, 2);
     out.push('\n');
 
     section_header_count(
@@ -130,6 +139,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         recent_trade_rows.len().max(1),
         snapshot.recent_trades.len().max(1),
     );
+    rows = 0;
     let _ = writeln!(
         out,
         "latest tx={} side={} slug={}",
@@ -137,6 +147,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         empty_as_none(&snapshot.tracked_activity.side),
         empty_as_none(&snapshot.tracked_activity.slug),
     );
+    rows += 1;
     let _ = writeln!(
         out,
         "time={} asset={} usdc={:.2} px={:.4} age={}ms",
@@ -146,6 +157,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         ppm_price(snapshot.tracked_activity.price_ppm),
         snapshot.tracked_activity.event_age_ms,
     );
+    rows += 1;
     let _ = writeln!(
         out,
         "leader_pos={:.2} size={:.4} avg={:.4} algo_target={:.2} algo_delta={:.2}",
@@ -155,6 +167,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         usdc(snapshot.tracked_activity.algo_target_risk_usdc),
         usdc(snapshot.tracked_activity.algo_delta_risk_usdc),
     );
+    rows += 1;
     let _ = writeln!(
         out,
         "conf={}bp tte={} reason={}",
@@ -162,8 +175,10 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         empty_as_none(&snapshot.tracked_activity.algo_tte_bucket),
         empty_as_none(&snapshot.tracked_activity.algo_reason),
     );
+    rows += 1;
     if recent_trade_rows.is_empty() {
         let _ = writeln!(out, "recent=none");
+        rows += 1;
     } else {
         for trade in recent_trade_rows {
             let _ = writeln!(
@@ -180,8 +195,10 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
                 empty_as_none(&trade.algo_reason),
                 short_tx(&trade.tx),
             );
+            rows += 1;
         }
     }
+    pad_rows(&mut out, rows, 5);
     out.push('\n');
 
     section_header_count(
@@ -190,8 +207,10 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         leader_rows.len(),
         snapshot.leaders.len(),
     );
+    rows = 0;
     if leader_rows.is_empty() {
         let _ = writeln!(out, "none");
+        rows += 1;
     } else {
         for leader in leader_rows {
             let _ = writeln!(
@@ -208,8 +227,10 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
                 leader.last_side.as_deref().unwrap_or("-"),
                 elide(leader.last_slug.as_deref().unwrap_or("none"), 28),
             );
+            rows += 1;
         }
     }
+    pad_rows(&mut out, rows, 5);
     out.push('\n');
 
     section_header_count(
@@ -218,8 +239,10 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         book_rows.len(),
         snapshot.books.len(),
     );
+    rows = 0;
     if book_rows.is_empty() {
         let _ = writeln!(out, "none");
+        rows += 1;
     } else {
         for book in book_rows {
             let _ = writeln!(
@@ -234,8 +257,10 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
                 yn(book.crossed),
                 yn(book.hash_mismatch),
             );
+            rows += 1;
         }
     }
+    pad_rows(&mut out, rows, 5);
     out.push('\n');
 
     section_header_count(
@@ -244,8 +269,10 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         signal_rows.len(),
         snapshot.signals.len(),
     );
+    rows = 0;
     if signal_rows.is_empty() {
         let _ = writeln!(out, "none");
+        rows += 1;
     } else {
         for signal in signal_rows {
             if signal.status == "SKIP" {
@@ -256,6 +283,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
                     signal.reason.as_deref().unwrap_or("unknown"),
                     signal.fresh_ms
                 );
+                rows += 1;
             } else {
                 let _ = writeln!(
                     out,
@@ -266,12 +294,15 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
                     signal.agree_bps / 100,
                     signal.fresh_ms,
                 );
+                rows += 1;
             }
         }
     }
+    pad_rows(&mut out, rows, 6);
     out.push('\n');
 
     section_header(&mut out, "EXECUTION");
+    rows = 0;
     let _ = writeln!(
         out,
         "a->i {}ms  i->post {}ms  post->match {}ms  conf {}ms",
@@ -280,6 +311,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         snapshot.exec.post_to_match_p95_ms,
         snapshot.exec.match_to_confirm_p95_ms,
     );
+    rows += 1;
     let _ = writeln!(
         out,
         "gap {}bp  slip {}bp  fee_adj {}bp  fill {}%  last={}",
@@ -289,9 +321,12 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         snapshot.exec.fill_ratio_p50_ppm / 10_000,
         snapshot.exec.last_submit_status,
     );
+    rows += 1;
+    pad_rows(&mut out, rows, 2);
     out.push('\n');
 
     section_header(&mut out, "RISK");
+    rows = 0;
     let _ = writeln!(
         out,
         "market_top1={:.2} event_top1={:.2} event_top3={:.2}",
@@ -299,6 +334,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         usdc(snapshot.risk.event_top1_usdc),
         usdc(snapshot.risk.event_top3_usdc),
     );
+    rows += 1;
     let _ = writeln!(
         out,
         "tail<24h={:.2} tail<72h={:.2} negRisk={:.2} hhi={}bp",
@@ -307,6 +343,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         usdc(snapshot.risk.neg_risk_usdc),
         snapshot.risk.hhi_bps,
     );
+    rows += 1;
     let _ = writeln!(
         out,
         "target_count={} delta_count={} stale_assets={} blocked_assets={}",
@@ -315,14 +352,18 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         snapshot.position_targeting.stale_asset_count,
         snapshot.position_targeting.blocked_asset_count,
     );
+    rows += 1;
     let _ = writeln!(
         out,
         "blocker_summary={}",
         empty_as_none(&snapshot.position_targeting.blocker_summary),
     );
+    rows += 1;
+    pad_rows(&mut out, rows, 4);
     out.push('\n');
 
     section_header(&mut out, "TRACKING");
+    rows = 0;
     let _ = writeln!(
         out,
         "track_err={}bp rmse_1m={}bp follow_ratio={}%",
@@ -330,6 +371,7 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         snapshot.risk.rmse_1m_bps,
         snapshot.risk.follow_ratio_bps / 100,
     );
+    rows += 1;
     let _ = writeln!(
         out,
         "eligible={:.2} copied={:.2} overcopy={:.2} undercopy={:.2}",
@@ -339,26 +381,36 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         usdc(snapshot.risk.deployed_usdc)
             - usdc(snapshot.risk.deployed_usdc * snapshot.risk.follow_ratio_bps as i64 / 10_000),
     );
+    rows += 1;
+    pad_rows(&mut out, rows, 2);
     out.push('\n');
 
     section_header_count(&mut out, "ALERTS", alert_rows.len(), snapshot.alerts.len());
+    rows = 0;
     if alert_rows.is_empty() {
         let _ = writeln!(out, "none");
+        rows += 1;
     } else {
         for alert in alert_rows {
             let _ = writeln!(out, "{} {} {}", alert.level, alert.key, alert.message);
+            rows += 1;
         }
     }
+    pad_rows(&mut out, rows, 4);
     out.push('\n');
 
     section_header_count(&mut out, "LOGS", log_rows.len(), snapshot.recent_logs.len());
+    rows = 0;
     if log_rows.is_empty() {
         let _ = writeln!(out, "none");
+        rows += 1;
     } else {
         for line in log_rows {
             let _ = writeln!(out, "{line}");
+            rows += 1;
         }
     }
+    pad_rows(&mut out, rows, 6);
     out
 }
 
@@ -727,6 +779,12 @@ fn section_header_count(out: &mut String, title: &str, shown: usize, total: usiz
         "{}{} [{} / {}]{}",
         ANSI_BOLD, title, shown, total, ANSI_RESET
     );
+}
+
+fn pad_rows(out: &mut String, rendered: usize, min_rows: usize) {
+    for _ in rendered..min_rows {
+        let _ = writeln!(out);
+    }
 }
 
 fn color_health(health: Health) -> &'static str {

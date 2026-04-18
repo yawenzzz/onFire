@@ -120,11 +120,15 @@ pub struct MonitorHandle {
 
 impl MonitorHandle {
     pub fn emit(&self, ev: MonEvent) {
+        self.queue_depth.fetch_add(1, Ordering::Relaxed);
         match self.tx.try_send(ev) {
-            Ok(()) => {
-                self.queue_depth.fetch_add(1, Ordering::Relaxed);
-            }
+            Ok(()) => {}
             Err(_) => {
+                self.queue_depth
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                        Some(value.saturating_sub(1))
+                    })
+                    .ok();
                 self.dropped.fetch_add(1, Ordering::Relaxed);
             }
         }
