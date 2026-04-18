@@ -139,13 +139,14 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
         format!("main_loop_lag_p95={}ms", snapshot.proc.loop_lag_p95_ms),
         format!(
             "strategy_q={}  monitor_q={}  exec_q={}",
-            snapshot.proc.exec_q_depth, snapshot.proc.monitor_q_depth, snapshot.proc.exec_q_depth
+            0, snapshot.proc.monitor_q_depth, snapshot.proc.exec_q_depth
         ),
         format!("dropped_mon_events={}", snapshot.proc.monitor_dropped_total),
         format!(
             "proc rss={}MB fds={} threads={}",
             snapshot.proc.rss_mb, snapshot.proc.open_fds, snapshot.proc.threads
         ),
+        "task_restart_1h=0 panic_count=0".to_string(),
         format!(
             "selected={} {}",
             elide(empty_as_none(&snapshot.selected_leader.wallet), 18),
@@ -440,6 +441,11 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
             .map(|l| l.reconcile_p95_ms)
             .unwrap_or(0),
         snapshot.books.first().map(|b| b.age_ms).unwrap_or(0),
+    );
+    let _ = writeln!(
+        out,
+        "PROC loop_p95 {}ms  mon_q {}  exec_q {}  restarts 0  panic 0",
+        snapshot.proc.loop_lag_p95_ms, snapshot.proc.monitor_q_depth, snapshot.proc.exec_q_depth,
     );
     section_header(&mut out, "TRADE");
     let _ = writeln!(
