@@ -29,7 +29,14 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
     let book_rows = snapshot.books.iter().take(5).collect::<Vec<_>>();
     let signal_rows = snapshot.signals.iter().take(6).collect::<Vec<_>>();
     let recent_trade_rows = snapshot.recent_trades.iter().take(1).collect::<Vec<_>>();
-    let alert_rows = snapshot.alerts.iter().take(4).collect::<Vec<_>>();
+    let mut alert_rows = snapshot.alerts.iter().collect::<Vec<_>>();
+    alert_rows.sort_by(|left, right| {
+        right
+            .level
+            .cmp(&left.level)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    alert_rows.truncate(4);
     let log_rows = snapshot
         .recent_logs
         .iter()
@@ -416,6 +423,13 @@ fn render_standard(snapshot: &UiSnapshot) -> String {
 
 fn render_compact(snapshot: &UiSnapshot) -> String {
     let mut out = String::new();
+    let mut alert_rows = snapshot.alerts.iter().collect::<Vec<_>>();
+    alert_rows.sort_by(|left, right| {
+        right
+            .level
+            .cmp(&left.level)
+            .then_with(|| left.key.cmp(&right.key))
+    });
     let _ = writeln!(
         out,
         "{}{}{} {} {} eq={:.2} cash={:.2} dep={:.2} gross={:.2} net={:.2} up={}",
@@ -573,10 +587,10 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
     section_header_count(
         &mut out,
         "ALERTS",
-        snapshot.alerts.iter().take(3).count(),
+        alert_rows.iter().take(3).count(),
         snapshot.alerts.len(),
     );
-    for alert in snapshot.alerts.iter().take(3) {
+    for alert in alert_rows.iter().take(3) {
         let _ = writeln!(out, "{} {} {}", alert.level, alert.key, alert.message);
     }
     section_header_count(
@@ -593,6 +607,13 @@ fn render_compact(snapshot: &UiSnapshot) -> String {
 
 fn render_minimal(snapshot: &UiSnapshot) -> String {
     let mut out = String::new();
+    let mut alert_rows = snapshot.alerts.iter().collect::<Vec<_>>();
+    alert_rows.sort_by(|left, right| {
+        right
+            .level
+            .cmp(&left.level)
+            .then_with(|| left.key.cmp(&right.key))
+    });
     let _ = writeln!(
         out,
         "{}{}{} {} {} eq={:.2} dep={:.2}{}",
@@ -642,8 +663,7 @@ fn render_minimal(snapshot: &UiSnapshot) -> String {
     let _ = writeln!(
         out,
         "alerts {}",
-        snapshot
-            .alerts
+        alert_rows
             .iter()
             .take(2)
             .map(|alert| format!("{}:{}", alert.level, alert.key))
