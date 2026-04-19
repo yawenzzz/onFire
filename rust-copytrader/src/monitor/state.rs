@@ -3,7 +3,8 @@ use super::hist::{RollingHistogram, RollingRms};
 use super::rolling::RollingCounter;
 use super::snapshot::{
     AlertView, BookViewUi, ExecView, FeedChannelView, FeedHttpView, FeedView, Health, LeaderView,
-    Mode, PositionTargetingView, ProcView, RiskView, SelectedLeaderView, SignalView, UiSnapshot,
+    Mode, PositionTargetingView, ProcView, RiskView, SelectedLeaderView, SignalView,
+    TrackedActivityView, TradeTapeView, UiSnapshot,
 };
 use super::{MonitorCfg, now_ms_u64};
 use std::collections::{BTreeMap, VecDeque};
@@ -12,9 +13,11 @@ use std::collections::{BTreeMap, VecDeque};
 struct ProcState {
     started_ms: u64,
     loop_lag_ms: RollingHistogram,
+    cpu_tenths_pct: u16,
     rss_mb: u64,
     open_fds: u64,
     threads: u64,
+    build_label: String,
 }
 
 impl ProcState {
@@ -22,9 +25,11 @@ impl ProcState {
         Self {
             started_ms: now_ms,
             loop_lag_ms: RollingHistogram::new(60_000),
+            cpu_tenths_pct: 0,
             rss_mb: 0,
             open_fds: 0,
             threads: 0,
+            build_label: String::new(),
         }
     }
 }
@@ -66,6 +71,7 @@ impl HttpSvcState {
 
     fn view(&mut self, now_ms: u64) -> FeedHttpView {
         FeedHttpView {
+            latency_p50_ms: self.latency_ms.p50(now_ms),
             latency_p95_ms: self.latency_ms.p95(now_ms),
             status_429_1m: self.http_429_1m.sum(now_ms),
             status_5xx_1m: self.http_5xx_1m.sum(now_ms),
@@ -248,6 +254,42 @@ struct SelectedLeaderMon {
     active_pool: String,
 }
 
+#[derive(Debug, Clone, Default)]
+struct TrackedActivityMon {
+    tx: String,
+    side: String,
+    slug: String,
+    asset: String,
+    usdc_size: i64,
+    price_ppm: i32,
+    event_age_ms: u64,
+    event_ts_ms: i64,
+    local_time_gmt8: String,
+    current_position_value_usdc: i64,
+    current_position_size: i64,
+    current_avg_price_ppm: i32,
+    algo_target_risk_usdc: i64,
+    algo_delta_risk_usdc: i64,
+    algo_confidence_bps: u16,
+    algo_tte_bucket: String,
+    algo_reason: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TradeTapeMon {
+    local_time_gmt8: String,
+    tx: String,
+    side: String,
+    slug: String,
+    asset: String,
+    usdc_size: i64,
+    price_ppm: i32,
+    current_position_value_usdc: i64,
+    algo_target_risk_usdc: i64,
+    algo_delta_risk_usdc: i64,
+    algo_reason: String,
+}
+
 #[derive(Debug, Clone)]
 struct SignalMon {
     status: String,
@@ -350,6 +392,8 @@ pub struct MonState {
     risk: RiskState,
     position_targeting: PositionTargetingMon,
     selected_leader: SelectedLeaderMon,
+    tracked_activity: TrackedActivityMon,
+    recent_trades: VecDeque<TradeTapeMon>,
     alerts: Vec<AlertView>,
     logs: VecDeque<String>,
 }
@@ -367,6 +411,8 @@ impl MonState {
             risk: RiskState::new(),
             position_targeting: PositionTargetingMon::default(),
             selected_leader: SelectedLeaderMon::default(),
+            tracked_activity: TrackedActivityMon::default(),
+            recent_trades: VecDeque::new(),
             alerts: Vec::new(),
             logs: VecDeque::new(),
             cfg,
@@ -375,7 +421,16 @@ impl MonState {
     }
 
     fn push_log(&mut self, message: impl Into<String>) {
-        self.logs.push_back(message.into());
+        let message = message.into();
+        if self
+            .logs
+            .back()
+            .map(|line| line == &message)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.logs.push_back(message);
         while self.logs.len() > self.cfg.log_lines {
             self.logs.pop_front();
         }
@@ -406,6 +461,10 @@ impl MonState {
                 core_pool,
                 active_pool,
             } => {
+                let changed = self.selected_leader.wallet != wallet
+                    || self.selected_leader.category != category
+                    || self.selected_leader.score != score
+                    || self.selected_leader.review_status != review_status;
                 self.selected_leader = SelectedLeaderMon {
                     wallet,
                     source,
@@ -415,6 +474,15 @@ impl MonState {
                     core_pool,
                     active_pool,
                 };
+                if changed {
+                    self.push_log(format!(
+                        "selected leader wallet={} category={} score={} review={}",
+                        self.selected_leader.wallet,
+                        self.selected_leader.category,
+                        self.selected_leader.score,
+                        self.selected_leader.review_status
+                    ));
+                }
             }
             MonEvent::HttpDone {
                 svc,
@@ -453,6 +521,8 @@ impl MonState {
                 leader,
                 asset,
                 side,
+                usdc_size,
+                leader_price_ppm,
                 event_ts_ms,
                 recv_ts_ms,
                 tx_hash,
@@ -466,12 +536,92 @@ impl MonState {
                 leader_mon.last_tx = Some(tx_hash.clone());
                 leader_mon.last_side = Some(side.as_str().to_string());
                 leader_mon.last_slug = slug.clone();
+                let local_time_gmt8 = format_gmt8(event_ts_ms);
+                self.tracked_activity = TrackedActivityMon {
+                    tx: tx_hash.clone(),
+                    side: side.as_str().to_string(),
+                    slug: slug.unwrap_or_default(),
+                    asset: asset.clone(),
+                    usdc_size,
+                    price_ppm: leader_price_ppm,
+                    event_age_ms: age_ms,
+                    event_ts_ms,
+                    local_time_gmt8: local_time_gmt8.clone(),
+                    current_position_value_usdc: 0,
+                    current_position_size: 0,
+                    current_avg_price_ppm: 0,
+                    algo_target_risk_usdc: 0,
+                    algo_delta_risk_usdc: 0,
+                    algo_confidence_bps: 0,
+                    algo_tte_bucket: String::new(),
+                    algo_reason: String::new(),
+                };
+                self.recent_trades.push_back(TradeTapeMon {
+                    local_time_gmt8,
+                    tx: tx_hash.clone(),
+                    side: side.as_str().to_string(),
+                    slug: self.tracked_activity.slug.clone(),
+                    asset: asset.clone(),
+                    usdc_size,
+                    price_ppm: leader_price_ppm,
+                    current_position_value_usdc: 0,
+                    algo_target_risk_usdc: 0,
+                    algo_delta_risk_usdc: 0,
+                    algo_reason: String::new(),
+                });
+                while self.recent_trades.len() > 8 {
+                    self.recent_trades.pop_front();
+                }
                 self.push_log(format!(
                     "leader {leader} activity {} {} {}",
                     side.as_str(),
                     asset,
                     tx_hash
                 ));
+            }
+            MonEvent::TrackedActivityProjection {
+                asset,
+                current_position_value_usdc,
+                current_position_size,
+                current_avg_price_ppm,
+                algo_target_risk_usdc,
+                algo_delta_risk_usdc,
+                algo_confidence_bps,
+                algo_tte_bucket,
+                algo_reason,
+                tracking_err_bps,
+                follow_ratio_bps,
+                copied_usdc,
+                overcopy_usdc,
+                undercopy_usdc,
+            } => {
+                if self.tracked_activity.asset == asset {
+                    self.tracked_activity.current_position_value_usdc = current_position_value_usdc;
+                    self.tracked_activity.current_position_size = current_position_size;
+                    self.tracked_activity.current_avg_price_ppm = current_avg_price_ppm;
+                    self.tracked_activity.algo_target_risk_usdc = algo_target_risk_usdc;
+                    self.tracked_activity.algo_delta_risk_usdc = algo_delta_risk_usdc;
+                    self.tracked_activity.algo_confidence_bps = algo_confidence_bps;
+                    self.tracked_activity.algo_tte_bucket = algo_tte_bucket;
+                    self.tracked_activity.algo_reason = algo_reason.clone();
+                }
+                self.risk.current.tracking_err_bps = tracking_err_bps;
+                self.risk.current.follow_ratio_bps = follow_ratio_bps;
+                self.risk.current.eligible_usdc = algo_target_risk_usdc.abs();
+                self.risk.current.copied_usdc = copied_usdc;
+                self.risk.current.overcopy_usdc = overcopy_usdc;
+                self.risk.current.undercopy_usdc = undercopy_usdc;
+                if let Some(trade) = self
+                    .recent_trades
+                    .iter_mut()
+                    .rev()
+                    .find(|trade| trade.asset == asset)
+                {
+                    trade.current_position_value_usdc = current_position_value_usdc;
+                    trade.algo_target_risk_usdc = algo_target_risk_usdc;
+                    trade.algo_delta_risk_usdc = algo_delta_risk_usdc;
+                    trade.algo_reason = algo_reason.clone();
+                }
             }
             MonEvent::ReconcileStart { leader } => {
                 self.leader_mut(&leader).dirty = true;
@@ -550,6 +700,10 @@ impl MonState {
                         reason: None,
                     },
                 );
+                self.push_log(format!(
+                    "signal planned {} raw={} final={} agree={}bp fresh={}ms",
+                    asset, raw_target_usdc, final_target_usdc, agree_bps, fresh_ms
+                ));
             }
             MonEvent::SignalSkipped {
                 asset,
@@ -567,6 +721,12 @@ impl MonState {
                         reason: Some(reason.as_str().to_string()),
                     },
                 );
+                self.push_log(format!(
+                    "signal skipped {} reason={} fresh={}ms",
+                    asset,
+                    reason.as_str(),
+                    fresh_ms
+                ));
             }
             MonEvent::PositionDiagnostics {
                 target_count,
@@ -582,6 +742,14 @@ impl MonState {
                     blocked_asset_count,
                     blocker_summary,
                 };
+                self.push_log(format!(
+                    "position diagnostics targets={} deltas={} stale={} blocked={} blockers={}",
+                    self.position_targeting.target_count,
+                    self.position_targeting.delta_count,
+                    self.position_targeting.stale_asset_count,
+                    self.position_targeting.blocked_asset_count,
+                    self.position_targeting.blocker_summary
+                ));
             }
             MonEvent::OrderIntent { .. } => {
                 self.exec.last_submit_status = "intent".to_string();
@@ -593,6 +761,7 @@ impl MonState {
                     .record(now_ms, latency_ms as u64);
             }
             MonEvent::OrderMatched {
+                order_id,
                 matched_usdc,
                 fee_usdc,
                 copy_gap_bps,
@@ -608,12 +777,20 @@ impl MonState {
                     .saturating_add((fee_usdc.max(0) as u64) / matched_usdc.max(1) as u64);
                 self.exec.fee_adj_slip_bps.record(now_ms, fee_adj);
                 self.exec.fill_ratio_ppm.record(now_ms, 1_000_000);
+                self.push_log(format!(
+                    "order#{} matched usdc={} gap={}bp slip={}bp latency={}ms",
+                    order_id, matched_usdc, copy_gap_bps, slip_bps, latency_ms
+                ));
             }
-            MonEvent::OrderConfirmed { latency_ms, .. } => {
+            MonEvent::OrderConfirmed {
+                order_id,
+                latency_ms,
+            } => {
                 self.exec.last_submit_status = "confirmed".to_string();
                 self.exec
                     .match_to_confirm_ms
                     .record(now_ms, latency_ms as u64);
+                self.push_log(format!("order#{} confirmed {}ms", order_id, latency_ms));
             }
             MonEvent::OrderRejected { reason, .. } => {
                 self.exec.last_submit_status = format!("rejected:{}", reason.as_str());
@@ -625,6 +802,9 @@ impl MonState {
                 deployed_usdc,
                 gross_usdc,
                 net_usdc,
+                market_top1_usdc,
+                event_top1_usdc,
+                event_top3_usdc,
                 tail_24h_usdc,
                 tail_72h_usdc,
                 neg_risk_usdc,
@@ -637,6 +817,9 @@ impl MonState {
                 self.risk.current.deployed_usdc = deployed_usdc;
                 self.risk.current.gross_usdc = gross_usdc;
                 self.risk.current.net_usdc = net_usdc;
+                self.risk.current.market_top1_usdc = market_top1_usdc;
+                self.risk.current.event_top1_usdc = event_top1_usdc;
+                self.risk.current.event_top3_usdc = event_top3_usdc;
                 self.risk.current.tail_24h_usdc = tail_24h_usdc;
                 self.risk.current.tail_72h_usdc = tail_72h_usdc;
                 self.risk.current.neg_risk_usdc = neg_risk_usdc;
@@ -663,10 +846,21 @@ impl MonState {
         self.proc.loop_lag_ms.record(now_ms, lag_ms);
     }
 
-    pub fn set_proc_stats(&mut self, rss_mb: u64, open_fds: u64, threads: u64) {
+    pub fn set_proc_stats(
+        &mut self,
+        cpu_tenths_pct: u16,
+        rss_mb: u64,
+        open_fds: u64,
+        threads: u64,
+    ) {
+        self.proc.cpu_tenths_pct = cpu_tenths_pct;
         self.proc.rss_mb = rss_mb;
         self.proc.open_fds = open_fds;
         self.proc.threads = threads;
+    }
+
+    pub fn set_build_label(&mut self, build_label: String) {
+        self.proc.build_label = build_label;
     }
 
     pub fn build_snapshot(
@@ -682,9 +876,11 @@ impl MonState {
             monitor_dropped_total,
             monitor_q_depth,
             exec_q_depth,
+            cpu_tenths_pct: self.proc.cpu_tenths_pct,
             rss_mb: self.proc.rss_mb,
             open_fds: self.proc.open_fds,
             threads: self.proc.threads,
+            build_label: self.proc.build_label.clone(),
         };
 
         let feeds = FeedView {
@@ -741,12 +937,15 @@ impl MonState {
         let exec = self.exec.view(now_ms);
         let risk = self.risk.current.clone();
         let recent_logs = self.logs.iter().cloned().collect::<Vec<_>>();
+        let ready = !self.selected_leader.wallet.is_empty()
+            && leaders.iter().any(|leader| leader.positions_count > 0)
+            && (!self.cfg.live_mode || self.feeds.user_ws.connected);
 
         let mut snapshot = UiSnapshot {
             now_ms: now_ms as i64,
             health: Health::Ok,
             mode: self.mode,
-            ready: !leaders.is_empty(),
+            ready,
             proc,
             feeds,
             selected_leader: SelectedLeaderView {
@@ -758,6 +957,44 @@ impl MonState {
                 core_pool: self.selected_leader.core_pool.clone(),
                 active_pool: self.selected_leader.active_pool.clone(),
             },
+            tracked_activity: TrackedActivityView {
+                tx: self.tracked_activity.tx.clone(),
+                side: self.tracked_activity.side.clone(),
+                slug: self.tracked_activity.slug.clone(),
+                asset: self.tracked_activity.asset.clone(),
+                usdc_size: self.tracked_activity.usdc_size,
+                price_ppm: self.tracked_activity.price_ppm,
+                event_age_ms: self.tracked_activity.event_age_ms,
+                event_ts_ms: self.tracked_activity.event_ts_ms,
+                local_time_gmt8: self.tracked_activity.local_time_gmt8.clone(),
+                current_position_value_usdc: self.tracked_activity.current_position_value_usdc,
+                current_position_size: self.tracked_activity.current_position_size,
+                current_avg_price_ppm: self.tracked_activity.current_avg_price_ppm,
+                algo_target_risk_usdc: self.tracked_activity.algo_target_risk_usdc,
+                algo_delta_risk_usdc: self.tracked_activity.algo_delta_risk_usdc,
+                algo_confidence_bps: self.tracked_activity.algo_confidence_bps,
+                algo_tte_bucket: self.tracked_activity.algo_tte_bucket.clone(),
+                algo_reason: self.tracked_activity.algo_reason.clone(),
+            },
+            recent_trades: self
+                .recent_trades
+                .iter()
+                .rev()
+                .take(5)
+                .map(|trade| TradeTapeView {
+                    local_time_gmt8: trade.local_time_gmt8.clone(),
+                    tx: trade.tx.clone(),
+                    side: trade.side.clone(),
+                    slug: trade.slug.clone(),
+                    asset: trade.asset.clone(),
+                    usdc_size: trade.usdc_size,
+                    price_ppm: trade.price_ppm,
+                    current_position_value_usdc: trade.current_position_value_usdc,
+                    algo_target_risk_usdc: trade.algo_target_risk_usdc,
+                    algo_delta_risk_usdc: trade.algo_delta_risk_usdc,
+                    algo_reason: trade.algo_reason.clone(),
+                })
+                .collect(),
             leaders,
             books,
             signals,
@@ -776,7 +1013,6 @@ impl MonState {
         let (health, alerts) =
             super::alert::evaluate(&snapshot, &self.cfg.thresholds, self.cfg.live_mode);
         snapshot.health = health;
-        snapshot.ready = snapshot.ready && snapshot.health != Health::Crit;
         snapshot.alerts = alerts;
         snapshot
     }
@@ -815,4 +1051,31 @@ pub fn reject_reason_from_status(value: &str) -> RejectReason {
     } else {
         RejectReason::Unknown(value.to_string())
     }
+}
+
+fn format_gmt8(timestamp_ms: i64) -> String {
+    if timestamp_ms <= 0 {
+        return "none".to_string();
+    }
+    let total_secs = timestamp_ms.div_euclid(1000) + 8 * 60 * 60;
+    let days = total_secs.div_euclid(86_400);
+    let secs_of_day = total_secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096).div_euclid(365);
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2).div_euclid(153);
+    let d = doy - (153 * mp + 2).div_euclid(5) + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+    let hour = secs_of_day / 3_600;
+    let minute = (secs_of_day % 3_600) / 60;
+    let second = secs_of_day % 60;
+    format!(
+        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} GMT+8",
+        month = m,
+        day = d
+    )
 }

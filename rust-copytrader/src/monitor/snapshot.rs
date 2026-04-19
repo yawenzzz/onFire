@@ -63,9 +63,11 @@ pub struct ProcView {
     pub monitor_dropped_total: u64,
     pub monitor_q_depth: u64,
     pub exec_q_depth: u64,
+    pub cpu_tenths_pct: u16,
     pub rss_mb: u64,
     pub open_fds: u64,
     pub threads: u64,
+    pub build_label: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -80,6 +82,7 @@ pub struct FeedChannelView {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FeedHttpView {
+    pub latency_p50_ms: u64,
     pub latency_p95_ms: u64,
     pub status_429_1m: u64,
     pub status_5xx_1m: u64,
@@ -105,6 +108,42 @@ pub struct SelectedLeaderView {
     pub review_status: String,
     pub core_pool: String,
     pub active_pool: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrackedActivityView {
+    pub tx: String,
+    pub side: String,
+    pub slug: String,
+    pub asset: String,
+    pub usdc_size: i64,
+    pub price_ppm: i32,
+    pub event_age_ms: u64,
+    pub event_ts_ms: i64,
+    pub local_time_gmt8: String,
+    pub current_position_value_usdc: i64,
+    pub current_position_size: i64,
+    pub current_avg_price_ppm: i32,
+    pub algo_target_risk_usdc: i64,
+    pub algo_delta_risk_usdc: i64,
+    pub algo_confidence_bps: u16,
+    pub algo_tte_bucket: String,
+    pub algo_reason: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TradeTapeView {
+    pub local_time_gmt8: String,
+    pub tx: String,
+    pub side: String,
+    pub slug: String,
+    pub asset: String,
+    pub usdc_size: i64,
+    pub price_ppm: i32,
+    pub current_position_value_usdc: i64,
+    pub algo_target_risk_usdc: i64,
+    pub algo_delta_risk_usdc: i64,
+    pub algo_reason: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -174,12 +213,19 @@ pub struct RiskView {
     pub deployed_usdc: i64,
     pub gross_usdc: i64,
     pub net_usdc: i64,
+    pub market_top1_usdc: i64,
+    pub event_top1_usdc: i64,
+    pub event_top3_usdc: i64,
     pub tail_24h_usdc: i64,
     pub tail_72h_usdc: i64,
     pub neg_risk_usdc: i64,
     pub tracking_err_bps: u16,
     pub rmse_1m_bps: u16,
     pub follow_ratio_bps: u16,
+    pub eligible_usdc: i64,
+    pub copied_usdc: i64,
+    pub overcopy_usdc: i64,
+    pub undercopy_usdc: i64,
     pub hhi_bps: u16,
 }
 
@@ -199,6 +245,8 @@ pub struct UiSnapshot {
     pub proc: ProcView,
     pub feeds: FeedView,
     pub selected_leader: SelectedLeaderView,
+    pub tracked_activity: TrackedActivityView,
+    pub recent_trades: Vec<TradeTapeView>,
     pub leaders: Vec<LeaderView>,
     pub books: Vec<BookViewUi>,
     pub signals: Vec<SignalView>,

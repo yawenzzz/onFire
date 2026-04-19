@@ -19,6 +19,7 @@ struct Options {
     selected_leader_env: Option<String>,
     equity_usdc: i64,
     ewma_beta_bps: u32,
+    focus_asset: Option<String>,
 }
 
 impl Default for Options {
@@ -29,6 +30,7 @@ impl Default for Options {
             selected_leader_env: None,
             equity_usdc: 1_000_000_000,
             ewma_beta_bps: 2_500,
+            focus_asset: None,
         }
     }
 }
@@ -85,6 +87,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--ewma-beta-bps" => {
                 options.ewma_beta_bps = parse_u32(&next_value(&mut iter, arg)?, "ewma-beta-bps")?
             }
+            "--focus-asset" => options.focus_asset = Some(next_value(&mut iter, arg)?),
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -190,6 +193,10 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
     });
 
     let blocker_summary = summarize_blockers(&positions, &metas, &output, &cfg, sizing_now_ms);
+    let asset_labels = asset_labels(&positions);
+    let focus_detail = options.focus_asset.as_deref().and_then(|asset| {
+        focus_detail(asset, &positions, &output, &asset_labels, &blocker_summary)
+    });
     let report_path = write_report(
         &root,
         &wallet,
@@ -198,6 +205,8 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
         &output,
         &selected_env,
         &blocker_summary,
+        &asset_labels,
+        focus_detail.as_ref(),
     )?;
 
     let mut lines = vec![
@@ -242,8 +251,29 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
         format!("diagnostic_blocker_summary={}", blocker_summary),
         format!("report_path={}", report_path.display()),
     ];
+    if let Some(detail) = &focus_detail {
+        lines.push(format!("focus.asset={}", detail.asset));
+        lines.push(format!("focus.slug={}", detail.slug));
+        lines.push(format!(
+            "focus.position_value_usdc={}",
+            detail.position_value_usdc
+        ));
+        lines.push(format!("focus.position_size={}", detail.position_size));
+        lines.push(format!("focus.avg_price_ppm={}", detail.avg_price_ppm));
+        lines.push(format!(
+            "focus.target_risk_usdc={}",
+            detail.target_risk_usdc
+        ));
+        lines.push(format!("focus.delta_risk_usdc={}", detail.delta_risk_usdc));
+        lines.push(format!("focus.confidence_bps={}", detail.confidence_bps));
+        lines.push(format!("focus.tte_bucket={}", detail.tte_bucket));
+        lines.push(format!("focus.reason={}", detail.reason));
+    }
     for (index, target) in output.targets.iter().enumerate().take(5) {
         lines.push(format!("target[{index}].asset={}", target.asset.0));
+        if let Some(label) = asset_labels.get(&target.asset) {
+            lines.push(format!("target[{index}].slug={label}"));
+        }
         lines.push(format!(
             "target[{index}].risk_usdc={}",
             target.signed_target_risk_usdc
@@ -256,6 +286,9 @@ fn run_demo(options: &Options) -> Result<Vec<String>, String> {
     }
     for (index, delta) in output.deltas.iter().enumerate().take(5) {
         lines.push(format!("delta[{index}].asset={}", delta.asset.0));
+        if let Some(label) = asset_labels.get(&delta.asset) {
+            lines.push(format!("delta[{index}].slug={label}"));
+        }
         lines.push(format!(
             "delta[{index}].target_risk_usdc={}",
             delta.target_risk_usdc
@@ -431,6 +464,81 @@ fn summarize_blockers(
     }
 }
 
+fn asset_labels(
+    positions: &[rust_copytrader::domain::position_targeting::LeaderPosition],
+) -> HashMap<AssetId, String> {
+    let mut out = HashMap::new();
+    for position in positions {
+        out.entry(position.asset.clone())
+            .or_insert_with(|| position.slug.clone());
+    }
+    out
+}
+
+#[derive(Debug, Clone)]
+struct FocusDetail {
+    asset: String,
+    slug: String,
+    position_value_usdc: i64,
+    position_size: i64,
+    avg_price_ppm: i32,
+    target_risk_usdc: i64,
+    delta_risk_usdc: i64,
+    confidence_bps: u16,
+    tte_bucket: String,
+    reason: String,
+}
+
+fn focus_detail(
+    focus_asset: &str,
+    positions: &[rust_copytrader::domain::position_targeting::LeaderPosition],
+    output: &rust_copytrader::domain::position_targeting::SizingOutput,
+    asset_labels: &HashMap<AssetId, String>,
+    blocker_summary: &str,
+) -> Option<FocusDetail> {
+    let position = positions
+        .iter()
+        .find(|position| position.asset.0 == focus_asset)?;
+    let target = output
+        .targets
+        .iter()
+        .find(|target| target.asset.0 == focus_asset);
+    let delta = output
+        .deltas
+        .iter()
+        .find(|delta| delta.asset.0 == focus_asset);
+    Some(FocusDetail {
+        asset: focus_asset.to_string(),
+        slug: asset_labels
+            .get(&position.asset)
+            .cloned()
+            .unwrap_or_else(|| position.slug.clone()),
+        position_value_usdc: position.current_value,
+        position_size: position.size,
+        avg_price_ppm: position.avg_price_ppm,
+        target_risk_usdc: target
+            .map(|value| value.signed_target_risk_usdc)
+            .unwrap_or(0),
+        delta_risk_usdc: delta.map(|value| value.delta_risk_usdc).unwrap_or(0),
+        confidence_bps: target.map(|value| value.confidence_bps).unwrap_or(0),
+        tte_bucket: delta
+            .map(|value| format!("{:?}", value.tte_bucket))
+            .unwrap_or_else(|| "none".to_string()),
+        reason: if delta.is_some() {
+            "plannable".to_string()
+        } else {
+            blocker_summary
+                .split(',')
+                .next()
+                .unwrap_or("none")
+                .split(':')
+                .next()
+                .unwrap_or("none")
+                .to_string()
+        },
+    })
+}
+
 fn read_env_value(path: &Path, keys: &[&str]) -> Result<String, String> {
     read_optional_env_value(path, keys)
         .ok_or_else(|| format!("missing one of {} in {}", keys.join(","), path.display()))
@@ -466,6 +574,7 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_report(
     root: &Path,
     wallet: &str,
@@ -474,6 +583,8 @@ fn write_report(
     output: &rust_copytrader::domain::position_targeting::SizingOutput,
     selected_env: &Path,
     blocker_summary: &str,
+    asset_labels: &HashMap<AssetId, String>,
+    focus_detail: Option<&FocusDetail>,
 ) -> Result<PathBuf, String> {
     let report_dir = root.join(".omx/position-targeting");
     fs::create_dir_all(&report_dir)
@@ -522,9 +633,32 @@ fn write_report(
         format!("diagnostic_blocker_summary={}", blocker_summary),
     ];
     for target in output.targets.iter().take(10) {
+        let label = asset_labels
+            .get(&target.asset)
+            .map(String::as_str)
+            .unwrap_or("");
         lines.push(format!(
-            "target asset={} risk_usdc={} confidence_bps={} stale={}",
-            target.asset.0, target.signed_target_risk_usdc, target.confidence_bps, target.stale
+            "target asset={} slug={} risk_usdc={} confidence_bps={} stale={}",
+            target.asset.0,
+            label,
+            target.signed_target_risk_usdc,
+            target.confidence_bps,
+            target.stale
+        ));
+    }
+    if let Some(detail) = focus_detail {
+        lines.push(format!("focus asset={} slug={}", detail.asset, detail.slug));
+        lines.push(format!(
+            "focus position_value_usdc={} position_size={} avg_price_ppm={}",
+            detail.position_value_usdc, detail.position_size, detail.avg_price_ppm
+        ));
+        lines.push(format!(
+            "focus target_risk_usdc={} delta_risk_usdc={} confidence_bps={} tte_bucket={} reason={}",
+            detail.target_risk_usdc,
+            detail.delta_risk_usdc,
+            detail.confidence_bps,
+            detail.tte_bucket,
+            detail.reason
         ));
     }
     fs::write(&report_path, lines.join("\n"))
@@ -600,6 +734,7 @@ mod tests {
             selected_leader_env: None,
             equity_usdc: 1_000_000_000,
             ewma_beta_bps: 2_500,
+            focus_asset: None,
         })
         .expect("demo should succeed");
 
@@ -609,6 +744,7 @@ mod tests {
         assert!(joined.contains("target_count=1"));
         assert!(joined.contains("delta_count=1"));
         assert!(joined.contains("diagnostic_blocker_summary=none_detected"));
+        assert!(joined.contains("target[0].slug=market-1"));
         assert!(joined.contains("report_path="));
 
         let report_path = joined
@@ -619,6 +755,21 @@ mod tests {
         assert!(report.contains("leader_ewma_value_usdc=55000000"));
         assert!(report.contains("selected_leader_review_status=stable"));
         assert!(report.contains("diagnostic_blocker_summary=none_detected"));
+        assert!(report.contains("slug=market-1"));
+
+        let lines = run_demo(&Options {
+            root: root.display().to_string(),
+            discovery_dir: None,
+            selected_leader_env: None,
+            equity_usdc: 1_000_000_000,
+            ewma_beta_bps: 2_500,
+            focus_asset: Some("asset-1".to_string()),
+        })
+        .expect("focus demo should succeed");
+        let joined = lines.join("\n");
+        assert!(joined.contains("focus.asset=asset-1"));
+        assert!(joined.contains("focus.slug=market-1"));
+        assert!(joined.contains("focus.position_value_usdc=55000000"));
 
         fs::remove_dir_all(root).expect("temp root removed");
     }

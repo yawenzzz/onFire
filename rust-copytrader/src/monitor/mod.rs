@@ -15,6 +15,7 @@ use self::snapshot::{Mode, UiSnapshot};
 use self::state::MonState;
 use std::io;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, RwLock};
@@ -25,6 +26,8 @@ use std::time::Duration;
 pub struct MonitorThresholds {
     pub main_loop_lag_warn_ms: u64,
     pub main_loop_lag_crit_ms: u64,
+    pub activity_event_age_warn_ms: u64,
+    pub activity_event_age_crit_ms: u64,
     pub market_ws_age_warn_ms: u64,
     pub market_ws_age_crit_ms: u64,
     pub user_ws_age_warn_ms: u64,
@@ -49,6 +52,8 @@ impl Default for MonitorThresholds {
         Self {
             main_loop_lag_warn_ms: 100,
             main_loop_lag_crit_ms: 300,
+            activity_event_age_warn_ms: 3_000,
+            activity_event_age_crit_ms: 10_000,
             market_ws_age_warn_ms: 3_000,
             market_ws_age_crit_ms: 10_000,
             user_ws_age_warn_ms: 5_000,
@@ -115,11 +120,15 @@ pub struct MonitorHandle {
 
 impl MonitorHandle {
     pub fn emit(&self, ev: MonEvent) {
+        self.queue_depth.fetch_add(1, Ordering::Relaxed);
         match self.tx.try_send(ev) {
-            Ok(()) => {
-                self.queue_depth.fetch_add(1, Ordering::Relaxed);
-            }
+            Ok(()) => {}
             Err(_) => {
+                self.queue_depth
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                        Some(value.saturating_sub(1))
+                    })
+                    .ok();
                 self.dropped.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -181,6 +190,7 @@ pub fn spawn_monitor(cfg: MonitorCfg, mode: Mode) -> io::Result<MonitorRuntime> 
     let snapshot_for_thread = Arc::clone(&snapshot);
     let join = thread::spawn(move || {
         let mut state = MonState::new(cfg_for_thread.clone(), mode);
+        state.set_build_label(sample_build_label().unwrap_or_else(|| "dev-unknown".to_string()));
         let mut journal = MonitorJournal::new(
             cfg_for_thread.journal_dir.clone(),
             cfg_for_thread.journal_rotate_mb.saturating_mul(1024 * 1024),
@@ -188,6 +198,7 @@ pub fn spawn_monitor(cfg: MonitorCfg, mode: Mode) -> io::Result<MonitorRuntime> 
         )
         .ok();
         let mut last_ui_ms = now_ms_u64();
+        let mut last_proc_sample_ms = 0u64;
 
         while !stop_for_thread.load(Ordering::Relaxed) {
             match rx.recv_timeout(Duration::from_millis(50)) {
@@ -205,8 +216,10 @@ pub fn spawn_monitor(cfg: MonitorCfg, mode: Mode) -> io::Result<MonitorRuntime> 
                             Some(value.saturating_sub(1))
                         })
                         .ok();
-                    if let Some(journal) = journal.as_mut() {
-                        let _ = journal.append(&journal_line(now_ms_u64(), &event));
+                    if let Some(journal) = journal.as_mut()
+                        && let Some(line) = journal_line(now_ms_u64(), &event)
+                    {
+                        let _ = journal.append(&line);
                     }
                     state.apply(event);
                 }
@@ -219,6 +232,14 @@ pub fn spawn_monitor(cfg: MonitorCfg, mode: Mode) -> io::Result<MonitorRuntime> 
                 let lag_ms =
                     now_ms.saturating_sub(last_ui_ms.saturating_add(cfg_for_thread.ui_refresh_ms));
                 state.record_loop_lag(now_ms, lag_ms);
+                if now_ms.saturating_sub(last_proc_sample_ms) >= 5_000 {
+                    if let Some((cpu_tenths_pct, rss_mb, open_fds, threads)) =
+                        sample_process_stats()
+                    {
+                        state.set_proc_stats(cpu_tenths_pct, rss_mb, open_fds, threads);
+                    }
+                    last_proc_sample_ms = now_ms;
+                }
                 let snapshot_value = state.build_snapshot(
                     now_ms,
                     dropped.load(Ordering::Relaxed),
@@ -264,17 +285,34 @@ fn persist_snapshot_artifacts(cfg: &MonitorCfg, snapshot: &UiSnapshot) -> io::Re
     Ok(())
 }
 
-fn journal_line(now_ms: u64, event: &MonEvent) -> String {
+fn journal_line(now_ms: u64, event: &MonEvent) -> Option<String> {
     match event {
+        MonEvent::LeaderSelected {
+            wallet,
+            category,
+            score,
+            review_status,
+            ..
+        } => Some(format!(
+            "{{\"ts\":{},\"k\":\"leader_selected\",\"wallet\":\"{}\",\"category\":\"{}\",\"score\":\"{}\",\"review\":\"{}\"}}",
+            now_ms,
+            escape_json(wallet),
+            escape_json(category),
+            escape_json(score),
+            escape_json(review_status),
+        )),
         MonEvent::ActivityHit {
             leader,
             asset,
             tx_hash,
             side,
             slug,
+            usdc_size,
+            leader_price_ppm,
+            event_ts_ms,
             ..
-        } => format!(
-            "{{\"ts\":{},\"k\":\"activity_hit\",\"leader\":\"{}\",\"asset\":\"{}\",\"side\":\"{}\",\"slug\":{},\"tx\":\"{}\"}}",
+        } => Some(format!(
+            "{{\"ts\":{},\"k\":\"activity_hit\",\"leader\":\"{}\",\"asset\":\"{}\",\"side\":\"{}\",\"slug\":{},\"tx\":\"{}\",\"usdc_size\":{},\"leader_price_ppm\":{},\"event_ts_ms\":{}}}",
             now_ms,
             escape_json(leader),
             escape_json(asset),
@@ -283,7 +321,43 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
                 .map(|value| format!("\"{}\"", escape_json(value)))
                 .unwrap_or_else(|| "null".to_string()),
             escape_json(tx_hash),
-        ),
+            usdc_size,
+            leader_price_ppm,
+            event_ts_ms,
+        )),
+        MonEvent::TrackedActivityProjection {
+            asset,
+            current_position_value_usdc,
+            current_position_size,
+            current_avg_price_ppm,
+            algo_target_risk_usdc,
+            algo_delta_risk_usdc,
+            algo_confidence_bps,
+            algo_tte_bucket,
+            algo_reason,
+            tracking_err_bps,
+            follow_ratio_bps,
+            copied_usdc,
+            overcopy_usdc,
+            undercopy_usdc,
+        } => Some(format!(
+            "{{\"ts\":{},\"k\":\"tracked_activity_projection\",\"asset\":\"{}\",\"current_position_value_usdc\":{},\"current_position_size\":{},\"current_avg_price_ppm\":{},\"algo_target_risk_usdc\":{},\"algo_delta_risk_usdc\":{},\"algo_confidence_bps\":{},\"algo_tte_bucket\":\"{}\",\"algo_reason\":\"{}\",\"tracking_err_bps\":{},\"follow_ratio_bps\":{},\"copied_usdc\":{},\"overcopy_usdc\":{},\"undercopy_usdc\":{}}}",
+            now_ms,
+            escape_json(asset),
+            current_position_value_usdc,
+            current_position_size,
+            current_avg_price_ppm,
+            algo_target_risk_usdc,
+            algo_delta_risk_usdc,
+            algo_confidence_bps,
+            escape_json(algo_tte_bucket),
+            escape_json(algo_reason),
+            tracking_err_bps,
+            follow_ratio_bps,
+            copied_usdc,
+            overcopy_usdc,
+            undercopy_usdc,
+        )),
         MonEvent::ReconcileDone {
             leader,
             ok,
@@ -291,7 +365,7 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             positions,
             value_usdc,
             ..
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"reconcile_done\",\"leader\":\"{}\",\"ok\":{},\"latency_ms\":{},\"positions\":{},\"value_usdc\":{}}}",
             now_ms,
             escape_json(leader),
@@ -299,42 +373,147 @@ fn journal_line(now_ms: u64, event: &MonEvent) -> String {
             latency_ms,
             positions,
             value_usdc,
-        ),
+        )),
+        MonEvent::PositionDiagnostics {
+            target_count,
+            delta_count,
+            stale_asset_count,
+            blocked_asset_count,
+            blocker_summary,
+        } => Some(format!(
+            "{{\"ts\":{},\"k\":\"position_diagnostics\",\"target_count\":{},\"delta_count\":{},\"stale_asset_count\":{},\"blocked_asset_count\":{},\"blocker_summary\":\"{}\"}}",
+            now_ms,
+            target_count,
+            delta_count,
+            stale_asset_count,
+            blocked_asset_count,
+            escape_json(blocker_summary),
+        )),
+        MonEvent::SignalPlanned {
+            asset,
+            fresh_ms,
+            agree_bps,
+            raw_target_usdc,
+            final_target_usdc,
+            ..
+        } => Some(format!(
+            "{{\"ts\":{},\"k\":\"signal_planned\",\"asset\":\"{}\",\"fresh_ms\":{},\"agree_bps\":{},\"raw_target_usdc\":{},\"final_target_usdc\":{}}}",
+            now_ms,
+            escape_json(asset),
+            fresh_ms,
+            agree_bps,
+            raw_target_usdc,
+            final_target_usdc,
+        )),
+        MonEvent::SignalSkipped {
+            asset,
+            reason,
+            fresh_ms,
+        } => Some(format!(
+            "{{\"ts\":{},\"k\":\"signal_skipped\",\"asset\":\"{}\",\"reason\":\"{}\",\"fresh_ms\":{}}}",
+            now_ms,
+            escape_json(asset),
+            reason.as_str(),
+            fresh_ms,
+        )),
+        MonEvent::BookResync { asset, age_ms } => Some(format!(
+            "{{\"ts\":{},\"k\":\"book_resync\",\"asset\":\"{}\",\"age_ms\":{}}}",
+            now_ms,
+            escape_json(asset),
+            age_ms,
+        )),
+        MonEvent::RiskSnapshot {
+            equity_usdc,
+            cash_usdc,
+            deployed_usdc,
+            gross_usdc,
+            net_usdc,
+            market_top1_usdc,
+            event_top1_usdc,
+            event_top3_usdc,
+            tail_24h_usdc,
+            tail_72h_usdc,
+            neg_risk_usdc,
+            tracking_err_bps,
+            hhi_bps,
+            follow_ratio_bps,
+        } => Some(format!(
+            "{{\"ts\":{},\"k\":\"risk_snapshot\",\"equity_usdc\":{},\"cash_usdc\":{},\"deployed_usdc\":{},\"gross_usdc\":{},\"net_usdc\":{},\"market_top1_usdc\":{},\"event_top1_usdc\":{},\"event_top3_usdc\":{},\"tail_24h_usdc\":{},\"tail_72h_usdc\":{},\"neg_risk_usdc\":{},\"tracking_err_bps\":{},\"hhi_bps\":{},\"follow_ratio_bps\":{}}}",
+            now_ms,
+            equity_usdc,
+            cash_usdc,
+            deployed_usdc,
+            gross_usdc,
+            net_usdc,
+            market_top1_usdc,
+            event_top1_usdc,
+            event_top3_usdc,
+            tail_24h_usdc,
+            tail_72h_usdc,
+            neg_risk_usdc,
+            tracking_err_bps,
+            hhi_bps,
+            follow_ratio_bps,
+        )),
+        MonEvent::OrderPosted {
+            order_id,
+            latency_ms,
+        } => Some(format!(
+            "{{\"ts\":{},\"k\":\"order_posted\",\"order_id\":{},\"latency_ms\":{}}}",
+            now_ms, order_id, latency_ms
+        )),
         MonEvent::OrderMatched {
             order_id,
             copy_gap_bps,
             slip_bps,
             fee_usdc,
             ..
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"order_matched\",\"order_id\":{},\"copy_gap_bps\":{},\"slip_bps\":{},\"fee_usdc\":{}}}",
             now_ms, order_id, copy_gap_bps, slip_bps, fee_usdc
-        ),
-        MonEvent::AlertNote { level, msg } => format!(
+        )),
+        MonEvent::OrderConfirmed {
+            order_id,
+            latency_ms,
+        } => Some(format!(
+            "{{\"ts\":{},\"k\":\"order_confirmed\",\"order_id\":{},\"latency_ms\":{}}}",
+            now_ms, order_id, latency_ms
+        )),
+        MonEvent::OrderRejected { order_id, reason } => Some(format!(
+            "{{\"ts\":{},\"k\":\"order_rejected\",\"order_id\":{},\"reason\":\"{}\"}}",
+            now_ms,
+            order_id,
+            escape_json(reason.as_str())
+        )),
+        MonEvent::AlertNote { level, msg } => Some(format!(
             "{{\"ts\":{},\"k\":\"alert\",\"level\":\"{}\",\"msg\":\"{}\"}}",
             now_ms,
             level,
             escape_json(msg)
-        ),
+        )),
         MonEvent::HttpDone {
             svc,
             route,
             status,
             latency_ms,
             ..
-        } => format!(
+        } => Some(format!(
             "{{\"ts\":{},\"k\":\"http_done\",\"svc\":\"{}\",\"route\":\"{}\",\"status\":{},\"latency_ms\":{}}}",
             now_ms,
             svc.as_str(),
             escape_json(route),
             status,
             latency_ms,
-        ),
-        other => format!(
-            "{{\"ts\":{},\"k\":\"event\",\"debug\":\"{}\"}}",
-            now_ms,
-            escape_json(&format!("{other:?}"))
-        ),
+        )),
+        MonEvent::Tick { .. }
+        | MonEvent::Shutdown
+        | MonEvent::WsConnected { .. }
+        | MonEvent::WsDisconnected { .. }
+        | MonEvent::WsPong { .. }
+        | MonEvent::WsMsg { .. }
+        | MonEvent::BookUpdate { .. }
+        | MonEvent::OrderIntent { .. }
+        | MonEvent::ReconcileStart { .. } => None,
     }
 }
 
@@ -343,4 +522,55 @@ pub fn now_ms_u64() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn sample_process_stats() -> Option<(u16, u64, u64, u64)> {
+    let pid = std::process::id().to_string();
+    let cpu_tenths_pct = Command::new("ps")
+        .args(["-o", "%cpu=", "-p", &pid])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|text| text.split_whitespace().next().map(str::to_string))
+        .and_then(|value| value.replace('.', "").parse::<u16>().ok())
+        .unwrap_or(0);
+    let rss_kb = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|text| text.split_whitespace().next()?.parse::<u64>().ok())
+        .unwrap_or(0);
+    let threads = Command::new("ps")
+        .args(["-M", "-p", &pid])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|text| text.lines().skip(1).count().max(1) as u64)
+        .unwrap_or(0);
+    let open_fds = std::fs::read_dir("/proc/self/fd")
+        .or_else(|_| std::fs::read_dir("/dev/fd"))
+        .ok()
+        .map(|entries| entries.filter_map(Result::ok).count() as u64)
+        .unwrap_or(0);
+    Some((cpu_tenths_pct, rss_kb / 1024, open_fds, threads))
+}
+
+fn sample_build_label() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let short = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if short.is_empty() {
+        None
+    } else {
+        Some(format!("dev-{short}"))
+    }
 }

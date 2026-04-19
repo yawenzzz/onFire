@@ -54,6 +54,19 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 3. 周期性运行 `run_position_targeting_demo`
 4. 把结果汇总成 ANSI / JSONL / `healthz` / `readyz` / `metrics`
 
+这里再强调一个语义：
+
+- `health`
+  - 表示当前信号/执行/数据质量是不是在恶化
+- `ready`
+  - 表示 monitor 所需前置条件是不是已经具备
+
+所以：
+
+> **`HEALTH=CRIT` 不一定等于 `ready=false`。**
+
+如果只是信号质量烂了、activity 太旧、或者 book 太差，monitor 仍然可能是 ready 的，只是会明确告诉你“不健康”。
+
 ---
 
 ## 3. 哪些数据是真实的，哪些是推导的
@@ -92,6 +105,9 @@ cargo run --bin run_copytrader_monitor_v1 -- \
   - monitor 自己这条循环的延迟
 - `mon_drop`
   - monitor channel 丢事件数量
+- `rss / fds / threads`
+  - 当前 monitor 进程的轻量进程视图
+  - 这版是 best-effort 采样，不保证像专业 profiler 一样精准
 
 ---
 
@@ -102,6 +118,9 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 
 - `data_api p95`
   - activity / positions / value 相关请求耗时
+- `gamma_api p95`
+  - 当前 monitor 侧看到的 gamma 相关依赖视图
+  - 这版通常还是 0，因为 monitor 还没把 gamma 拉取链完全接成独立实时 lane
 - `429_1m`
   - 最近一分钟是否被限流
 - `market_ws / user_ws`
@@ -132,7 +151,49 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 
 ---
 
-### 4.4 leaders
+### 4.4 tracked activity
+这块回答的是：
+
+> **这个 smart-money 钱包最近一笔公开 activity 到底是什么**
+
+字段：
+
+- `tx`
+  - 最近一笔 activity 的交易哈希
+- `side`
+  - `BUY / SELL`
+- `slug`
+  - 对应市场 slug
+- `time`
+  - 这笔 activity 的本地时间，按 **GMT+8** 显示
+- `asset`
+  - 对应 asset id
+- `usdc`
+  - 这笔 activity 的 USDC 规模
+- `price`
+  - 这笔 activity 的成交价
+- `leader_pos / size / avg`
+  - 当前 positions 快照里能对回来的 leader 仓位镜像
+- `algo_target / algo_delta / conf / tte / reason`
+  - 当前算法对这笔 activity 对应资产给出的目标仓位、建议增量、置信度和原因
+- `event_age`
+  - 这笔 activity 离现在多久
+
+这块是最直接的“实时追踪”面。
+
+另外现在还有一个 `recent trades` 区块，会把最近几笔交易按人能读的方式列出来：
+
+- GMT+8 时间
+- side
+- slug
+- usdc
+- px
+- tx
+- 尽量补上的 `leader_pos / algo_target / algo_delta / reason`
+
+---
+
+### 4.5 leaders
 这块回答的是：
 
 > **这个 leader 最近活动新不新、对账慢不慢、持仓大不大**
@@ -154,7 +215,7 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 
 ---
 
-### 4.5 books
+### 4.6 books
 这块看当前 monitor 用来估算可执行性的 book 视图。
 
 当前这版很多是 synthetic book，所以重点是：
@@ -169,7 +230,7 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 
 ---
 
-### 4.6 signals
+### 4.7 signals
 这块看目标仓位的方向和新鲜度。
 
 - `raw`
@@ -183,9 +244,24 @@ cargo run --bin run_copytrader_monitor_v1 -- \
 - `SKIP ...`
   - 说明该资产被规则跳过了
 
+如果当前：
+
+- `target_count > 0`
+- 但 `delta_count = 0`
+
+monitor 现在会尽量把主 blocker 直接映射成一条 `SKIP` 信号，比如：
+
+- `SKIP tail_window`
+- `SKIP no_liquidity`
+- `SKIP risk_cap`
+
+所以你不需要只盯 `position targeting` 区块，`signals` 区块本身现在也会直接告诉你“这一轮为什么没法跟”。
+
+另外，`signals` 这一行现在会优先显示 **market slug**，不再优先显示那种看不懂的 asset id。
+
 ---
 
-### 4.7 position targeting
+### 4.8 position targeting
 这是这次新增的重要区块。
 
 字段：
@@ -216,7 +292,7 @@ blocker_summary=zero_target:188,tail_lt24h:91,neg_risk:79,low_copyable_liquidity
 
 ---
 
-### 4.8 execution
+### 4.9 execution
 这块不是实时 user ws 成交真相，而是当前 operator / guarded artifact 的执行摘要。
 
 重点看：
@@ -228,7 +304,7 @@ blocker_summary=zero_target:188,tail_lt24h:91,neg_risk:79,low_copyable_liquidity
 
 ---
 
-### 4.9 risk
+### 4.10 risk
 这块是当前 leader 持仓画像。
 
 字段：
@@ -245,17 +321,33 @@ blocker_summary=zero_target:188,tail_lt24h:91,neg_risk:79,low_copyable_liquidity
 
 那说明当前这条 leader 的结构并不适合直接复制。
 
----
+--- 
 
-### 4.10 alerts
+### 4.11 alerts
 这里就是系统当前判出来的 WARN / CRIT。
 
 例如：
 
 - `neg_risk_exposure_present`
 - `copy_gap_wide`
+- `activity_event_age_high`
+- `positions_slow`
+- `book_stale`
 - `main_loop_lag`
 - `market_ws_stale`
+
+如果你看到：
+
+- `HEALTH=CRIT`
+- 但交易链本身没有炸
+
+那通常说明是 monitor 认为：
+
+- activity 太旧
+- reconcile 太慢
+- 或 book 质量太差
+
+不是说程序已经 crash。
 
 ---
 
@@ -294,6 +386,18 @@ blocker_summary=zero_target:188,tail_lt24h:91,neg_risk:79,low_copyable_liquidity
 不要再理解成“没仓位”，而要理解成：
 
 > **有仓位，但当前规则认为不该跟。**
+
+如果你看到：
+
+- `leader_pos=0`
+- `algo_target=0`
+- `algo_delta=0`
+- `reason=asset_missing_in_positions_snapshot`
+
+意思不是“没算”，而是：
+
+> 最新这笔 activity 对应的 asset，当前不在缓存 positions 快照里。  
+> 所以 monitor 会明确给你一个保守结果：当前仓位/目标/增量都按 0 展示，并且把原因写出来。
 
 ---
 

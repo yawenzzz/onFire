@@ -1,13 +1,15 @@
 use rust_copytrader::adapters::positions::parse_leader_positions_payload;
+use rust_copytrader::monitor::event::SkipReason;
 use rust_copytrader::monitor::event::{MonEvent, Svc};
 use rust_copytrader::monitor::screen;
 use rust_copytrader::monitor::snapshot::{Health, Mode};
 use rust_copytrader::monitor::state::{reject_reason_from_status, side_from_str};
 use rust_copytrader::monitor::{MonitorCfg, MonitorRuntime, now_ms_u64, spawn_monitor};
 use rust_copytrader::wallet_filter::{
-    parse_activity_records, parse_iso8601_timestamp, parse_position_records, parse_total_value,
+    parse_activity_records, parse_iso8601_timestamp, parse_market_record, parse_position_records,
+    parse_total_value,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::io;
@@ -264,7 +266,13 @@ fn run_monitor(options: &Options) -> Result<String, String> {
 
         let now_ms = now_ms_u64();
         if index == 0 || now_ms.saturating_sub(last_reconcile_ms) >= options.reconcile_interval_ms {
-            run_position_cycle(&runtime, &position_bin, &root, &wallet)?;
+            run_position_cycle(
+                &runtime,
+                &position_bin,
+                &root,
+                &wallet,
+                watch_output.get("latest_new_asset").map(String::as_str),
+            )?;
             emit_operator_exec_metrics(&runtime, &root, &mut last_operator_signature)?;
             last_reconcile_ms = now_ms;
         }
@@ -386,7 +394,7 @@ fn run_watch_cycle(
     });
     let stdout = String::from_utf8(output.stdout)
         .map_err(|error| format!("watch stdout was not utf-8: {error}"))?;
-    let values = parse_key_values(&stdout);
+    let mut values = parse_key_values(&stdout);
     let latest_path = values
         .get("watch_latest_path")
         .map(PathBuf::from)
@@ -421,6 +429,9 @@ fn run_watch_cycle(
                 slug: event.slug.clone(),
             });
         }
+        if let Some(event) = events.first() {
+            values.insert("latest_new_asset".to_string(), event.asset.clone());
+        }
     }
     Ok(values)
 }
@@ -446,17 +457,52 @@ fn run_position_cycle(
     position_bin: &Path,
     root: &Path,
     wallet: &str,
+    focus_asset: Option<&str>,
 ) -> Result<(), String> {
     runtime.handle.emit(MonEvent::ReconcileStart {
         leader: wallet.to_string(),
     });
-    let args = vec!["--root".to_string(), root.display().to_string()];
+    let mut args = vec!["--root".to_string(), root.display().to_string()];
+    if let Some(focus_asset) = focus_asset {
+        args.push("--focus-asset".to_string());
+        args.push(focus_asset.to_string());
+    }
     let started = std::time::Instant::now();
-    let output = run_command(position_bin, &args, Some(Path::new(".")))?;
+    let output = match run_command(position_bin, &args, Some(Path::new("."))) {
+        Ok(output) => output,
+        Err(error)
+            if focus_asset.is_some()
+                && (error.contains("unknown argument: --focus-asset")
+                    || error.contains("No such file or directory")) =>
+        {
+            run_position_via_cargo(&args)?
+        }
+        Err(error) => return Err(error),
+    };
     let elapsed_ms = started.elapsed().as_millis().min(u32::MAX as u128) as u32;
     let stdout = String::from_utf8(output.stdout)
         .map_err(|error| format!("position targeting stdout was not utf-8: {error}"))?;
     let values = parse_key_values(&stdout);
+    let target_count = values
+        .get("target_count")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let delta_count = values
+        .get("delta_count")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let stale_asset_count = values
+        .get("diagnostic_stale_asset_count")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let blocked_asset_count = values
+        .get("diagnostic_blocked_asset_count")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let blocker_summary = values
+        .get("diagnostic_blocker_summary")
+        .cloned()
+        .unwrap_or_else(|| "none".to_string());
 
     let positions_count = values
         .get("leader_position_count")
@@ -477,41 +523,153 @@ fn run_position_cycle(
     });
 
     runtime.handle.emit(MonEvent::PositionDiagnostics {
-        target_count: values
-            .get("target_count")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0),
-        delta_count: values
-            .get("delta_count")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0),
-        stale_asset_count: values
-            .get("diagnostic_stale_asset_count")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0),
-        blocked_asset_count: values
-            .get("diagnostic_blocked_asset_count")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0),
-        blocker_summary: values
-            .get("diagnostic_blocker_summary")
-            .cloned()
-            .unwrap_or_else(|| "none".to_string()),
+        target_count,
+        delta_count,
+        stale_asset_count,
+        blocked_asset_count,
+        blocker_summary: blocker_summary.clone(),
     });
 
-    if let Some(asset) = values.get("target[0].asset") {
+    if let Some(asset) = values.get("focus.asset") {
+        runtime.handle.emit(MonEvent::TrackedActivityProjection {
+            asset: asset.clone(),
+            current_position_value_usdc: values
+                .get("focus.position_value_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0),
+            current_position_size: values
+                .get("focus.position_size")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0),
+            current_avg_price_ppm: values
+                .get("focus.avg_price_ppm")
+                .and_then(|value| value.parse::<i32>().ok())
+                .unwrap_or(0),
+            algo_target_risk_usdc: values
+                .get("focus.target_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0),
+            algo_delta_risk_usdc: values
+                .get("focus.delta_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0),
+            algo_confidence_bps: values
+                .get("focus.confidence_bps")
+                .and_then(|value| value.parse::<u16>().ok())
+                .unwrap_or(0),
+            algo_tte_bucket: values
+                .get("focus.tte_bucket")
+                .cloned()
+                .unwrap_or_else(|| "none".to_string()),
+            algo_reason: values
+                .get("focus.reason")
+                .cloned()
+                .unwrap_or_else(|| "none".to_string()),
+            tracking_err_bps: values
+                .get("focus.target_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .zip(
+                    values
+                        .get("focus.position_value_usdc")
+                        .and_then(|value| value.parse::<i64>().ok()),
+                )
+                .map(|(target, current)| {
+                    ((target - current).abs() as f64 / value_usdc.max(1) as f64 * 10_000.0).round()
+                        as u16
+                })
+                .unwrap_or(0),
+            follow_ratio_bps: values
+                .get("focus.target_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .zip(
+                    values
+                        .get("focus.position_value_usdc")
+                        .and_then(|value| value.parse::<i64>().ok()),
+                )
+                .map(|(target, current)| {
+                    let target = target.abs();
+                    let current = current.abs();
+                    if target == 0 {
+                        0
+                    } else {
+                        ((target.min(current) as f64 / target as f64) * 10_000.0).round() as u16
+                    }
+                })
+                .unwrap_or(0),
+            copied_usdc: values
+                .get("focus.target_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .zip(
+                    values
+                        .get("focus.position_value_usdc")
+                        .and_then(|value| value.parse::<i64>().ok()),
+                )
+                .map(|(target, current)| target.abs().min(current.abs()))
+                .unwrap_or(0),
+            overcopy_usdc: values
+                .get("focus.target_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .zip(
+                    values
+                        .get("focus.position_value_usdc")
+                        .and_then(|value| value.parse::<i64>().ok()),
+                )
+                .map(|(target, current)| (current.abs() - target.abs()).max(0))
+                .unwrap_or(0),
+            undercopy_usdc: values
+                .get("focus.target_risk_usdc")
+                .and_then(|value| value.parse::<i64>().ok())
+                .zip(
+                    values
+                        .get("focus.position_value_usdc")
+                        .and_then(|value| value.parse::<i64>().ok()),
+                )
+                .map(|(target, current)| (target.abs() - current.abs()).max(0))
+                .unwrap_or(0),
+        });
+    } else if let Some(focus_asset) = focus_asset {
+        runtime.handle.emit(MonEvent::TrackedActivityProjection {
+            asset: focus_asset.to_string(),
+            current_position_value_usdc: 0,
+            current_position_size: 0,
+            current_avg_price_ppm: 0,
+            algo_target_risk_usdc: 0,
+            algo_delta_risk_usdc: 0,
+            algo_confidence_bps: 0,
+            algo_tte_bucket: "none".to_string(),
+            algo_reason: "asset_missing_in_positions_snapshot".to_string(),
+            tracking_err_bps: 0,
+            follow_ratio_bps: 0,
+            copied_usdc: 0,
+            overcopy_usdc: 0,
+            undercopy_usdc: 0,
+        });
+    }
+
+    if let Some(asset) = values
+        .get("target[0].slug")
+        .or_else(|| values.get("target[0].asset"))
+    {
         let total_target = values
             .get("diagnostic_total_target_risk_usdc")
             .and_then(|value| value.parse::<i64>().ok())
             .unwrap_or(0);
-        runtime.handle.emit(MonEvent::SignalPlanned {
-            asset: asset.clone(),
-            leaders: 1,
-            fresh_ms: 0,
-            agree_bps: 10_000,
-            raw_target_usdc: total_target,
-            final_target_usdc: total_target,
-        });
+        if delta_count == 0 && blocker_summary != "none" && blocker_summary != "none_detected" {
+            runtime.handle.emit(MonEvent::SignalSkipped {
+                asset: asset.clone(),
+                reason: parse_skip_reason(&blocker_summary),
+                fresh_ms: 0,
+            });
+        } else {
+            runtime.handle.emit(MonEvent::SignalPlanned {
+                asset: asset.clone(),
+                leaders: 1,
+                fresh_ms: 0,
+                agree_bps: 10_000,
+                raw_target_usdc: total_target,
+                final_target_usdc: total_target,
+            });
+        }
     }
 
     let discovery_dir = root.join(".omx/discovery");
@@ -563,11 +721,35 @@ fn emit_risk_snapshot(runtime: &MonitorRuntime, root: &Path, wallet: &str) -> Re
     let mut tail_24h = 0i64;
     let mut tail_72h = 0i64;
     let mut neg_risk = 0i64;
+    let markets_dir = discovery_dir.join("markets");
+    let mut market_top1 = 0i64;
+    let mut event_totals = HashMap::<String, i64>::new();
     for position in positions {
         let current_usdc = (position.current_value.max(0.0) * 1_000_000.0).round() as i64;
         gross = gross.saturating_add(current_usdc);
+        market_top1 = market_top1.max(current_usdc);
         if position.negative_risk {
             neg_risk = neg_risk.saturating_add(current_usdc);
+        }
+        if current_usdc > 0 {
+            let event_id = position
+                .slug
+                .as_deref()
+                .and_then(|slug| {
+                    let market_path =
+                        markets_dir.join(format!("{}.json", sanitize_for_filename(slug)));
+                    fs::read_to_string(&market_path)
+                        .ok()
+                        .and_then(|body| parse_market_record(&body, slug))
+                        .and_then(|market| market.event_id)
+                })
+                .unwrap_or_else(|| {
+                    position
+                        .slug
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string())
+                });
+            *event_totals.entry(event_id).or_default() += current_usdc;
         }
         if let Some(end_date) = position
             .end_date
@@ -584,17 +766,36 @@ fn emit_risk_snapshot(runtime: &MonitorRuntime, root: &Path, wallet: &str) -> Re
         }
     }
     let equity_usdc = (total_value * 1_000_000.0).round() as i64;
+    let mut event_values = event_totals.values().copied().collect::<Vec<_>>();
+    event_values.sort_unstable_by(|left, right| right.cmp(left));
+    let event_top1 = event_values.first().copied().unwrap_or(0);
+    let event_top3 = event_values.iter().take(3).sum::<i64>();
+    let hhi_bps = if gross > 0 {
+        event_values
+            .iter()
+            .fold(0.0, |acc, value| {
+                let weight = *value as f64 / gross as f64;
+                acc + weight * weight
+            })
+            .mul_add(10_000.0, 0.0)
+            .round() as u16
+    } else {
+        0
+    };
     runtime.handle.emit(MonEvent::RiskSnapshot {
         equity_usdc,
         cash_usdc: equity_usdc.saturating_sub(gross).max(0),
         deployed_usdc: gross,
         gross_usdc: gross,
         net_usdc: gross,
+        market_top1_usdc: market_top1,
+        event_top1_usdc: event_top1,
+        event_top3_usdc: event_top3,
         tail_24h_usdc: tail_24h,
         tail_72h_usdc: tail_72h,
         neg_risk_usdc: neg_risk,
         tracking_err_bps: 0,
-        hhi_bps: 0,
+        hhi_bps,
         follow_ratio_bps: 0,
     });
     Ok(())
@@ -660,12 +861,39 @@ fn emit_operator_exec_metrics(
     Ok(())
 }
 
+fn run_position_via_cargo(args: &[String]) -> Result<Output, String> {
+    let mut cargo_args = vec![
+        "run".to_string(),
+        "--quiet".to_string(),
+        "--bin".to_string(),
+        "run_position_targeting_demo".to_string(),
+        "--".to_string(),
+    ];
+    cargo_args.extend(args.iter().cloned());
+    run_command(Path::new("cargo"), &cargo_args, Some(Path::new(".")))
+}
+
 fn parse_key_values(content: &str) -> BTreeMap<String, String> {
     content
         .lines()
         .filter_map(|line| line.split_once('='))
         .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
         .collect()
+}
+
+fn parse_skip_reason(summary: &str) -> SkipReason {
+    let reason = summary.split(',').next().unwrap_or_default();
+    let key = reason.split(':').next().unwrap_or_default();
+    match key {
+        "stale_target" => SkipReason::StaleSignal,
+        "tail_lt24h" | "tail_lt72h" => SkipReason::TailWindow,
+        "neg_risk" => SkipReason::NegRiskBlocked,
+        "closed_or_book_off" => SkipReason::StaleBook,
+        "low_copyable_liquidity" => SkipReason::NoLiquidity,
+        "zero_target" | "projected_to_zero" => SkipReason::RiskCap,
+        "below_min_effective_order" => SkipReason::CashCap,
+        _ => SkipReason::NoLiquidity,
+    }
 }
 
 fn sanitize_for_filename(value: &str) -> String {
@@ -822,7 +1050,7 @@ mod tests {
         let position = root.join("run_position_targeting_demo");
         write_executable(
             &position,
-            "#!/bin/sh\nprintf 'leader_position_count=1\nleader_spot_value_usdc=5500000\ntarget_count=1\ndelta_count=0\ndiagnostic_total_target_risk_usdc=2000000\ndiagnostic_stale_asset_count=1\ndiagnostic_blocked_asset_count=1\ndiagnostic_blocker_summary=zero_target:1,tail_lt24h:1\ntarget[0].asset=asset-1\n'\n",
+            "#!/bin/sh\nprintf 'leader_position_count=1\nleader_spot_value_usdc=5500000\ntarget_count=1\ndelta_count=0\ndiagnostic_total_target_risk_usdc=2000000\ndiagnostic_stale_asset_count=1\ndiagnostic_blocked_asset_count=1\ndiagnostic_blocker_summary=zero_target:1,tail_lt24h:1\ntarget[0].asset=asset-1\ntarget[0].slug=market-a\nfocus.asset=asset-1\nfocus.slug=market-a\nfocus.position_value_usdc=5500000\nfocus.position_size=10000000\nfocus.avg_price_ppm=440000\nfocus.target_risk_usdc=0\nfocus.delta_risk_usdc=0\nfocus.confidence_bps=10000\nfocus.tte_bucket=none\nfocus.reason=risk_cap\n'\n",
         );
 
         let options = super::Options {
@@ -848,14 +1076,18 @@ mod tests {
         };
 
         let frame = run_monitor(&options).expect("monitor should succeed");
-        assert!(frame.contains("copytrader monitor v1"));
+        assert!(frame.contains("HEALTH="));
         assert!(frame.contains("0xleader"));
         assert!(frame.contains("market-a"));
-        assert!(frame.contains("selected leader"));
-        assert!(frame.contains("category=TECH"));
-        assert!(frame.contains("position targeting"));
-        assert!(frame.contains("blocker_summary="));
-        assert!(frame.contains("target_count=1 delta_count=0"));
+        assert!(frame.contains("0xtx"));
+        assert!(frame.contains("time="));
+        assert!(frame.contains("price=0.4400") || frame.contains("px=0.4400"));
+        assert!(frame.contains("leader_pos=5.50") || frame.contains("pos=5.50"));
+        assert!(frame.contains("reason=risk_cap") || frame.contains("risk_cap"));
+        assert!(frame.contains("SIGNALS"));
+        assert!(frame.contains("RISK"));
+        assert!(frame.contains("TRACKING"));
+        assert!(frame.contains("SKIP"));
         assert!(root.join(".omx/monitor/latest.txt").exists());
         assert!(root.join(".omx/monitor/metrics.txt").exists());
         assert!(root.join(".omx/monitor/health.json").exists());
