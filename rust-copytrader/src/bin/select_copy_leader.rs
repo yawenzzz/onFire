@@ -162,13 +162,30 @@ fn resolve_wallet(options: &Options) -> Result<String, String> {
     if let Some(summary_path) = &options.summary {
         let content = fs::read_to_string(summary_path)
             .map_err(|error| format!("failed to read {summary_path}: {error}"))?;
-        return content
+        let best_watchlist = content
             .lines()
             .find_map(|line| line.strip_prefix("best_watchlist_wallet="))
-            .map(|value| value.trim().to_string())
+            .map(str::trim)
+            .filter(|value| *value != "none")
+            .map(|value| value.to_string())
+            .filter(|value| looks_like_wallet(value))
+            .filter(|value| !value.is_empty());
+        if let Some(wallet) = best_watchlist {
+            return Ok(wallet);
+        }
+        return content
+            .lines()
+            .find_map(|line| line.strip_prefix("best_rejected_wallet="))
+            .map(str::trim)
+            .filter(|value| *value != "none")
+            .map(|value| value.to_string())
             .filter(|value| looks_like_wallet(value))
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("failed to extract best_watchlist_wallet from {summary_path}"));
+            .ok_or_else(|| {
+                format!(
+                    "failed to extract best_watchlist_wallet or best_rejected_wallet from {summary_path}"
+                )
+            });
     }
 
     let activity_path = options
@@ -400,6 +417,32 @@ mod tests {
         assert!(rendered.contains("COPYTRADER_SELECTED_CATEGORY=TECH"));
         assert!(rendered.contains("COPYTRADER_SELECTED_REVIEW_STATUS=stable"));
         assert!(rendered.contains("COPYTRADER_SELECTED_SCORE=84"));
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn resolve_wallet_falls_back_to_best_rejected_wallet_from_summary() {
+        let root = unique_temp_dir("summary-fallback");
+        fs::create_dir_all(&root).expect("temp dir created");
+        let summary = root.join("wallet-filter-v1-summary.txt");
+        fs::write(
+            &summary,
+            concat!(
+                "best_watchlist_wallet=none\n",
+                "best_rejected_wallet=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                "best_rejected_category=TECH\n",
+            ),
+        )
+        .expect("summary written");
+
+        let options =
+            parse_args(&["--summary".into(), summary.display().to_string()]).expect("parse");
+
+        assert_eq!(
+            resolve_wallet(&options).expect("wallet"),
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
