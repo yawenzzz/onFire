@@ -16,6 +16,7 @@ struct Options {
     proxy: Option<String>,
     watch_limit: usize,
     loop_count: usize,
+    forever: bool,
     loop_interval_ms: u64,
     min_open_usdc: f64,
     max_open_usdc: f64,
@@ -38,6 +39,7 @@ impl Default for Options {
             proxy: env::var("POLYMARKET_CURL_PROXY").ok(),
             watch_limit: 50,
             loop_count: 1,
+            forever: false,
             loop_interval_ms: 500,
             min_open_usdc: 1.0,
             max_open_usdc: 100.0,
@@ -96,7 +98,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_minmax_follow [--root <path>] [--user <wallet>] [--selected-leader-env <path>] [--proxy <url>] [--watch-limit <n>] [--loop-count <n>] [--loop-interval-ms <n>] [--min-open-usdc <decimal>] [--max-open-usdc <decimal>] [--flat-score <1..100>] [--allow-live-submit] [--activity-source-verified] [--activity-under-budget] [--activity-capability-detected] [--positions-under-budget] [--watch-bin <path>] [--live-submit-bin <path>]"
+        "usage: run_copytrader_minmax_follow [--root <path>] [--user <wallet>] [--selected-leader-env <path>] [--proxy <url>] [--watch-limit <n>] [--loop-count <n>] [--forever] [--loop-interval-ms <n>] [--min-open-usdc <decimal>] [--max-open-usdc <decimal>] [--flat-score <1..100>] [--allow-live-submit] [--activity-source-verified] [--activity-under-budget] [--activity-capability-detected] [--positions-under-budget] [--watch-bin <path>] [--live-submit-bin <path>]"
     );
 }
 
@@ -117,6 +119,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--loop-count" => {
                 options.loop_count = parse_usize(&next_value(&mut iter, arg)?, "loop-count")?
             }
+            "--forever" => options.forever = true,
             "--loop-interval-ms" => {
                 options.loop_interval_ms =
                     parse_u64(&next_value(&mut iter, arg)?, "loop-interval-ms")?
@@ -228,8 +231,9 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
     let mut seen = read_seen_txs(&seen_path)
         .map_err(|error| format!("failed to read {}: {error}", seen_path.display()))?;
 
-    let mut last_lines = Vec::new();
-    for index in 0..options.loop_count.max(1) {
+    let loop_total = options.loop_count.max(1);
+    let mut index = 0usize;
+    let last_lines = loop {
         run_watch_once(&watch_bin, options, &wallet)?;
         let activities = read_recent_trade_activity(&latest_activity_path)?;
         let latest = latest_trade(&activities)?;
@@ -264,7 +268,9 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
             lines.push("submit_status=skipped_duplicate_tx".to_string());
             lines.push(format!("report_path={}", report_path.display()));
             write_report(&report_path, &lines)?;
-            last_lines = lines;
+            if !options.forever && index + 1 >= loop_total {
+                break lines;
+            }
         } else {
             let submit_output = run_live_submit(
                 &live_submit_bin,
@@ -286,13 +292,16 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
             );
             lines.push(format!("report_path={}", report_path.display()));
             write_report(&report_path, &lines)?;
-            last_lines = lines;
+            if !options.forever && index + 1 >= loop_total {
+                break lines;
+            }
         }
 
-        if index + 1 < options.loop_count {
+        index = index.saturating_add(1);
+        if options.loop_interval_ms > 0 {
             thread::sleep(Duration::from_millis(options.loop_interval_ms));
         }
-    }
+    };
     Ok(last_lines)
 }
 
@@ -596,6 +605,7 @@ mod tests {
             "2".into(),
             "--max-open-usdc".into(),
             "50".into(),
+            "--forever".into(),
             "--flat-score".into(),
             "40".into(),
             "--allow-live-submit".into(),
@@ -606,6 +616,7 @@ mod tests {
         assert_eq!(options.user.as_deref(), Some("0xleader"));
         assert_eq!(options.watch_limit, 20);
         assert_eq!(options.loop_count, 2);
+        assert!(options.forever);
         assert_eq!(options.min_open_usdc, 2.0);
         assert_eq!(options.max_open_usdc, 50.0);
         assert_eq!(options.flat_score, 40);
@@ -680,6 +691,7 @@ mod tests {
             proxy: None,
             watch_limit: 10,
             loop_count: 1,
+            forever: false,
             loop_interval_ms: 0,
             min_open_usdc: 1.0,
             max_open_usdc: 100.0,

@@ -468,6 +468,10 @@ fn render_operator_demo_report(root: &Path) -> Result<String, RootEnvLoadError> 
             .to_string(),
     );
     lines.push(
+        "run_rust_minmax_follow_live_script_hint=bash scripts/run_rust_minmax_follow_live.sh --user <wallet>"
+            .to_string(),
+    );
+    lines.push(
         "leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a"
             .to_string(),
     );
@@ -1336,6 +1340,9 @@ mod tests {
         assert!(report.contains("run_copytrader_minmax_follow_hint=cd rust-copytrader && cargo run --bin run_copytrader_minmax_follow -- --root .. --user <wallet> --proxy http://127.0.0.1:7897"));
         assert!(
             report.contains("run_rust_minmax_follow_script_hint=bash scripts/run_rust_minmax_follow.sh --user <wallet>")
+        );
+        assert!(
+            report.contains("run_rust_minmax_follow_live_script_hint=bash scripts/run_rust_minmax_follow_live.sh --user <wallet>")
         );
         assert!(report.contains("leader_selection_source_hint=set -a && source .omx/discovery/selected-leader.env && set +a"));
         assert!(report.contains("note=public discovery commands are read-only"));

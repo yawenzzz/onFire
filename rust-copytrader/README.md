@@ -811,6 +811,32 @@ bash scripts/run_rust_minmax_follow.sh \
 
 - `.omx/minmax-follow/<wallet>/`
 
+如果你要**持续实时检测 + 自动下单**，直接跑：
+
+```bash
+bash scripts/run_rust_minmax_follow_live.sh \
+  --user 0xae7c98235d5dc797edfa3d3af2e0334238a4487e
+```
+
+这个 live 脚本默认会带：
+
+- `--forever`
+- `--allow-live-submit`
+- `--activity-source-verified`
+- `--activity-under-budget`
+- `--activity-capability-detected`
+- `--positions-under-budget`
+
+默认每 `500ms` 检一次，你也可以改：
+
+```bash
+MIN_OPEN_USDC=5 \
+MAX_OPEN_USDC=50 \
+LOOP_INTERVAL_MS=300 \
+WATCH_LIMIT=80 \
+bash scripts/run_rust_minmax_follow_live.sh --user <wallet>
+```
+
 这个 monitor 会把：
 
 - 当前 selected smart-money 钱包
