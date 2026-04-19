@@ -224,8 +224,13 @@ fn run_monitor(options: &Options) -> Result<String, String> {
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join(".omx/discovery/selected-leader.env"));
 
-    if options.auto_select || !selected_env.exists() {
+    if options.auto_select {
         select_leader(&select_bin, &summary_path, &selected_env)?;
+    } else if !selected_env.exists() {
+        return Err(format!(
+            "missing selected leader env {} while --no-auto-select is set",
+            selected_env.display()
+        ));
     }
 
     emit_selected_leader(&runtime, &selected_env)?;
@@ -1091,5 +1096,36 @@ mod tests {
         assert!(root.join(".omx/monitor/latest.txt").exists());
         assert!(root.join(".omx/monitor/metrics.txt").exists());
         assert!(root.join(".omx/monitor/health.json").exists());
+    }
+
+    #[test]
+    fn run_monitor_errors_when_no_auto_select_and_selected_env_missing() {
+        let root = unique_temp_dir("missing-env");
+        fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
+
+        let options = super::Options {
+            root: root.display().to_string(),
+            summary_path: None,
+            selected_leader_env: Some(
+                root.join(".omx/discovery/selected-leader.env")
+                    .display()
+                    .to_string(),
+            ),
+            proxy: None,
+            poll_interval_ms: 100,
+            reconcile_interval_ms: 100,
+            ui_refresh_ms: 100,
+            iterations: Some(1),
+            once: true,
+            auto_select: false,
+            http_enabled: false,
+            http_bind: "127.0.0.1:0".to_string(),
+            select_bin: None,
+            watch_bin: None,
+            position_targeting_bin: None,
+        };
+
+        let error = run_monitor(&options).expect_err("monitor should fail fast");
+        assert!(error.contains("missing selected leader env"));
     }
 }
