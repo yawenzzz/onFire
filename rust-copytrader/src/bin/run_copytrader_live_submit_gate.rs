@@ -24,6 +24,7 @@ struct Options {
     latest_activity: Option<String>,
     selected_leader_env: Option<String>,
     owner: Option<String>,
+    override_usdc_size: Option<String>,
     order_type: OrderType,
     expiration_secs: u64,
     fee_rate_bps: u64,
@@ -41,6 +42,7 @@ impl Default for Options {
             latest_activity: None,
             selected_leader_env: None,
             owner: None,
+            override_usdc_size: None,
             order_type: OrderType::Fak,
             expiration_secs: 300,
             fee_rate_bps: 30,
@@ -96,7 +98,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_live_submit_gate [--root <path>] [--latest-activity <path>] [--selected-leader-env <path>] [--owner <value>] [--order-type <GTC|GTD|FOK|FAK>] [--expiration-secs <n>] [--fee-rate-bps <n>] [--activity-source-verified] [--activity-under-budget] [--activity-capability-detected] [--positions-under-budget] [--allow-live-submit]"
+        "usage: run_copytrader_live_submit_gate [--root <path>] [--latest-activity <path>] [--selected-leader-env <path>] [--owner <value>] [--override-usdc-size <decimal>] [--order-type <GTC|GTD|FOK|FAK>] [--expiration-secs <n>] [--fee-rate-bps <n>] [--activity-source-verified] [--activity-under-budget] [--activity-capability-detected] [--positions-under-budget] [--allow-live-submit]"
     );
 }
 
@@ -111,6 +113,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 options.selected_leader_env = Some(next_value(&mut iter, arg)?)
             }
             "--owner" => options.owner = Some(next_value(&mut iter, arg)?),
+            "--override-usdc-size" => {
+                options.override_usdc_size = Some(next_value(&mut iter, arg)?)
+            }
             "--order-type" => options.order_type = parse_order_type(&next_value(&mut iter, arg)?)?,
             "--expiration-secs" => {
                 options.expiration_secs =
@@ -314,8 +319,25 @@ fn unsigned_order_from_activity(
     latest: &LatestActivity,
     options: &Options,
 ) -> Result<UnsignedOrderPayload, String> {
-    let size = decimal_to_fixed_6(&latest.size)?;
-    let usdc_size = decimal_to_fixed_6(&latest.usdc_size)?;
+    let original_size = parse_decimal_value(&latest.size)?;
+    let original_usdc_size = parse_decimal_value(&latest.usdc_size)?;
+    let override_usdc_size = options
+        .override_usdc_size
+        .as_deref()
+        .map(parse_decimal_value)
+        .transpose()?;
+    let (effective_usdc_size, effective_size) = if let Some(override_usdc_size) = override_usdc_size
+    {
+        if original_usdc_size <= 0.0 {
+            return Err("cannot override usdc size when latest activity usdcSize <= 0".to_string());
+        }
+        let ratio = override_usdc_size / original_usdc_size;
+        (override_usdc_size, original_size * ratio)
+    } else {
+        (original_usdc_size, original_size)
+    };
+    let size = fixed_6_from_f64(effective_size)?;
+    let usdc_size = fixed_6_from_f64(effective_usdc_size)?;
     let side = latest.side.to_uppercase();
     let (maker_amount, taker_amount) = match side.as_str() {
         "BUY" => (usdc_size.clone(), size.clone()),
@@ -333,6 +355,20 @@ fn unsigned_order_from_activity(
         nonce: latest.timestamp.to_string(),
         fee_rate_bps: options.fee_rate_bps.to_string(),
     })
+}
+
+fn parse_decimal_value(value: &str) -> Result<f64, String> {
+    value
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| format!("invalid decimal value: {value}"))
+}
+
+fn fixed_6_from_f64(value: f64) -> Result<String, String> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!("invalid non-negative decimal value: {value}"));
+    }
+    decimal_to_fixed_6(&format!("{value:.6}"))
 }
 
 fn decimal_to_fixed_6(value: &str) -> Result<String, String> {
@@ -771,6 +807,26 @@ mod tests {
         assert_eq!(order.token_id, "12345");
         assert_eq!(order.side, "SELL");
         assert_eq!(order.maker_amount, "10000000");
+        assert_eq!(order.taker_amount, "5000000");
+    }
+
+    #[test]
+    fn unsigned_order_from_activity_scales_amounts_from_override_usdc_size() {
+        let event = LatestActivity {
+            tx: "0xabc".into(),
+            timestamp: 1_776_303_488,
+            side: "BUY".into(),
+            slug: Some("market-a".into()),
+            asset: "asset-1".into(),
+            size: "10".into(),
+            usdc_size: "5".into(),
+        };
+        let mut options = Options::default();
+        options.override_usdc_size = Some("2.5".into());
+
+        let order = unsigned_order_from_activity(&event, &options).expect("order");
+
+        assert_eq!(order.maker_amount, "2500000");
         assert_eq!(order.taker_amount, "5000000");
     }
 }

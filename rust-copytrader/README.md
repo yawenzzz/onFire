@@ -754,6 +754,63 @@ MONITOR_COLUMNS=90 bash scripts/run_rust_monitor_v2.sh
 
 - `monitor_v1_explained.md`
 
+## 15.4e min-max activity 跟单策略（新）
+
+如果你想做一个**超简单、低延时、按 leader 最近 activity 金额归一化开仓**的策略，现在可以直接跑：
+
+```bash
+cd ~/onFire
+bash scripts/run_rust_minmax_follow.sh --user <wallet>
+```
+
+它会做：
+
+- 盯指定 wallet 的最新 `/activity`
+- 取最近一批 `TRADE.usdcSize`
+- 用 `min-max` 归一化成 `1..100`
+- 把这个分数直接映射成 `1..100 USDC` 的开仓金额
+- 再走现有 `run_copytrader_live_submit_gate`
+
+默认是 preview / gate 模式，不会直接 live submit。
+
+常用例子：
+
+```bash
+# 跑一次 preview
+bash scripts/run_rust_minmax_follow.sh \
+  --user 0xae7c98235d5dc797edfa3d3af2e0334238a4487e \
+  --loop-count 1
+
+# 改仓位范围，比如 5~50 USDC
+bash scripts/run_rust_minmax_follow.sh \
+  --user 0xae7c98235d5dc797edfa3d3af2e0334238a4487e \
+  --min-open-usdc 5 \
+  --max-open-usdc 50 \
+  --loop-count 1
+
+# 真正放开 live submit（前提是你的 live gate / 签名 / 下单配置都已经准备好）
+bash scripts/run_rust_minmax_follow.sh \
+  --user 0xae7c98235d5dc797edfa3d3af2e0334238a4487e \
+  --activity-source-verified \
+  --activity-under-budget \
+  --activity-capability-detected \
+  --positions-under-budget \
+  --allow-live-submit
+```
+
+输出里你会直接看到：
+
+- `latest_activity_usdc`
+- `recent_usdc_min`
+- `recent_usdc_max`
+- `normalized_score`
+- `normalized_open_usdc`
+- `live_submit_status`
+
+落盘位置：
+
+- `.omx/minmax-follow/<wallet>/`
+
 这个 monitor 会把：
 
 - 当前 selected smart-money 钱包
