@@ -837,6 +837,18 @@ WATCH_LIMIT=80 \
 bash scripts/run_rust_minmax_follow_live.sh --user <wallet>
 ```
 
+如果你要**安全 smoke / dry-run**，不要真的自动下单，可以这样：
+
+```bash
+FOLLOW_FOREVER=0 \
+AUTO_SUBMIT=0 \
+bash scripts/run_rust_minmax_follow_live.sh \
+  --user <wallet> \
+  --loop-count 1
+```
+
+这样仍然会走实时策略链路，但只会走到 preview，不会 live submit。
+
 这个 monitor 会把：
 
 - 当前 selected smart-money 钱包
