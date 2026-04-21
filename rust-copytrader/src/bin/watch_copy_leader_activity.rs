@@ -1,3 +1,4 @@
+use rust_copytrader::config::is_valid_evm_wallet;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -53,6 +54,12 @@ struct EventSummary {
     timestamp: String,
     side: Option<String>,
     slug: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestResult {
+    output: Output,
+    transport_mode: &'static str,
 }
 
 fn main() -> ExitCode {
@@ -159,6 +166,9 @@ fn watch_activity(options: &Options) -> Result<Vec<String>, String> {
         .ok_or_else(|| {
             "missing --user and no .omx/discovery/selected-leader.env found".to_string()
         })?;
+    if !is_valid_evm_wallet(&user) {
+        return Err(format!("invalid watch user wallet: {user}"));
+    }
     let state_root = root
         .join(".omx")
         .join("live-activity")
@@ -182,7 +192,7 @@ fn watch_activity(options: &Options) -> Result<Vec<String>, String> {
 
     for poll_index in 0..options.poll_count.max(1) {
         let url = build_activity_url(options, &user);
-        let output = run_request_with_retry(
+        let request = run_request_with_retry(
             &options.curl_bin,
             &build_curl_args(
                 &url,
@@ -193,9 +203,9 @@ fn watch_activity(options: &Options) -> Result<Vec<String>, String> {
             options.retry_count,
             options.retry_delay_ms,
         )?;
-        fs::write(&latest_path, &output.stdout)
+        fs::write(&latest_path, &request.output.stdout)
             .map_err(|error| format!("failed to write {}: {error}", latest_path.display()))?;
-        let body = String::from_utf8(output.stdout)
+        let body = String::from_utf8(request.output.stdout)
             .map_err(|error| format!("activity response was not utf-8: {error}"))?;
         let events = extract_event_summaries(&body);
         let mut new_events = Vec::new();
@@ -222,6 +232,7 @@ fn watch_activity(options: &Options) -> Result<Vec<String>, String> {
             .map_err(|error| format!("failed to write {}: {error}", seen_path.display()))?;
 
         output_lines.push(format!("poll_index={poll_index}"));
+        output_lines.push(format!("poll_transport_mode={}", request.transport_mode));
         output_lines.push(format!("poll_new_events={}", new_events.len()));
         if let Some(event) = new_events.first() {
             output_lines.push(format!("latest_new_tx={}", event.tx));
@@ -250,7 +261,7 @@ fn selected_leader_from_root(root: &Path) -> Option<String> {
         match key.trim() {
             "COPYTRADER_DISCOVERY_WALLET" | "COPYTRADER_LEADER_WALLET" => {
                 let value = value.trim();
-                (!value.is_empty()).then(|| value.to_string())
+                (!value.is_empty() && is_valid_evm_wallet(value)).then(|| value.to_string())
             }
             _ => None,
         }
@@ -332,8 +343,21 @@ fn build_curl_args(
 }
 
 fn run_request(curl_bin: &str, args: &[String]) -> Result<Output, String> {
-    let output = Command::new(curl_bin)
-        .args(args)
+    let mut command = Command::new(curl_bin);
+    command.args(args);
+    if args.iter().any(|arg| arg == "--proxy") {
+        for key in [
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+        ] {
+            command.env(key, "");
+        }
+    }
+    let output = command
         .output()
         .map_err(|error| format!("failed to execute {curl_bin}: {error}"))?;
     if output.status.success() {
@@ -354,12 +378,30 @@ fn run_request_with_retry(
     args: &[String],
     retry_count: usize,
     retry_delay_ms: u64,
-) -> Result<Output, String> {
+) -> Result<RequestResult, String> {
     let mut attempts = 0;
     loop {
         match run_request(curl_bin, args) {
-            Ok(output) => return Ok(output),
+            Ok(output) => {
+                return Ok(RequestResult {
+                    output,
+                    transport_mode: if args.iter().any(|arg| arg == "--proxy") {
+                        "proxy"
+                    } else {
+                        "direct"
+                    },
+                });
+            }
             Err(error) => {
+                if should_try_direct_fallback(args, &error) {
+                    let direct_args = strip_proxy_args(args);
+                    if let Ok(output) = run_request(curl_bin, &direct_args) {
+                        return Ok(RequestResult {
+                            output,
+                            transport_mode: "direct_fallback",
+                        });
+                    }
+                }
                 if attempts >= retry_count || !is_retryable_transport_error(&error) {
                     return Err(error);
                 }
@@ -372,6 +414,23 @@ fn run_request_with_retry(
 
 fn is_retryable_transport_error(error: &str) -> bool {
     error.contains("curl exited with 28") || error.contains("curl exited with 35")
+}
+
+fn should_try_direct_fallback(args: &[String], error: &str) -> bool {
+    args.iter().any(|arg| arg == "--proxy") && is_retryable_transport_error(error)
+}
+
+fn strip_proxy_args(args: &[String]) -> Vec<String> {
+    let mut stripped = Vec::with_capacity(args.len());
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--proxy" {
+            let _ = iter.next();
+            continue;
+        }
+        stripped.push(arg.clone());
+    }
+    stripped
 }
 
 fn extract_event_summaries(content: &str) -> Vec<EventSummary> {
@@ -488,12 +547,15 @@ fn escape_json(value: &str) -> String {
 mod tests {
     use super::{
         EventSummary, build_activity_url, extract_event_summaries, parse_args, read_seen_txs,
-        selected_leader_from_root, watch_activity, write_seen_txs,
+        selected_leader_from_root, should_try_direct_fallback, strip_proxy_args, watch_activity,
+        write_seen_txs,
     };
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const WALLET: &str = "0x11084005d88A0840b5F38F8731CCa9152BbD99F7";
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let suffix = SystemTime::now()
@@ -541,13 +603,13 @@ mod tests {
         fs::create_dir_all(root.join(".omx/discovery")).expect("discovery dir");
         fs::write(
             root.join(".omx/discovery/selected-leader.env"),
-            "COPYTRADER_DISCOVERY_WALLET=0xleader\n",
+            "COPYTRADER_DISCOVERY_WALLET=0x11084005d88A0840b5F38F8731CCa9152BbD99F7\n",
         )
         .expect("env written");
 
         assert_eq!(
             selected_leader_from_root(&root).as_deref(),
-            Some("0xleader")
+            Some("0x11084005d88A0840b5F38F8731CCa9152BbD99F7")
         );
 
         fs::remove_dir_all(root).expect("temp dir removed");
@@ -583,7 +645,7 @@ mod tests {
         fs::create_dir_all(root.join(".omx/discovery")).expect("discovery dir");
         fs::write(
             root.join(".omx/discovery/selected-leader.env"),
-            "COPYTRADER_DISCOVERY_WALLET=0xleader\n",
+            format!("COPYTRADER_DISCOVERY_WALLET={WALLET}\n"),
         )
         .expect("env written");
         let curl_stub = root.join("curl-stub.sh");
@@ -604,18 +666,21 @@ mod tests {
 
         let lines = watch_activity(&options).expect("watch should succeed");
 
-        assert!(lines.contains(&"watch_user=0xleader".to_string()));
+        assert!(lines.contains(&format!("watch_user={WALLET}")));
+        assert!(lines.contains(&"poll_transport_mode=direct".to_string()));
         assert!(lines.contains(&"poll_new_events=2".to_string()));
-        let latest =
-            fs::read_to_string(root.join(".omx/live-activity/0xleader/latest-activity.json"))
-                .expect("latest activity exists");
+        let latest = fs::read_to_string(
+            root.join(format!(".omx/live-activity/{WALLET}/latest-activity.json")),
+        )
+        .expect("latest activity exists");
         assert!(latest.contains("0xabc"));
-        let log =
-            fs::read_to_string(root.join(".omx/live-activity/0xleader/activity-events.jsonl"))
-                .expect("log exists");
+        let log = fs::read_to_string(
+            root.join(format!(".omx/live-activity/{WALLET}/activity-events.jsonl")),
+        )
+        .expect("log exists");
         assert!(log.contains("\"tx\":\"0xabc\""));
-        let seen =
-            read_seen_txs(&root.join(".omx/live-activity/0xleader/seen-tx.txt")).expect("seen txs");
+        let seen = read_seen_txs(&root.join(format!(".omx/live-activity/{WALLET}/seen-tx.txt")))
+            .expect("seen txs");
         assert!(seen.contains("0xabc"));
         assert!(seen.contains("0xdef"));
 
@@ -632,6 +697,45 @@ mod tests {
         ));
         assert!(!super::is_retryable_transport_error(
             "curl exited with 22: HTTP 404"
+        ));
+    }
+
+    #[test]
+    fn strip_proxy_args_removes_proxy_pair() {
+        let args = vec![
+            "--silent".to_string(),
+            "--proxy".to_string(),
+            "http://127.0.0.1:7897".to_string(),
+            "https://data-api.polymarket.com/activity".to_string(),
+        ];
+        let stripped = strip_proxy_args(&args);
+        assert_eq!(
+            stripped,
+            vec![
+                "--silent".to_string(),
+                "https://data-api.polymarket.com/activity".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn should_try_direct_fallback_requires_proxy_and_retryable_error() {
+        let args = vec![
+            "--proxy".to_string(),
+            "http://127.0.0.1:7897".to_string(),
+            "https://data-api.polymarket.com/activity".to_string(),
+        ];
+        assert!(should_try_direct_fallback(
+            &args,
+            "curl exited with 35: curl: (35) SSL_ERROR_SYSCALL"
+        ));
+        assert!(!should_try_direct_fallback(
+            &args,
+            "curl exited with 22: HTTP 404"
+        ));
+        assert!(!should_try_direct_fallback(
+            &["https://data-api.polymarket.com/activity".to_string()],
+            "curl exited with 35: curl: (35) SSL_ERROR_SYSCALL"
         ));
     }
 

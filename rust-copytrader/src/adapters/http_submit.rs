@@ -175,6 +175,15 @@ pub struct CurlCommandSpec {
     pub args: Vec<String>,
 }
 
+impl CurlCommandSpec {
+    pub fn redacted_for_logging(&self) -> String {
+        let mut parts = Vec::with_capacity(self.args.len() + 1);
+        parts.push(self.program.clone());
+        parts.extend(redacted_args_for_logging(&self.args));
+        parts.join(" ")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandOutput {
     pub exit_code: i32,
@@ -423,6 +432,13 @@ impl HttpSubmitExecutor {
                         stderr: stderr.clone(),
                     })
                 {
+                    if status_code == 0 {
+                        return Err(HttpSubmitCommandError::NonZeroExitWithOutput {
+                            code,
+                            stdout,
+                            stderr,
+                        });
+                    }
                     return Err(HttpSubmitCommandError::HttpStatus { status_code, body });
                 }
                 return Err(HttpSubmitCommandError::NonZeroExitWithOutput {
@@ -527,6 +543,55 @@ fn method_label(method: HttpMethod) -> &'static str {
     }
 }
 
+fn redacted_args_for_logging(args: &[String]) -> Vec<String> {
+    let mut redacted = Vec::with_capacity(args.len());
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = &args[index];
+        if matches!(arg.as_str(), "-H" | "--header") && index + 1 < args.len() {
+            redacted.push(arg.clone());
+            redacted.push(redact_header_for_logging(&args[index + 1]));
+            index += 2;
+            continue;
+        }
+        if arg == "--data-binary" && index + 1 < args.len() {
+            redacted.push(arg.clone());
+            redacted.push(format!("<redacted-body:{}-bytes>", args[index + 1].len()));
+            index += 2;
+            continue;
+        }
+        redacted.push(arg.clone());
+        index += 1;
+    }
+    redacted
+}
+
+fn redact_header_for_logging(header: &str) -> String {
+    let Some((name, _value)) = header.split_once(':') else {
+        return header.to_string();
+    };
+    let trimmed_name = name.trim();
+    if is_sensitive_header_name(trimmed_name) {
+        format!("{trimmed_name}: <redacted>")
+    } else {
+        header.to_string()
+    }
+}
+
+fn is_sensitive_header_name(name: &str) -> bool {
+    matches!(
+        name,
+        "POLY_API_KEY"
+            | "POLY_PASSPHRASE"
+            | "POLY_SIGNATURE"
+            | "POLY_TIMESTAMP"
+            | "X-PM-Access-Key"
+            | "X-PM-Signature"
+            | "X-PM-Timestamp"
+            | "Authorization"
+    )
+}
+
 fn build_submitter(
     base_url: &str,
     command: &CommandAdapterConfig,
@@ -563,6 +628,11 @@ fn parse_http_response(
         .trim()
         .parse::<u16>()
         .map_err(|_| HttpSubmitCommandError::InvalidStatusCode(status.trim().to_string()))?;
+    if status_code == 0 {
+        return Err(HttpSubmitCommandError::InvalidStatusCode(
+            status.trim().to_string(),
+        ));
+    }
     let body = body.to_string();
     if (200..300).contains(&status_code) {
         Ok(HttpSubmitResponse {

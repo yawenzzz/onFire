@@ -1,3 +1,4 @@
+use rust_copytrader::config::is_valid_evm_wallet;
 use rust_copytrader::wallet_filter::{ActivityRecord, parse_activity_records};
 use std::collections::BTreeSet;
 use std::env;
@@ -21,13 +22,20 @@ struct Options {
     min_open_usdc: f64,
     max_open_usdc: f64,
     flat_score: u8,
+    max_total_exposure_usdc: Option<String>,
+    max_order_usdc: Option<String>,
+    account_snapshot: Option<String>,
+    account_snapshot_max_age_secs: u64,
     allow_live_submit: bool,
+    force_live_submit: bool,
+    ignore_seen_tx: bool,
     activity_source_verified: bool,
     activity_under_budget: bool,
     activity_capability_detected: bool,
     positions_under_budget: bool,
     watch_bin: Option<String>,
     live_submit_bin: Option<String>,
+    account_monitor_bin: Option<String>,
 }
 
 impl Default for Options {
@@ -44,13 +52,20 @@ impl Default for Options {
             min_open_usdc: 1.0,
             max_open_usdc: 100.0,
             flat_score: 50,
+            max_total_exposure_usdc: None,
+            max_order_usdc: None,
+            account_snapshot: None,
+            account_snapshot_max_age_secs: 300,
             allow_live_submit: false,
+            force_live_submit: false,
+            ignore_seen_tx: false,
             activity_source_verified: false,
             activity_under_budget: false,
             activity_capability_detected: false,
             positions_under_budget: false,
             watch_bin: None,
             live_submit_bin: None,
+            account_monitor_bin: None,
         }
     }
 }
@@ -61,10 +76,32 @@ struct SizedActivity {
     timestamp: u64,
     side: String,
     asset: String,
+    condition_id: Option<String>,
+    outcome: Option<String>,
     slug: Option<String>,
     size: f64,
     usdc_size: f64,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+struct ConditionSizingDecision {
+    condition_key: String,
+    outcome_label: String,
+    same_outcome_count: usize,
+    same_outcome_sum_usdc: f64,
+    opposite_outcome_count: usize,
+    opposite_outcome_sum_usdc: f64,
+    total_condition_sum_usdc: f64,
+    decision_tag: &'static str,
+    reason: &'static str,
+    should_follow: bool,
+    recommended_open_usdc: f64,
+}
+
+const MIN_NEW_CONDITION_ENTRY_USDC: f64 = 5.0;
+const OPPOSITE_OUTCOME_HEDGE_RATIO: f64 = 0.35;
+const FOLLOW_LATEST_TRADE_RATIO: f64 = 0.10;
+const FOLLOW_SAME_OUTCOME_SUM_RATIO: f64 = 0.02;
 
 fn main() -> ExitCode {
     let args = env::args().skip(1).collect::<Vec<_>>();
@@ -98,7 +135,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_minmax_follow [--root <path>] [--user <wallet>] [--selected-leader-env <path>] [--proxy <url>] [--watch-limit <n>] [--loop-count <n>] [--forever] [--loop-interval-ms <n>] [--min-open-usdc <decimal>] [--max-open-usdc <decimal>] [--flat-score <1..100>] [--allow-live-submit] [--activity-source-verified] [--activity-under-budget] [--activity-capability-detected] [--positions-under-budget] [--watch-bin <path>] [--live-submit-bin <path>]"
+        "usage: run_copytrader_minmax_follow [--root <path>] [--user <wallet>] [--selected-leader-env <path>] [--proxy <url>] [--watch-limit <n>] [--loop-count <n>] [--forever] [--loop-interval-ms <n>] [--min-open-usdc <decimal>] [--max-open-usdc <decimal>] [--flat-score <1..100>] [--max-total-exposure-usdc <decimal>] [--max-order-usdc <decimal>] [--account-snapshot <path>] [--account-snapshot-max-age-secs <n>] [--allow-live-submit] [--force-live-submit] [--ignore-seen-tx] [--activity-source-verified] [--activity-under-budget] [--activity-capability-detected] [--positions-under-budget] [--watch-bin <path>] [--live-submit-bin <path>] [--account-monitor-bin <path>]"
     );
 }
 
@@ -133,13 +170,38 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--flat-score" => {
                 options.flat_score = parse_u8(&next_value(&mut iter, arg)?, "flat-score")?
             }
+            "--max-total-exposure-usdc" => {
+                let value = next_value(&mut iter, arg)?;
+                parse_f64(&value, "max-total-exposure-usdc")?;
+                options.max_total_exposure_usdc = Some(value);
+            }
+            "--max-order-usdc" => {
+                let value = next_value(&mut iter, arg)?;
+                parse_f64(&value, "max-order-usdc")?;
+                options.max_order_usdc = Some(value);
+            }
+            "--account-snapshot" => options.account_snapshot = Some(next_value(&mut iter, arg)?),
+            "--account-snapshot-max-age-secs" => {
+                options.account_snapshot_max_age_secs = parse_u64(
+                    &next_value(&mut iter, arg)?,
+                    "account-snapshot-max-age-secs",
+                )?
+            }
             "--allow-live-submit" => options.allow_live_submit = true,
+            "--force-live-submit" => {
+                options.force_live_submit = true;
+                options.allow_live_submit = true;
+            }
+            "--ignore-seen-tx" => options.ignore_seen_tx = true,
             "--activity-source-verified" => options.activity_source_verified = true,
             "--activity-under-budget" => options.activity_under_budget = true,
             "--activity-capability-detected" => options.activity_capability_detected = true,
             "--positions-under-budget" => options.positions_under_budget = true,
             "--watch-bin" => options.watch_bin = Some(next_value(&mut iter, arg)?),
             "--live-submit-bin" => options.live_submit_bin = Some(next_value(&mut iter, arg)?),
+            "--account-monitor-bin" => {
+                options.account_monitor_bin = Some(next_value(&mut iter, arg)?)
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -205,6 +267,9 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
         .clone()
         .or_else(|| read_selected_leader_wallet(&selected_env).ok())
         .ok_or_else(|| "missing --user and no selected leader env found".to_string())?;
+    if !is_valid_evm_wallet(&wallet) {
+        return Err(format!("invalid live-follow wallet: {wallet}"));
+    }
 
     let state_root = root
         .join(".omx")
@@ -234,18 +299,36 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
     let loop_total = options.loop_count.max(1);
     let mut index = 0usize;
     let last_lines = loop {
-        run_watch_once(&watch_bin, options, &wallet)?;
+        let watch_started_at_unix_ms = current_unix_ms()?;
+        let watch_lines = run_watch_once(&watch_bin, options, &wallet)?;
+        let watch_finished_at_unix_ms = current_unix_ms()?;
         let activities = read_recent_trade_activity(&latest_activity_path)?;
-        let latest = latest_trade(&activities)?;
+        let latest_new_tx = extract_metric_string(&watch_lines, "latest_new_tx");
+        let latest = latest_trade_for_watch(&activities, latest_new_tx.as_deref())?;
         let score =
             compute_normalized_score(&activities, latest.usdc_size.abs(), options.flat_score);
-        let open_usdc = map_score_to_open_usdc(score, options.min_open_usdc, options.max_open_usdc);
+        let normalized_open_usdc =
+            map_score_to_open_usdc(score, options.min_open_usdc, options.max_open_usdc);
+        let condition_decision =
+            decide_condition_sizing(&activities, latest, normalized_open_usdc, options);
+        let open_usdc = condition_decision.recommended_open_usdc;
         let history = history_min_max(&activities);
         let report_path = state_root.join(format!("run-{}-{}.txt", index, now_nanos()?));
 
         let mut lines = vec![
             "strategy=minmax_activity_v1".to_string(),
             format!("leader_wallet={wallet}"),
+            format!("auto_submit_enabled={}", options.allow_live_submit),
+            format!("force_live_submit={}", options.force_live_submit),
+            format!("ignore_seen_tx={}", options.ignore_seen_tx),
+            format!(
+                "submit_mode={}",
+                if options.allow_live_submit {
+                    "live"
+                } else {
+                    "preview"
+                }
+            ),
             format!("latest_activity_path={}", latest_activity_path.display()),
             format!("selected_leader_env_path={}", submit_selected_env.display()),
             format!("latest_tx={}", latest.tx),
@@ -255,19 +338,97 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
                 "latest_slug={}",
                 latest.slug.as_deref().unwrap_or("unknown")
             ),
+            format!("watch_started_at_unix_ms={watch_started_at_unix_ms}"),
+            format!("watch_finished_at_unix_ms={watch_finished_at_unix_ms}"),
+            format!(
+                "watch_elapsed_ms={}",
+                watch_finished_at_unix_ms.saturating_sub(watch_started_at_unix_ms)
+            ),
+            format!(
+                "leader_to_watch_finished_ms={}",
+                watch_finished_at_unix_ms.saturating_sub(latest.timestamp.saturating_mul(1000))
+            ),
             format!("latest_asset={}", latest.asset),
             format!("latest_activity_usdc={:.6}", latest.usdc_size),
             format!("recent_trade_count={}", activities.len()),
             format!("recent_usdc_min={:.6}", history.0),
             format!("recent_usdc_max={:.6}", history.1),
             format!("normalized_score={score}"),
-            format!("normalized_open_usdc={open_usdc:.6}"),
+            format!("condition_key={}", condition_decision.condition_key),
+            format!("condition_outcome={}", condition_decision.outcome_label),
+            format!(
+                "condition_same_outcome_count={}",
+                condition_decision.same_outcome_count
+            ),
+            format!(
+                "condition_same_outcome_sum_usdc={:.6}",
+                condition_decision.same_outcome_sum_usdc
+            ),
+            format!(
+                "condition_opposite_outcome_count={}",
+                condition_decision.opposite_outcome_count
+            ),
+            format!(
+                "condition_opposite_outcome_sum_usdc={:.6}",
+                condition_decision.opposite_outcome_sum_usdc
+            ),
+            format!(
+                "condition_total_sum_usdc={:.6}",
+                condition_decision.total_condition_sum_usdc
+            ),
+            format!("condition_decision={}", condition_decision.decision_tag),
+            format!("condition_decision_reason={}", condition_decision.reason),
+            format!(
+                "condition_should_follow={}",
+                condition_decision.should_follow
+            ),
+            format!("normalized_open_usdc={normalized_open_usdc:.6}"),
+            format!("planned_open_usdc={open_usdc:.6}"),
         ];
+        lines.extend(watch_lines.into_iter().filter(|line| {
+            line.starts_with("watch_")
+                || line.starts_with("poll_")
+                || line.starts_with("latest_new_")
+        }));
+        let poll_new_events = extract_metric_usize(&lines, "poll_new_events");
+        lines.push(format!(
+            "watch_has_new_activity={}",
+            poll_new_events.is_some_and(|count| count > 0)
+        ));
+        let refresh_lines = run_account_snapshot_refresh(&root, options);
+        let refresh_ok = refresh_lines
+            .iter()
+            .any(|line| line == "account_snapshot_refresh_status=ok");
+        lines.extend(refresh_lines);
 
-        if seen.contains(&latest.tx) {
+        if !options.force_live_submit && poll_new_events == Some(0) {
+            lines.push("submit_status=skipped_no_new_activity".to_string());
+            lines.push(format!("report_path={}", report_path.display()));
+            persist_iteration_report(&state_root, &report_path, &lines)?;
+            if !options.forever && index + 1 >= loop_total {
+                break lines;
+            }
+        } else if !condition_decision.should_follow {
+            lines.push(format!(
+                "submit_status=skipped_{}",
+                condition_decision.decision_tag
+            ));
+            lines.push(format!("report_path={}", report_path.display()));
+            persist_iteration_report(&state_root, &report_path, &lines)?;
+            if !options.forever && index + 1 >= loop_total {
+                break lines;
+            }
+        } else if options.allow_live_submit && !refresh_ok {
+            lines.push("submit_status=skipped_account_snapshot_refresh_failed".to_string());
+            lines.push(format!("report_path={}", report_path.display()));
+            persist_iteration_report(&state_root, &report_path, &lines)?;
+            if !options.forever && index + 1 >= loop_total {
+                break lines;
+            }
+        } else if seen.contains(&latest.tx) && !options.ignore_seen_tx {
             lines.push("submit_status=skipped_duplicate_tx".to_string());
             lines.push(format!("report_path={}", report_path.display()));
-            write_report(&report_path, &lines)?;
+            persist_iteration_report(&state_root, &report_path, &lines)?;
             if !options.forever && index + 1 >= loop_total {
                 break lines;
             }
@@ -280,9 +441,12 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
                 open_usdc,
                 options,
             )?;
-            seen.insert(latest.tx.clone());
-            write_seen_txs(&seen_path, &seen)
-                .map_err(|error| format!("failed to write {}: {error}", seen_path.display()))?;
+            let submitted = submit_output_contains_status(&submit_output, "submitted");
+            if submit_output_marks_seen(&submit_output) {
+                seen.insert(latest.tx.clone());
+                write_seen_txs(&seen_path, &seen)
+                    .map_err(|error| format!("failed to write {}: {error}", seen_path.display()))?;
+            }
             lines.extend(
                 submit_output
                     .lines()
@@ -290,8 +454,15 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
                     .filter(|line| !line.is_empty())
                     .map(ToString::to_string),
             );
+            if submit_output_contains_prefix(&submit_output, "live_gate_status=blocked:") {
+                lines.push("submit_status=skipped_live_gate_blocked".to_string());
+            }
+            if submitted {
+                lines.extend(run_post_submit_account_snapshot_refresh(&root, options));
+                lines.push("post_submit_user_probe_status=disabled".to_string());
+            }
             lines.push(format!("report_path={}", report_path.display()));
-            write_report(&report_path, &lines)?;
+            persist_iteration_report(&state_root, &report_path, &lines)?;
             if !options.forever && index + 1 >= loop_total {
                 break lines;
             }
@@ -305,7 +476,11 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
     Ok(last_lines)
 }
 
-fn run_watch_once(watch_bin: &Path, options: &Options, wallet: &str) -> Result<(), String> {
+fn run_watch_once(
+    watch_bin: &Path,
+    options: &Options,
+    wallet: &str,
+) -> Result<Vec<String>, String> {
     let mut args = vec![
         "--root".to_string(),
         options.root.clone(),
@@ -320,8 +495,17 @@ fn run_watch_once(watch_bin: &Path, options: &Options, wallet: &str) -> Result<(
         args.push("--proxy".to_string());
         args.push(proxy.clone());
     }
-    let _ = run_command(watch_bin, &args, Some(Path::new(".")))?;
-    Ok(())
+    let output = run_command(watch_bin, &args, Some(Path::new(".")))?;
+    String::from_utf8(output.stdout)
+        .map_err(|error| format!("watch_copy_leader_activity stdout was not utf-8: {error}"))
+        .map(|stdout| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
 }
 
 fn run_live_submit(
@@ -342,24 +526,118 @@ fn run_live_submit(
         "--override-usdc-size".to_string(),
         format!("{open_usdc:.6}"),
     ];
-    if options.activity_source_verified {
-        args.push("--activity-source-verified".to_string());
-    }
-    if options.activity_under_budget {
-        args.push("--activity-under-budget".to_string());
-    }
-    if options.activity_capability_detected {
-        args.push("--activity-capability-detected".to_string());
-    }
-    if options.positions_under_budget {
-        args.push("--positions-under-budget".to_string());
-    }
     if options.allow_live_submit {
         args.push("--allow-live-submit".to_string());
+    }
+    if options.force_live_submit {
+        args.push("--force-live-submit".to_string());
+    }
+    if let Some(value) = &options.max_total_exposure_usdc {
+        args.push("--max-total-exposure-usdc".to_string());
+        args.push(value.clone());
+    }
+    if let Some(value) = &options.max_order_usdc {
+        args.push("--max-order-usdc".to_string());
+        args.push(value.clone());
+    }
+    if let Some(path) = &options.account_snapshot {
+        args.push("--account-snapshot".to_string());
+        args.push(path.clone());
+    }
+    if options.account_snapshot_max_age_secs > 0 {
+        args.push("--account-snapshot-max-age-secs".to_string());
+        args.push(options.account_snapshot_max_age_secs.to_string());
     }
     let output = run_command(live_submit_bin, &args, Some(Path::new(".")))?;
     String::from_utf8(output.stdout)
         .map_err(|error| format!("run_copytrader_live_submit_gate stdout was not utf-8: {error}"))
+}
+
+fn run_account_snapshot_refresh(root: &Path, options: &Options) -> Vec<String> {
+    run_snapshot_refresh_with_prefix(root, options, "account_snapshot_refresh")
+}
+
+fn run_post_submit_account_snapshot_refresh(root: &Path, options: &Options) -> Vec<String> {
+    run_snapshot_refresh_with_prefix(root, options, "post_submit_account_snapshot_refresh")
+}
+
+fn run_snapshot_refresh_with_prefix(root: &Path, options: &Options, prefix: &str) -> Vec<String> {
+    let Some(snapshot_path) = options.account_snapshot.as_deref().filter(|value| !value.is_empty()) else {
+        return vec![format!("{prefix}_status=disabled:no_snapshot_path")];
+    };
+    let Some(account_monitor_bin) = options
+        .account_monitor_bin
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    else {
+        return vec![format!("{prefix}_status=disabled:no_account_monitor_bin")];
+    };
+
+    let args = vec![
+        account_monitor_bin.to_string(),
+        "--output".to_string(),
+        snapshot_path.to_string(),
+    ];
+    match run_command(Path::new("bash"), &args, Some(root)) {
+        Ok(output) if output.status.success() => vec![
+            format!("{prefix}_status=ok"),
+            format!("{prefix}_output={snapshot_path}"),
+        ],
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() { stderr } else { stdout };
+            vec![
+                format!("{prefix}_status=failed"),
+                format!("{prefix}_error={}", sanitize_report_text(&detail)),
+            ]
+        }
+        Err(error) => vec![
+            format!("{prefix}_status=failed"),
+            format!("{prefix}_error={}", sanitize_report_text(&error)),
+        ],
+    }
+}
+
+fn submit_output_marks_seen(output: &str) -> bool {
+    output.lines().any(|line| {
+        matches!(
+            line.trim(),
+            "live_submit_status=preview_only" | "live_submit_status=submitted"
+        )
+    })
+}
+
+fn sanitize_report_text(value: &str) -> String {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn extract_metric_usize(lines: &[String], key: &str) -> Option<usize> {
+    let prefix = format!("{key}=");
+    lines.iter().find_map(|line| {
+        line.strip_prefix(&prefix)
+            .and_then(|value| value.parse::<usize>().ok())
+    })
+}
+
+fn submit_output_contains_status(output: &str, status: &str) -> bool {
+    let needle = format!("live_submit_status={status}");
+    output.lines().any(|line| line.trim() == needle)
+}
+
+fn submit_output_contains_prefix(output: &str, prefix: &str) -> bool {
+    output.lines().any(|line| line.trim().starts_with(prefix))
+}
+
+fn extract_metric_string(lines: &[String], key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    lines.iter()
+        .find_map(|line| line.strip_prefix(&prefix).map(ToString::to_string))
 }
 
 fn read_recent_trade_activity(path: &Path) -> Result<Vec<SizedActivity>, String> {
@@ -375,6 +653,18 @@ fn read_recent_trade_activity(path: &Path) -> Result<Vec<SizedActivity>, String>
     Ok(activities)
 }
 
+fn latest_trade_for_watch<'a>(
+    activities: &'a [SizedActivity],
+    latest_new_tx: Option<&str>,
+) -> Result<&'a SizedActivity, String> {
+    if let Some(latest_new_tx) = latest_new_tx
+        && let Some(activity) = activities.iter().find(|activity| activity.tx == latest_new_tx)
+    {
+        return Ok(activity);
+    }
+    latest_trade(activities)
+}
+
 fn activity_to_sized(record: ActivityRecord) -> Option<SizedActivity> {
     if record.event_type != "TRADE" {
         return None;
@@ -386,6 +676,8 @@ fn activity_to_sized(record: ActivityRecord) -> Option<SizedActivity> {
         timestamp: record.timestamp,
         side,
         asset: record.asset,
+        condition_id: record.condition_id,
+        outcome: record.outcome,
         slug: record.slug,
         size: record.size.abs(),
         usdc_size: record.usdc_size.abs(),
@@ -430,6 +722,134 @@ fn map_score_to_open_usdc(score: u8, min_open_usdc: f64, max_open_usdc: f64) -> 
     min_open_usdc + ((max_open_usdc - min_open_usdc) * ratio)
 }
 
+fn decide_condition_sizing(
+    activities: &[SizedActivity],
+    latest: &SizedActivity,
+    normalized_open_usdc: f64,
+    options: &Options,
+) -> ConditionSizingDecision {
+    let condition_key = latest
+        .condition_id
+        .clone()
+        .unwrap_or_else(|| latest.asset.clone());
+    let outcome_label = latest
+        .outcome
+        .clone()
+        .unwrap_or_else(|| latest.asset.clone());
+
+    if latest.condition_id.is_none() && latest.outcome.is_none() {
+        return ConditionSizingDecision {
+            condition_key,
+            outcome_label,
+            same_outcome_count: 0,
+            same_outcome_sum_usdc: 0.0,
+            opposite_outcome_count: 0,
+            opposite_outcome_sum_usdc: 0.0,
+            total_condition_sum_usdc: 0.0,
+            decision_tag: "normalized_fallback_follow",
+            reason: "missing_condition_or_outcome",
+            should_follow: true,
+            recommended_open_usdc: normalized_open_usdc,
+        };
+    }
+
+    let mut same_outcome_count = 0usize;
+    let mut same_outcome_sum_usdc = 0.0_f64;
+    let mut opposite_outcome_count = 0usize;
+    let mut opposite_outcome_sum_usdc = 0.0_f64;
+
+    for activity in activities {
+        if activity_condition_key(activity) != condition_key {
+            continue;
+        }
+        if same_condition_outcome(activity, latest) {
+            same_outcome_count += 1;
+            same_outcome_sum_usdc += activity.usdc_size;
+        } else if opposite_condition_outcome(activity, latest) {
+            opposite_outcome_count += 1;
+            opposite_outcome_sum_usdc += activity.usdc_size;
+        }
+    }
+
+    let total_condition_sum_usdc = same_outcome_sum_usdc + opposite_outcome_sum_usdc;
+    let max_order_cap = options
+        .max_order_usdc
+        .as_deref()
+        .and_then(|value| value.parse::<f64>().ok())
+        .map(|value| value.min(options.max_open_usdc))
+        .unwrap_or(options.max_open_usdc);
+    let recommended_open_usdc = max_order_cap
+        .min(
+            (latest.usdc_size * FOLLOW_LATEST_TRADE_RATIO)
+                .max(same_outcome_sum_usdc * FOLLOW_SAME_OUTCOME_SUM_RATIO),
+        )
+        .max(options.min_open_usdc);
+
+    let confirmed_same_outcome = latest.usdc_size >= MIN_NEW_CONDITION_ENTRY_USDC
+        || same_outcome_sum_usdc >= MIN_NEW_CONDITION_ENTRY_USDC
+        || (same_outcome_count >= 2 && same_outcome_sum_usdc >= options.min_open_usdc * 2.0);
+
+    let (decision_tag, reason, should_follow) = if opposite_outcome_sum_usdc > 0.0
+        && same_outcome_sum_usdc < opposite_outcome_sum_usdc * OPPOSITE_OUTCOME_HEDGE_RATIO
+        && latest.usdc_size < MIN_NEW_CONDITION_ENTRY_USDC
+    {
+        (
+            "condition_hedge_candidate",
+            "opposite_outcome_dominates_recent_flow",
+            false,
+        )
+    } else if !confirmed_same_outcome {
+        (
+            "condition_unconfirmed_small_entry",
+            "insufficient_same_outcome_confirmation",
+            false,
+        )
+    } else {
+        ("condition_follow_confirmed", "same_outcome_confirmed", true)
+    };
+
+    ConditionSizingDecision {
+        condition_key,
+        outcome_label,
+        same_outcome_count,
+        same_outcome_sum_usdc,
+        opposite_outcome_count,
+        opposite_outcome_sum_usdc,
+        total_condition_sum_usdc,
+        decision_tag,
+        reason,
+        should_follow,
+        recommended_open_usdc,
+    }
+}
+
+fn activity_condition_key(activity: &SizedActivity) -> String {
+    activity
+        .condition_id
+        .clone()
+        .unwrap_or_else(|| activity.asset.clone())
+}
+
+fn same_condition_outcome(activity: &SizedActivity, latest: &SizedActivity) -> bool {
+    if activity_condition_key(activity) != activity_condition_key(latest) {
+        return false;
+    }
+    match (&activity.outcome, &latest.outcome) {
+        (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
+        _ => activity.asset == latest.asset,
+    }
+}
+
+fn opposite_condition_outcome(activity: &SizedActivity, latest: &SizedActivity) -> bool {
+    if activity_condition_key(activity) != activity_condition_key(latest) {
+        return false;
+    }
+    match (&activity.outcome, &latest.outcome) {
+        (Some(left), Some(right)) => !left.eq_ignore_ascii_case(right),
+        _ => false,
+    }
+}
+
 trait SaturatingSub {
     fn saturating_sub(self, rhs: Self) -> Self;
 }
@@ -464,12 +884,12 @@ fn read_selected_leader_wallet(path: &Path) -> Result<String, String> {
             match key.trim() {
                 "COPYTRADER_DISCOVERY_WALLET" | "COPYTRADER_LEADER_WALLET" => {
                     let value = value.trim();
-                    (!value.is_empty()).then(|| value.to_string())
+                    (!value.is_empty() && is_valid_evm_wallet(value)).then(|| value.to_string())
                 }
                 _ => None,
             }
         })
-        .ok_or_else(|| format!("missing leader wallet in {}", path.display()))
+        .ok_or_else(|| format!("missing valid leader wallet in {}", path.display()))
 }
 
 fn sanitize_for_filename(value: &str) -> String {
@@ -558,6 +978,101 @@ fn write_report(path: &Path, lines: &[String]) -> Result<(), String> {
         .map_err(|error| format!("failed to write {}: {error}", path.display()))
 }
 
+fn persist_iteration_report(
+    state_root: &Path,
+    report_path: &Path,
+    lines: &[String],
+) -> Result<(), String> {
+    write_report(report_path, lines)?;
+    write_report(&state_root.join("latest.txt"), lines)?;
+    write_status_json(&state_root.join("latest.json"), lines)
+}
+
+fn write_status_json(path: &Path, lines: &[String]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+    fs::write(path, render_status_json(lines))
+        .map_err(|error| format!("failed to write {}: {error}", path.display()))
+}
+
+fn render_status_json(lines: &[String]) -> String {
+    let mut entries = Vec::new();
+    let mut seen = BTreeSet::new();
+    for line in lines.iter().rev() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() || !seen.insert(key.to_string()) {
+            continue;
+        }
+        entries.push((key.to_string(), value.trim().to_string()));
+    }
+    entries.reverse();
+    let body = entries
+        .into_iter()
+        .map(|(key, value)| format!("  \"{}\": {}", escape_json(&key), json_scalar(&key, &value)))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!("{{\n{body}\n}}\n")
+}
+
+fn json_scalar(key: &str, value: &str) -> String {
+    if key_forces_string(key) {
+        return format!("\"{}\"", escape_json(value));
+    }
+    if let Ok(boolean) = value.parse::<bool>() {
+        return boolean.to_string();
+    }
+    if let Ok(integer) = value.parse::<i64>() {
+        return integer.to_string();
+    }
+    if let Ok(float) = value.parse::<f64>()
+        && float.is_finite()
+    {
+        return if value.contains('.') {
+            value.to_string()
+        } else {
+            float.to_string()
+        };
+    }
+    format!("\"{}\"", escape_json(value))
+}
+
+fn key_forces_string(key: &str) -> bool {
+    key.ends_with("_path")
+        || key.contains("wallet")
+        || key.contains("asset")
+        || key.ends_with("_tx")
+        || key.contains("slug")
+        || key.ends_with("_side")
+        || key.ends_with("_status")
+        || matches!(
+            key,
+            "strategy"
+                | "submit_mode"
+                | "account_snapshot_refresh_output"
+                | "post_submit_account_snapshot_refresh_output"
+                | "report_path"
+        )
+}
+
+fn escape_json(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|ch| match ch {
+            '\\' => "\\\\".chars().collect::<Vec<_>>(),
+            '"' => "\\\"".chars().collect::<Vec<_>>(),
+            '\n' => "\\n".chars().collect::<Vec<_>>(),
+            '\r' => "\\r".chars().collect::<Vec<_>>(),
+            '\t' => "\\t".chars().collect::<Vec<_>>(),
+            _ => vec![ch],
+        })
+        .collect()
+}
+
 fn now_nanos() -> Result<u128, String> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -565,15 +1080,26 @@ fn now_nanos() -> Result<u128, String> {
         .as_nanos())
 }
 
+fn current_unix_ms() -> Result<u64, String> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("clock error: {error}"))?
+        .as_millis() as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Options, compute_normalized_score, map_score_to_open_usdc, parse_args, run_minmax_follow,
+        Options, compute_normalized_score, decide_condition_sizing, map_score_to_open_usdc,
+        parse_args, run_minmax_follow, submit_output_contains_prefix,
+        submit_output_contains_status, submit_output_marks_seen,
     };
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const WALLET: &str = "0x11084005d88A0840b5F38F8731CCa9152BbD99F7";
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let suffix = SystemTime::now()
@@ -596,7 +1122,7 @@ mod tests {
             "--root".into(),
             "..".into(),
             "--user".into(),
-            "0xleader".into(),
+            WALLET.into(),
             "--watch-limit".into(),
             "20".into(),
             "--loop-count".into(),
@@ -608,18 +1134,24 @@ mod tests {
             "--forever".into(),
             "--flat-score".into(),
             "40".into(),
+            "--max-total-exposure-usdc".into(),
+            "100".into(),
+            "--max-order-usdc".into(),
+            "10".into(),
             "--allow-live-submit".into(),
         ])
         .expect("options parsed");
 
         assert_eq!(options.root, "..");
-        assert_eq!(options.user.as_deref(), Some("0xleader"));
+        assert_eq!(options.user.as_deref(), Some(WALLET));
         assert_eq!(options.watch_limit, 20);
         assert_eq!(options.loop_count, 2);
         assert!(options.forever);
         assert_eq!(options.min_open_usdc, 2.0);
         assert_eq!(options.max_open_usdc, 50.0);
         assert_eq!(options.flat_score, 40);
+        assert_eq!(options.max_total_exposure_usdc.as_deref(), Some("100"));
+        assert_eq!(options.max_order_usdc.as_deref(), Some("10"));
         assert!(options.allow_live_submit);
     }
 
@@ -631,6 +1163,8 @@ mod tests {
                 timestamp: 1,
                 side: "BUY".into(),
                 asset: "asset-1".into(),
+                condition_id: None,
+                outcome: None,
                 slug: None,
                 size: 2.0,
                 usdc_size: 1.0,
@@ -640,6 +1174,8 @@ mod tests {
                 timestamp: 2,
                 side: "BUY".into(),
                 asset: "asset-1".into(),
+                condition_id: None,
+                outcome: None,
                 slug: None,
                 size: 20.0,
                 usdc_size: 10.0,
@@ -659,13 +1195,65 @@ mod tests {
     }
 
     #[test]
+    fn condition_decision_skips_small_unconfirmed_entry() {
+        let activities = vec![super::SizedActivity {
+            tx: "0xsmall".into(),
+            timestamp: 20,
+            side: "BUY".into(),
+            asset: "asset-yes".into(),
+            condition_id: Some("cond-1".into()),
+            outcome: Some("Yes".into()),
+            slug: Some("market-a".into()),
+            size: 25.0,
+            usdc_size: 3.5,
+        }];
+
+        let decision = decide_condition_sizing(&activities, &activities[0], 10.0, &Options::default());
+        assert!(!decision.should_follow);
+        assert_eq!(decision.decision_tag, "condition_unconfirmed_small_entry");
+    }
+
+    #[test]
+    fn condition_decision_skips_small_opposite_hedge() {
+        let activities = vec![
+            super::SizedActivity {
+                tx: "0xno".into(),
+                timestamp: 10,
+                side: "BUY".into(),
+                asset: "asset-no".into(),
+                condition_id: Some("cond-1".into()),
+                outcome: Some("No".into()),
+                slug: Some("market-a".into()),
+                size: 1400.0,
+                usdc_size: 200.0,
+            },
+            super::SizedActivity {
+                tx: "0xyes".into(),
+                timestamp: 20,
+                side: "BUY".into(),
+                asset: "asset-yes".into(),
+                condition_id: Some("cond-1".into()),
+                outcome: Some("Yes".into()),
+                slug: Some("market-a".into()),
+                size: 20.0,
+                usdc_size: 2.5,
+            },
+        ];
+
+        let decision = decide_condition_sizing(&activities, &activities[1], 10.0, &Options::default());
+        assert!(!decision.should_follow);
+        assert_eq!(decision.decision_tag, "condition_hedge_candidate");
+        assert!(decision.opposite_outcome_sum_usdc > decision.same_outcome_sum_usdc);
+    }
+
+    #[test]
     fn run_minmax_follow_scales_and_reports_submit_preview() {
         let root = unique_temp_dir("success");
         fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
         let selected_env = root.join(".omx/discovery/selected-leader.env");
         fs::write(
             &selected_env,
-            "COPYTRADER_DISCOVERY_WALLET=0xleader\nCOPYTRADER_LEADER_WALLET=0xleader\n",
+            format!("COPYTRADER_DISCOVERY_WALLET={WALLET}\nCOPYTRADER_LEADER_WALLET={WALLET}\n"),
         )
         .expect("env written");
 
@@ -673,8 +1261,9 @@ mod tests {
         write_executable(
             &watch,
             &format!(
-                "#!/bin/sh\nmkdir -p '{root}/.omx/live-activity/0xleader'\ncat > '{root}/.omx/live-activity/0xleader/latest-activity.json' <<'JSON'\n[\n{{\"proxyWallet\":\"0xleader\",\"timestamp\":10,\"type\":\"TRADE\",\"asset\":\"asset-1\",\"size\":2.0,\"usdcSize\":1.0,\"transactionHash\":\"0xold\",\"price\":0.5,\"side\":\"BUY\",\"slug\":\"market-a\"}},\n{{\"proxyWallet\":\"0xleader\",\"timestamp\":20,\"type\":\"TRADE\",\"asset\":\"asset-1\",\"size\":20.0,\"usdcSize\":10.0,\"transactionHash\":\"0xnew\",\"price\":0.5,\"side\":\"BUY\",\"slug\":\"market-a\"}}\n]\nJSON\nprintf 'watch_user=0xleader\\npoll_new_events=1\\n'\n",
-                root = root.display()
+                "#!/bin/sh\nmkdir -p '{root}/.omx/live-activity/{wallet}'\ncat > '{root}/.omx/live-activity/{wallet}/latest-activity.json' <<'JSON'\n[\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":10,\"type\":\"TRADE\",\"asset\":\"asset-1\",\"size\":2.0,\"usdcSize\":1.0,\"transactionHash\":\"0xold\",\"price\":0.5,\"side\":\"BUY\",\"slug\":\"market-a\"}},\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":20,\"type\":\"TRADE\",\"asset\":\"asset-1\",\"size\":20.0,\"usdcSize\":10.0,\"transactionHash\":\"0xnew\",\"price\":0.5,\"side\":\"BUY\",\"slug\":\"market-a\"}}\n]\nJSON\nprintf 'watch_user={wallet}\\npoll_transport_mode=direct\\npoll_new_events=1\\n'\n",
+                root = root.display(),
+                wallet = WALLET
             ),
         );
 
@@ -683,10 +1272,14 @@ mod tests {
             &submit,
             "#!/bin/sh\nprintf 'live_submit_status=preview_only\\nnormalized_override='\"$8\"'\\n'\n",
         );
-
+        let account_monitor = root.join("run_copytrader_account_monitor");
+        write_executable(
+            &account_monitor,
+            "#!/bin/sh\nout=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--output\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\n done\nmkdir -p \"$(dirname \"$out\")\"\ncat > \"$out\" <<'JSON'\n{\n  \"account_snapshot\": {\n    \"positions\": [],\n    \"open_orders\": []\n  }\n}\nJSON\nprintf 'account_monitor_output=%s\\n' \"$out\"\n",
+        );
         let options = Options {
             root: root.display().to_string(),
-            user: Some("0xleader".into()),
+            user: Some(WALLET.into()),
             selected_leader_env: Some(selected_env.display().to_string()),
             proxy: None,
             watch_limit: 10,
@@ -696,13 +1289,20 @@ mod tests {
             min_open_usdc: 1.0,
             max_open_usdc: 100.0,
             flat_score: 50,
+            max_total_exposure_usdc: Some("100".into()),
+            max_order_usdc: Some("10".into()),
+            account_snapshot: Some("runtime-verify-account/dashboard.json".into()),
+            account_snapshot_max_age_secs: 300,
             allow_live_submit: false,
+            force_live_submit: false,
+            ignore_seen_tx: false,
             activity_source_verified: false,
             activity_under_budget: false,
             activity_capability_detected: false,
             positions_under_budget: false,
             watch_bin: Some(watch.display().to_string()),
             live_submit_bin: Some(submit.display().to_string()),
+            account_monitor_bin: Some(account_monitor.display().to_string()),
         };
 
         let lines = run_minmax_follow(&options).expect("strategy should succeed");
@@ -717,5 +1317,347 @@ mod tests {
                 .iter()
                 .any(|line| line == "live_submit_status=preview_only")
         );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "account_snapshot_refresh_status=ok")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == &format!("watch_user={WALLET}"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "poll_transport_mode=direct")
+        );
+        let latest =
+            fs::read_to_string(root.join(format!(".omx/minmax-follow/{}/latest.txt", WALLET)))
+                .expect("latest report exists");
+        assert!(latest.contains("live_submit_status=preview_only"));
+        assert!(latest.contains("poll_transport_mode=direct"));
+        let latest_json =
+            fs::read_to_string(root.join(format!(".omx/minmax-follow/{}/latest.json", WALLET)))
+                .expect("latest json exists");
+        assert!(latest_json.contains("\"live_submit_status\": \"preview_only\""));
+        assert!(latest_json.contains("\"normalized_open_usdc\": 100.000000"));
+        assert!(latest_json.contains("\"auto_submit_enabled\": false"));
+        assert!(latest_json.contains("\"submit_mode\": \"preview\""));
+        assert!(latest_json.contains("\"latest_asset\": \"asset-1\""));
+        assert!(latest_json.contains("\"poll_transport_mode\": \"direct\""));
+    }
+
+    #[test]
+    fn run_minmax_follow_skips_small_opposite_hedge_and_uses_latest_new_tx() {
+        let root = unique_temp_dir("skip-hedge");
+        fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
+        let selected_env = root.join(".omx/discovery/selected-leader.env");
+        fs::write(
+            &selected_env,
+            format!("COPYTRADER_DISCOVERY_WALLET={WALLET}\nCOPYTRADER_LEADER_WALLET={WALLET}\n"),
+        )
+        .expect("env written");
+
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            &format!(
+                "#!/bin/sh\nmkdir -p '{root}/.omx/live-activity/{wallet}'\ncat > '{root}/.omx/live-activity/{wallet}/latest-activity.json' <<'JSON'\n[\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":10,\"type\":\"TRADE\",\"asset\":\"asset-no\",\"size\":1400.0,\"usdcSize\":200.0,\"transactionHash\":\"0xold\",\"price\":0.9,\"side\":\"BUY\",\"conditionId\":\"cond-1\",\"outcome\":\"No\",\"slug\":\"market-a\"}},\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":20,\"type\":\"TRADE\",\"asset\":\"asset-yes\",\"size\":20.0,\"usdcSize\":2.5,\"transactionHash\":\"0xhedge\",\"price\":0.1,\"side\":\"BUY\",\"conditionId\":\"cond-1\",\"outcome\":\"Yes\",\"slug\":\"market-a\"}}\n]\nJSON\nprintf 'watch_user={wallet}\\npoll_transport_mode=direct\\npoll_new_events=1\\nlatest_new_tx=0xhedge\\n'\n",
+                root = root.display(),
+                wallet = WALLET
+            ),
+        );
+        let submit = root.join("run_copytrader_live_submit_gate");
+        let forwarded = root.join("forwarded-args.txt");
+        write_executable(
+            &submit,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{forwarded}'\nprintf 'live_submit_status=submitted\\n'\n",
+                forwarded = forwarded.display()
+            ),
+        );
+        let account_monitor = root.join("run_copytrader_account_monitor");
+        write_executable(
+            &account_monitor,
+            "#!/bin/sh\nout=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--output\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\n done\nmkdir -p \"$(dirname \"$out\")\"\nprintf '{\"account_snapshot\":{\"positions\":[],\"open_orders\":[]}}' > \"$out\"\n",
+        );
+
+        let options = Options {
+            root: root.display().to_string(),
+            user: Some(WALLET.into()),
+            selected_leader_env: Some(selected_env.display().to_string()),
+            proxy: None,
+            watch_limit: 10,
+            loop_count: 1,
+            forever: false,
+            loop_interval_ms: 0,
+            min_open_usdc: 1.0,
+            max_open_usdc: 100.0,
+            flat_score: 50,
+            max_total_exposure_usdc: Some("100".into()),
+            max_order_usdc: Some("10".into()),
+            account_snapshot: Some("runtime-verify-account/dashboard.json".into()),
+            account_snapshot_max_age_secs: 300,
+            allow_live_submit: true,
+            force_live_submit: false,
+            ignore_seen_tx: false,
+            activity_source_verified: false,
+            activity_under_budget: false,
+            activity_capability_detected: false,
+            positions_under_budget: false,
+            watch_bin: Some(watch.display().to_string()),
+            live_submit_bin: Some(submit.display().to_string()),
+            account_monitor_bin: Some(account_monitor.display().to_string()),
+        };
+
+        let lines = run_minmax_follow(&options).expect("strategy should succeed");
+        assert!(lines.iter().any(|line| line == "latest_tx=0xhedge"));
+        assert!(lines.iter().any(|line| line == "condition_decision=condition_hedge_candidate"));
+        assert!(lines.iter().any(|line| line == "submit_status=skipped_condition_hedge_candidate"));
+        assert!(!forwarded.exists(), "submit should not be invoked for hedge candidate");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn run_minmax_follow_does_not_forward_manual_gate_override_flags() {
+        let root = unique_temp_dir("no-manual-gate-forward");
+        fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
+        let selected_env = root.join(".omx/discovery/selected-leader.env");
+        fs::write(
+            &selected_env,
+            format!("COPYTRADER_DISCOVERY_WALLET={WALLET}\nCOPYTRADER_LEADER_WALLET={WALLET}\n"),
+        )
+        .expect("env written");
+
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            &format!(
+                "#!/bin/sh\nmkdir -p '{root}/.omx/live-activity/{wallet}'\ncat > '{root}/.omx/live-activity/{wallet}/latest-activity.json' <<'JSON'\n[\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":20,\"type\":\"TRADE\",\"asset\":\"asset-1\",\"size\":20.0,\"usdcSize\":10.0,\"transactionHash\":\"0xnew\",\"price\":0.5,\"side\":\"BUY\",\"slug\":\"market-a\"}}\n]\nJSON\nprintf 'watch_user={wallet}\\npoll_transport_mode=direct\\npoll_new_events=1\\n'\n",
+                root = root.display(),
+                wallet = WALLET
+            ),
+        );
+
+        let submit = root.join("run_copytrader_live_submit_gate");
+        let forwarded = root.join("forwarded-args.txt");
+        write_executable(
+            &submit,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{forwarded}'\nprintf 'live_submit_status=preview_only\\n'\n",
+                forwarded = forwarded.display()
+            ),
+        );
+        let options = Options {
+            root: root.display().to_string(),
+            user: Some(WALLET.into()),
+            selected_leader_env: Some(selected_env.display().to_string()),
+            proxy: None,
+            watch_limit: 10,
+            loop_count: 1,
+            forever: false,
+            loop_interval_ms: 0,
+            min_open_usdc: 1.0,
+            max_open_usdc: 100.0,
+            flat_score: 50,
+            max_total_exposure_usdc: Some("100".into()),
+            max_order_usdc: Some("10".into()),
+            account_snapshot: Some("runtime-verify-account/dashboard.json".into()),
+            account_snapshot_max_age_secs: 300,
+            allow_live_submit: false,
+            force_live_submit: false,
+            ignore_seen_tx: false,
+            activity_source_verified: true,
+            activity_under_budget: true,
+            activity_capability_detected: true,
+            positions_under_budget: true,
+            watch_bin: Some(watch.display().to_string()),
+            live_submit_bin: Some(submit.display().to_string()),
+            account_monitor_bin: None,
+        };
+
+        run_minmax_follow(&options).expect("strategy should succeed");
+        let args = fs::read_to_string(&forwarded).expect("forwarded args exist");
+        assert!(!args.contains("--activity-source-verified"));
+        assert!(!args.contains("--activity-under-budget"));
+        assert!(!args.contains("--activity-capability-detected"));
+        assert!(!args.contains("--positions-under-budget"));
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn blocked_submit_output_does_not_mark_seen() {
+        assert!(submit_output_marks_seen(
+            "live_submit_status=preview_only\n"
+        ));
+        assert!(submit_output_marks_seen("live_submit_status=submitted\n"));
+        assert!(!submit_output_marks_seen(
+            "live_gate_status=blocked:activity_source_over_budget\n"
+        ));
+        assert!(!submit_output_marks_seen(
+            "live_submit_status=blocked:total_exposure_would_exceed_cap\n"
+        ));
+        assert!(submit_output_contains_status(
+            "live_submit_status=submitted\n",
+            "submitted"
+        ));
+        assert!(!submit_output_contains_status(
+            "live_submit_status=preview_only\n",
+            "submitted"
+        ));
+        assert!(submit_output_contains_prefix(
+            "live_gate_status=blocked:activity_source_over_budget\n",
+            "live_gate_status=blocked:"
+        ));
+    }
+
+    #[test]
+    fn run_minmax_follow_skips_submit_when_watch_reports_no_new_activity() {
+        let root = unique_temp_dir("skip-no-new-activity");
+        fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
+        let selected_env = root.join(".omx/discovery/selected-leader.env");
+        fs::write(
+            &selected_env,
+            format!("COPYTRADER_DISCOVERY_WALLET={WALLET}\nCOPYTRADER_LEADER_WALLET={WALLET}\n"),
+        )
+        .expect("env written");
+
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            &format!(
+                "#!/bin/sh\nmkdir -p '{root}/.omx/live-activity/{wallet}'\ncat > '{root}/.omx/live-activity/{wallet}/latest-activity.json' <<'JSON'\n[\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":20,\"type\":\"TRADE\",\"asset\":\"asset-1\",\"size\":20.0,\"usdcSize\":10.0,\"transactionHash\":\"0xold\",\"price\":0.5,\"side\":\"BUY\",\"slug\":\"market-a\"}}\n]\nJSON\nprintf 'watch_user={wallet}\\npoll_transport_mode=direct\\npoll_new_events=0\\n'\n",
+                root = root.display(),
+                wallet = WALLET
+            ),
+        );
+        let submit = root.join("run_copytrader_live_submit_gate");
+        let forwarded = root.join("forwarded-args.txt");
+        write_executable(
+            &submit,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{forwarded}'\nprintf 'live_submit_status=preview_only\\n'\n",
+                forwarded = forwarded.display()
+            ),
+        );
+        let account_monitor = root.join("run_copytrader_account_monitor");
+        write_executable(
+            &account_monitor,
+            "#!/bin/sh\nout=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--output\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\n done\nmkdir -p \"$(dirname \"$out\")\"\nprintf '{\"account_snapshot\":{\"positions\":[],\"open_orders\":[]}}' > \"$out\"\n",
+        );
+
+        let options = Options {
+            root: root.display().to_string(),
+            user: Some(WALLET.into()),
+            selected_leader_env: Some(selected_env.display().to_string()),
+            proxy: None,
+            watch_limit: 10,
+            loop_count: 1,
+            forever: false,
+            loop_interval_ms: 0,
+            min_open_usdc: 1.0,
+            max_open_usdc: 100.0,
+            flat_score: 50,
+            max_total_exposure_usdc: Some("100".into()),
+            max_order_usdc: Some("10".into()),
+            account_snapshot: Some("runtime-verify-account/dashboard.json".into()),
+            account_snapshot_max_age_secs: 300,
+            allow_live_submit: true,
+            force_live_submit: false,
+            ignore_seen_tx: false,
+            activity_source_verified: false,
+            activity_under_budget: false,
+            activity_capability_detected: false,
+            positions_under_budget: false,
+            watch_bin: Some(watch.display().to_string()),
+            live_submit_bin: Some(submit.display().to_string()),
+            account_monitor_bin: Some(account_monitor.display().to_string()),
+        };
+
+        let lines = run_minmax_follow(&options).expect("strategy should succeed");
+        assert!(lines.iter().any(|line| line == "watch_has_new_activity=false"));
+        assert!(lines.iter().any(|line| line == "account_snapshot_refresh_status=ok"));
+        assert!(lines.iter().any(|line| line == "submit_status=skipped_no_new_activity"));
+        assert!(!forwarded.exists(), "submit should not be invoked when no new activity");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn run_minmax_follow_skips_live_submit_when_account_snapshot_refresh_fails() {
+        let root = unique_temp_dir("skip-refresh-failed");
+        fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
+        let selected_env = root.join(".omx/discovery/selected-leader.env");
+        fs::write(
+            &selected_env,
+            format!("COPYTRADER_DISCOVERY_WALLET={WALLET}\nCOPYTRADER_LEADER_WALLET={WALLET}\n"),
+        )
+        .expect("env written");
+
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            &format!(
+                "#!/bin/sh\nmkdir -p '{root}/.omx/live-activity/{wallet}'\ncat > '{root}/.omx/live-activity/{wallet}/latest-activity.json' <<'JSON'\n[\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":20,\"type\":\"TRADE\",\"asset\":\"asset-1\",\"size\":20.0,\"usdcSize\":10.0,\"transactionHash\":\"0xnew\",\"price\":0.5,\"side\":\"BUY\",\"slug\":\"market-a\"}}\n]\nJSON\nprintf 'watch_user={wallet}\\npoll_transport_mode=direct\\npoll_new_events=1\\nlatest_new_tx=0xnew\\n'\n",
+                root = root.display(),
+                wallet = WALLET
+            ),
+        );
+        let submit = root.join("run_copytrader_live_submit_gate");
+        let forwarded = root.join("forwarded-args.txt");
+        write_executable(
+            &submit,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{forwarded}'\nprintf 'live_submit_status=submitted\\n'\n",
+                forwarded = forwarded.display()
+            ),
+        );
+        let account_monitor = root.join("run_copytrader_account_monitor");
+        write_executable(
+            &account_monitor,
+            "#!/bin/sh\nprintf 'refresh failed\\n' >&2\nexit 1\n",
+        );
+
+        let options = Options {
+            root: root.display().to_string(),
+            user: Some(WALLET.into()),
+            selected_leader_env: Some(selected_env.display().to_string()),
+            proxy: None,
+            watch_limit: 10,
+            loop_count: 1,
+            forever: false,
+            loop_interval_ms: 0,
+            min_open_usdc: 1.0,
+            max_open_usdc: 100.0,
+            flat_score: 50,
+            max_total_exposure_usdc: Some("100".into()),
+            max_order_usdc: Some("10".into()),
+            account_snapshot: Some("runtime-verify-account/dashboard.json".into()),
+            account_snapshot_max_age_secs: 300,
+            allow_live_submit: true,
+            force_live_submit: false,
+            ignore_seen_tx: false,
+            activity_source_verified: false,
+            activity_under_budget: false,
+            activity_capability_detected: false,
+            positions_under_budget: false,
+            watch_bin: Some(watch.display().to_string()),
+            live_submit_bin: Some(submit.display().to_string()),
+            account_monitor_bin: Some(account_monitor.display().to_string()),
+        };
+
+        let lines = run_minmax_follow(&options).expect("strategy should succeed");
+        assert!(lines.iter().any(|line| line == "account_snapshot_refresh_status=failed"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "submit_status=skipped_account_snapshot_refresh_failed")
+        );
+        assert!(!forwarded.exists(), "submit should not be invoked when refresh failed");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
     }
 }
