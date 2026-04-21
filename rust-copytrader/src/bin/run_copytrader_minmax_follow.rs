@@ -28,6 +28,7 @@ struct Options {
     max_order_usdc: Option<String>,
     account_snapshot: Option<String>,
     account_snapshot_max_age_secs: u64,
+    activity_max_age_secs: u64,
     allow_live_submit: bool,
     force_live_submit: bool,
     ignore_seen_tx: bool,
@@ -58,6 +59,10 @@ impl Default for Options {
             max_order_usdc: None,
             account_snapshot: None,
             account_snapshot_max_age_secs: 300,
+            activity_max_age_secs: env::var("COPYTRADER_ACTIVITY_MAX_AGE_SECS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(60),
             allow_live_submit: false,
             force_live_submit: false,
             ignore_seen_tx: false,
@@ -137,7 +142,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_minmax_follow [--root <path>] [--user <wallet>] [--selected-leader-env <path>] [--proxy <url>] [--watch-limit <n>] [--loop-count <n>] [--forever] [--loop-interval-ms <n>] [--min-open-usdc <decimal>] [--max-open-usdc <decimal>] [--flat-score <1..100>] [--max-total-exposure-usdc <decimal>] [--max-order-usdc <decimal>] [--account-snapshot <path>] [--account-snapshot-max-age-secs <n>] [--allow-live-submit] [--force-live-submit] [--ignore-seen-tx] [--activity-source-verified] [--activity-under-budget] [--activity-capability-detected] [--positions-under-budget] [--watch-bin <path>] [--live-submit-bin <path>] [--account-monitor-bin <path>]"
+        "usage: run_copytrader_minmax_follow [--root <path>] [--user <wallet>] [--selected-leader-env <path>] [--proxy <url>] [--watch-limit <n>] [--loop-count <n>] [--forever] [--loop-interval-ms <n>] [--min-open-usdc <decimal>] [--max-open-usdc <decimal>] [--flat-score <1..100>] [--max-total-exposure-usdc <decimal>] [--max-order-usdc <decimal>] [--account-snapshot <path>] [--account-snapshot-max-age-secs <n>] [--activity-max-age-secs <n>] [--allow-live-submit] [--force-live-submit] [--ignore-seen-tx] [--activity-source-verified] [--activity-under-budget] [--activity-capability-detected] [--positions-under-budget] [--watch-bin <path>] [--live-submit-bin <path>] [--account-monitor-bin <path>]"
     );
 }
 
@@ -188,6 +193,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                     &next_value(&mut iter, arg)?,
                     "account-snapshot-max-age-secs",
                 )?
+            }
+            "--activity-max-age-secs" => {
+                options.activity_max_age_secs =
+                    parse_u64(&next_value(&mut iter, arg)?, "activity-max-age-secs")?
             }
             "--allow-live-submit" => options.allow_live_submit = true,
             "--force-live-submit" => {
@@ -401,9 +410,24 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
                 || line.starts_with("latest_new_")
         }));
         let poll_new_events = extract_metric_usize(&lines, "poll_new_events");
+        let latest_new_timestamp = extract_metric_u64(&lines, "latest_new_timestamp");
+        let latest_new_age_secs = latest_new_timestamp
+            .map(|timestamp| watch_finished_at_unix_ms.saturating_sub(timestamp.saturating_mul(1000)) / 1000);
         lines.push(format!(
             "watch_has_new_activity={}",
             poll_new_events.is_some_and(|count| count > 0)
+        ));
+        lines.push(format!(
+            "watch_latest_new_activity_age_secs={}",
+            latest_new_age_secs
+                .map(|value| value.to_string())
+                .unwrap_or_default()
+        ));
+        lines.push(format!(
+            "watch_latest_new_activity_under_budget={}",
+            latest_new_age_secs
+                .map(|value| value <= options.activity_max_age_secs)
+                .unwrap_or(false)
         ));
         let refresh_lines = run_account_snapshot_refresh(&root, options);
         let refresh_ok = refresh_lines
@@ -413,6 +437,16 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
 
         if !options.force_live_submit && poll_new_events == Some(0) {
             lines.push("submit_status=skipped_no_new_activity".to_string());
+            lines.push(format!("report_path={}", report_path.display()));
+            persist_iteration_report(&state_root, &report_path, &lines)?;
+            if !options.forever && index + 1 >= loop_total {
+                break lines;
+            }
+        } else if !options.force_live_submit
+            && poll_new_events.is_some_and(|count| count > 0)
+            && latest_new_age_secs.is_some_and(|age| age > options.activity_max_age_secs)
+        {
+            lines.push("submit_status=skipped_stale_new_activity".to_string());
             lines.push(format!("report_path={}", report_path.display()));
             persist_iteration_report(&state_root, &report_path, &lines)?;
             if !options.forever && index + 1 >= loop_total {
@@ -558,6 +592,10 @@ fn run_live_submit(
         args.push("--account-snapshot-max-age-secs".to_string());
         args.push(options.account_snapshot_max_age_secs.to_string());
     }
+    if options.activity_max_age_secs > 0 {
+        args.push("--activity-max-age-secs".to_string());
+        args.push(options.activity_max_age_secs.to_string());
+    }
     let output = run_command(live_submit_bin, &args, Some(Path::new(".")))?;
     String::from_utf8(output.stdout)
         .map_err(|error| format!("run_copytrader_live_submit_gate stdout was not utf-8: {error}"))
@@ -650,6 +688,14 @@ fn extract_metric_usize(lines: &[String], key: &str) -> Option<usize> {
     lines.iter().find_map(|line| {
         line.strip_prefix(&prefix)
             .and_then(|value| value.parse::<usize>().ok())
+    })
+}
+
+fn extract_metric_u64(lines: &[String], key: &str) -> Option<u64> {
+    let prefix = format!("{key}=");
+    lines.iter().find_map(|line| {
+        line.strip_prefix(&prefix)
+            .and_then(|value| value.parse::<u64>().ok())
     })
 }
 
