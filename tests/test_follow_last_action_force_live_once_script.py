@@ -12,4 +12,5 @@ class FollowLastActionForceLiveOnceScriptTests(unittest.TestCase):
         self.assertIn("run_rust_live_submit_gate.sh", text)
         self.assertIn("using cached latest activity", text)
         self.assertIn("last-submitted-tx.txt", text)
+        self.assertNotIn("127.0.0.1:7897", text)
         self.assertNotIn("python3", text)

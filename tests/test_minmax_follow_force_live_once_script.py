@@ -10,6 +10,7 @@ class MinmaxFollowForceLiveOnceScriptTests(unittest.TestCase):
         self.assertIn("--ignore-seen-tx", text)
         self.assertIn("--min-open-usdc", text)
         self.assertIn("--max-open-usdc", text)
+        self.assertNotIn("127.0.0.1:7897", text)
         self.assertNotIn("PYTHON_BIN", text)
         self.assertNotIn("python3", text)
         self.assertNotIn("run_refresh_account_snapshot.sh", text)

@@ -3,7 +3,19 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CARGO_BIN="${CARGO_BIN:-cargo}"
-PROXY_DEFAULT="${POLYMARKET_CURL_PROXY:-http://127.0.0.1:7897}"
+PROXY_DEFAULT="${POLYMARKET_CURL_PROXY:-}"
+
+proxy_from_args() {
+  local prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--proxy" ]]; then
+      printf '%s\n' "$arg"
+      return 0
+    fi
+    prev="$arg"
+  done
+  return 1
+}
 
 cd "$ROOT/rust-copytrader"
 
@@ -25,14 +37,21 @@ args=(
   1
 )
 
-if [[ -n "${PROXY_DEFAULT}" ]]; then
+CLI_PROXY="$(proxy_from_args "$@" || true)"
+if [[ -n "${PROXY_DEFAULT}" && -z "${CLI_PROXY}" ]]; then
   args+=(--proxy "$PROXY_DEFAULT")
 fi
 
 echo "== rust minmax force live once =="
 echo "root=$ROOT"
 echo "cargo=$CARGO_BIN"
-echo "proxy=${PROXY_DEFAULT:-disabled}"
+if [[ -n "${CLI_PROXY}" ]]; then
+  echo "proxy=$CLI_PROXY"
+elif [[ -n "${PROXY_DEFAULT}" ]]; then
+  echo "proxy=$PROXY_DEFAULT"
+else
+  echo "proxy=disabled"
+fi
 echo
 
 "$CARGO_BIN" "${args[@]}" "$@"

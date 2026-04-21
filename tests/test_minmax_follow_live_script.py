@@ -16,6 +16,7 @@ class MinmaxFollowLiveScriptTests(unittest.TestCase):
         self.assertIn('RESTART_ON_FAILURE="${RESTART_ON_FAILURE:-1}"', text)
         self.assertIn('MAX_RESTARTS="${MAX_RESTARTS:-20}"', text)
         self.assertIn('RESTART_DELAY_SECONDS="${RESTART_DELAY_SECONDS:-5}"', text)
+        self.assertNotIn("127.0.0.1:7897", text)
         self.assertIn('--max-total-exposure-usdc "$MAX_TOTAL_EXPOSURE_USDC"', text)
         self.assertIn('--max-order-usdc "$MAX_ORDER_USDC"', text)
         self.assertIn('--account-snapshot "$ACCOUNT_SNAPSHOT_PATH"', text)

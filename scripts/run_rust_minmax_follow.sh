@@ -3,10 +3,22 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CARGO_BIN="${CARGO_BIN:-cargo}"
-PROXY_DEFAULT="${POLYMARKET_CURL_PROXY:-http://127.0.0.1:7897}"
+PROXY_DEFAULT="${POLYMARKET_CURL_PROXY:-}"
 WATCH_BIN_DEFAULT="${WATCH_BIN_DEFAULT:-$ROOT/scripts/run_rust_watch_copy_leader_activity.sh}"
 LIVE_SUBMIT_BIN_DEFAULT="${LIVE_SUBMIT_BIN_DEFAULT:-$ROOT/scripts/run_rust_live_submit_gate.sh}"
 ACCOUNT_MONITOR_BIN_DEFAULT="${ACCOUNT_MONITOR_BIN_DEFAULT:-$ROOT/scripts/run_rust_show_account_info.sh}"
+
+proxy_from_args() {
+  local prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--proxy" ]]; then
+      printf '%s\n' "$arg"
+      return 0
+    fi
+    prev="$arg"
+  done
+  return 1
+}
 
 cd "$ROOT/rust-copytrader"
 
@@ -19,7 +31,8 @@ args=(
   ..
 )
 
-if [[ -n "${PROXY_DEFAULT}" ]]; then
+CLI_PROXY="$(proxy_from_args "$@" || true)"
+if [[ -n "${PROXY_DEFAULT}" && -z "${CLI_PROXY}" ]]; then
   args+=(--proxy "$PROXY_DEFAULT")
 fi
 
@@ -32,7 +45,9 @@ args+=("$@")
 echo "== rust minmax follow =="
 echo "root=$ROOT"
 echo "cargo=$CARGO_BIN"
-if [[ -n "${PROXY_DEFAULT}" ]]; then
+if [[ -n "${CLI_PROXY}" ]]; then
+  echo "proxy=$CLI_PROXY"
+elif [[ -n "${PROXY_DEFAULT}" ]]; then
   echo "proxy=$PROXY_DEFAULT"
 else
   echo "proxy=disabled"

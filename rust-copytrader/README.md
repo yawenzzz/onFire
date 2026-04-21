@@ -467,6 +467,20 @@ WATCH_LIMIT=80 \
 bash scripts/run_rust_minmax_follow_live.sh --user <wallet>
 ```
 
+现在这些 wrapper **默认不再内置代理**。  
+如果你需要走代理，显式外部传参即可，例如：
+
+```bash
+bash scripts/run_rust_minmax_follow_live.sh --user <wallet> --proxy http://127.0.0.1:7897
+```
+
+或者：
+
+```bash
+POLYMARKET_CURL_PROXY=http://127.0.0.1:7897 \
+bash scripts/run_rust_minmax_follow_live.sh --user <wallet>
+```
+
 如果你想关掉自动重启：
 
 ```bash
@@ -543,6 +557,14 @@ bash scripts/run_rust_minmax_follow_live_submit_once.sh --user <wallet>
 
 ```bash
 bash scripts/run_rust_follow_last_action_force_live_once.sh --user <wallet>
+```
+
+如果 force-live-once 要走代理，也改成显式传：
+
+```bash
+bash scripts/run_rust_follow_last_action_force_live_once.sh \
+  --user <wallet> \
+  --proxy http://127.0.0.1:7897
 ```
 
 这个 force-live 验证脚本会：

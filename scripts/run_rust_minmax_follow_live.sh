@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROXY_DEFAULT="${POLYMARKET_CURL_PROXY:-http://127.0.0.1:7897}"
+PROXY_DEFAULT="${POLYMARKET_CURL_PROXY:-}"
 MIN_OPEN_USDC="${MIN_OPEN_USDC:-1}"
 MAX_OPEN_USDC="${MAX_OPEN_USDC:-100}"
 MAX_TOTAL_EXPOSURE_USDC="${MAX_TOTAL_EXPOSURE_USDC:-100}"
@@ -17,11 +17,33 @@ RESTART_ON_FAILURE="${RESTART_ON_FAILURE:-1}"
 MAX_RESTARTS="${MAX_RESTARTS:-20}"
 RESTART_DELAY_SECONDS="${RESTART_DELAY_SECONDS:-5}"
 
+proxy_from_args() {
+  local prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--proxy" ]]; then
+      printf '%s\n' "$arg"
+      return 0
+    fi
+    prev="$arg"
+  done
+  return 1
+}
+
 cd "$ROOT"
+
+CLI_PROXY="$(proxy_from_args "$@" || true)"
+DISPLAY_PROXY="$PROXY_DEFAULT"
+if [[ -n "${CLI_PROXY}" ]]; then
+  DISPLAY_PROXY="$CLI_PROXY"
+fi
 
 echo "== rust minmax follow live =="
 echo "root=$ROOT"
-echo "proxy=$PROXY_DEFAULT"
+if [[ -n "${DISPLAY_PROXY}" ]]; then
+  echo "proxy=$DISPLAY_PROXY"
+else
+  echo "proxy=disabled"
+fi
 echo "min_open_usdc=$MIN_OPEN_USDC"
 echo "max_open_usdc=$MAX_OPEN_USDC"
 echo "max_total_exposure_usdc=$MAX_TOTAL_EXPOSURE_USDC"

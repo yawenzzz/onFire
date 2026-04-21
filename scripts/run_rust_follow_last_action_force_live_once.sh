@@ -3,7 +3,6 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CARGO_BIN="${CARGO_BIN:-cargo}"
-PROXY_DEFAULT="${POLYMARKET_CURL_PROXY:-http://127.0.0.1:7897}"
 WATCH_BIN_DEFAULT="${WATCH_BIN_DEFAULT:-$ROOT/scripts/run_rust_watch_copy_leader_activity.sh}"
 LIVE_SUBMIT_BIN_DEFAULT="${LIVE_SUBMIT_BIN_DEFAULT:-$ROOT/scripts/run_rust_live_submit_gate.sh}"
 WATCH_LIMIT="${WATCH_LIMIT:-50}"
@@ -14,11 +13,16 @@ IGNORE_SEEN_TX="${IGNORE_SEEN_TX:-0}"
 REQUIRE_NEW_ACTIVITY="${REQUIRE_NEW_ACTIVITY:-0}"
 
 USER_WALLET=""
+PROXY_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --user)
       USER_WALLET="$2"
+      shift 2
+      ;;
+    --proxy)
+      PROXY_OVERRIDE="$2"
       shift 2
       ;;
     *)
@@ -32,6 +36,8 @@ if [[ -z "$USER_WALLET" ]]; then
   echo "missing --user <wallet>" >&2
   exit 2
 fi
+
+PROXY_DEFAULT="${PROXY_OVERRIDE:-${POLYMARKET_CURL_PROXY:-}}"
 
 extract_latest_tx() {
   local latest_activity="$1"

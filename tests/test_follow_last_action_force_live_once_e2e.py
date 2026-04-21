@@ -297,3 +297,63 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             shutil.rmtree(log_dir, ignore_errors=True)
             shutil.rmtree(state_root, ignore_errors=True)
             shutil.rmtree(activity_root, ignore_errors=True)
+
+    def test_force_live_once_accepts_external_proxy_argument(self) -> None:
+        root = Path.cwd()
+        state_root = root / ".omx" / "force-live-follow" / WALLET
+        activity_root = root / ".omx" / "live-activity" / WALLET
+        log_dir = Path(tempfile.mkdtemp(prefix="force-live-once-proxy-arg-"))
+        try:
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+            activity_root.mkdir(parents=True, exist_ok=True)
+
+            latest_activity = activity_root / "latest-activity.json"
+            latest_activity.write_text(
+                '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","size":2.0,"usdcSize":1.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
+                % WALLET
+            )
+
+            watch = log_dir / "watch.sh"
+            watch_args = log_dir / "watch-args.txt"
+            submit = log_dir / "submit.sh"
+
+            self._make_exec(
+                watch,
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nprintf 'watch_user=%s\\n'\n"
+                % ("%s", watch_args, WALLET),
+            )
+            self._make_exec(
+                submit,
+                "#!/usr/bin/env bash\nprintf 'live_submit_status=submitted\\n'\n",
+            )
+
+            env = os.environ.copy()
+            env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
+            env["POLYMARKET_CURL_PROXY"] = ""
+
+            completed = subprocess.run(
+                [
+                    "bash",
+                    "scripts/run_rust_follow_last_action_force_live_once.sh",
+                    "--user",
+                    WALLET,
+                    "--proxy",
+                    "http://proxy.example:8080",
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            self.assertIn("proxy=http://proxy.example:8080", completed.stdout)
+            forwarded = watch_args.read_text()
+            self.assertIn("--proxy", forwarded)
+            self.assertIn("http://proxy.example:8080", forwarded)
+        finally:
+            shutil.rmtree(log_dir, ignore_errors=True)
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
