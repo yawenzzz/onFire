@@ -11,6 +11,8 @@ class MinmaxFollowLiveScriptTests(unittest.TestCase):
         self.assertNotIn("run_user_channel_probe.sh", text)
         self.assertIn('FOLLOW_FOREVER="${FOLLOW_FOREVER:-0}"', text)
         self.assertIn('AUTO_SUBMIT="${AUTO_SUBMIT:-0}"', text)
+        self.assertIn('MIN_OPEN_USDC="${MIN_OPEN_USDC:-0.1}"', text)
+        self.assertIn('MAX_OPEN_USDC="${MAX_OPEN_USDC:-10}"', text)
         self.assertIn('MAX_TOTAL_EXPOSURE_USDC="${MAX_TOTAL_EXPOSURE_USDC:-100}"', text)
         self.assertIn('MAX_ORDER_USDC="${MAX_ORDER_USDC:-10}"', text)
         self.assertIn('RESTART_ON_FAILURE="${RESTART_ON_FAILURE:-1}"', text)

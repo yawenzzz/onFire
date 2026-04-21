@@ -446,6 +446,8 @@ bash scripts/run_rust_minmax_follow_live.sh \
 
 这个 live 脚本默认会带：
 
+- `--min-open-usdc 0.1`
+- `--max-open-usdc 10`
 - `--max-total-exposure-usdc 100`
 - `--max-order-usdc 10`
 - `--account-snapshot runtime-verify-account/dashboard.json`
