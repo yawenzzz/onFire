@@ -1,6 +1,0 @@
-services:
-  polymarket-arb-shadow:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    command: python3 -m polymarket_arb.app.entrypoint --input-file examples/shadow-input.json --output /tmp/demo-report.json

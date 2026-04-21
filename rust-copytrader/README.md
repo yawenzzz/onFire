@@ -78,42 +78,26 @@
   - `latest-activity.json`
   - `activity-events.jsonl`
   - `seen-tx.txt`
-- `.omx/guarded-cycle/`
-  - guarded runtime session 证据
 - `.omx/live-submit/`
   - live submit gate 报告
-- `.omx/operator-demo/`
-  - 一键 operator flow 的整合报告
-- `.omx/auto-guarded/`
-  - 自动循环 lane 的整合报告
 
 如果你只想知道“这次到底跑成什么样”，优先看：
 
-- `.omx/operator-demo/discover-and-demo-*.txt`
-- `.omx/auto-guarded/auto-guarded-*.txt`
 - `.omx/live-submit/live-submit-*.txt`
+
+账户监控（一次性快照 / 持续轮询 / user-channel websocket）单独文档见：
+
+- `ACCOUNT_MONITOR.md`
+- `COPYTRADE_LATENCY.md`
 
 ---
 
 ## 4. 运行前准备
 
-### 4.1 Rust / Python
+### 4.1 Rust
 你至少需要：
 
 - Rust / Cargo
-- 一个可用 Python 3
-- 本地可用的：
-  - `py_clob_client`
-  - `py_order_utils`
-
-这个仓库当前环境默认优先用：
-- `$HOME/anaconda3/bin/python3`
-
-如果你想强制指定 Python：
-
-```bash
-export PYTHON_BIN=$HOME/anaconda3/bin/python3
-```
 
 ---
 
@@ -151,6 +135,11 @@ PRIVATE_KEY=...
 SIGNATURE_TYPE=0
 FUNDER_ADDRESS=...
 CLOB_HOST=https://clob.polymarket.com
+COPYTRADER_MAX_TOTAL_EXPOSURE_USDC=100
+COPYTRADER_MAX_ORDER_USDC=10
+COPYTRADER_ACCOUNT_SNAPSHOT_PATH=runtime-verify-account/dashboard.json
+COPYTRADER_ACCOUNT_SNAPSHOT_MAX_AGE_SECS=300
+COPYTRADER_ACTIVITY_MAX_AGE_SECS=60
 ```
 
 放在 repo root：
@@ -197,9 +186,8 @@ cargo run -- --root ..
 requested_mode=live_listen
 decision=blocked:activity_source_unverified
 live_mode_unlocked=false
-signing_command=python3 scripts/sign_order.py --json
-l2_header_helper=python3 scripts/sign_l2.py --json
-submit_command=python3 scripts/submit_helper.py --json --curl-bin curl
+signing_command=rust_sdk
+submit_command=curl
 ```
 
 这说明：
@@ -209,254 +197,16 @@ submit_command=python3 scripts/submit_helper.py --json --curl-bin curl
 
 ---
 
-### 6.2 真正跑 helper smoke
+## 7. 第二步：真实轮询 leader activity
+
+如果你已经知道要跟的 wallet，直接跳过 discovery，开始实时轮询：
 
 ```bash
 cd ~/onFire/rust-copytrader
-cargo run -- --smoke-helper --root ..
+cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1:7897 --user <wallet> --poll-count 1
 ```
 
-如果成功，你会看到：
-- `helper_smoke=ok`
-- `order_signature=...`
-- `l2_signature=...`
-- `submit_preview_program=...`
-
-也就是说：
-- 本地签名 helper 能跑
-- L2 helper 能跑
-- submit preview 能构造出来
-
-你也可以直接用 root 脚本：
-
-```bash
-bash scripts/run_rust_helper_smoke.sh
-```
-
----
-
-## 7. 第二步：真实抓榜 + 真实选 leader
-
-### 7.1 一把做完 discovery -> smart money 筛选 -> 选 leader
-
-```bash
-cd ~/onFire/rust-copytrader
-cargo run --bin discover_copy_leader -- \
-  --discovery-dir ../.omx/discovery \
-  --proxy http://127.0.0.1:7897 \
-  --category SPECIALIST \
-  --connect-timeout-ms 8000 \
-  --max-time-ms 20000
-```
-
-成功后你会得到：
-- `.omx/discovery/leaderboard-*.json`
-- `.omx/discovery/activity-*.json`
-- `.omx/discovery/positions-*.json`
-- `.omx/discovery/value-*.json`
-- `.omx/discovery/traded-*.json`
-- `.omx/discovery/wallet-filter-v1-report.txt`
-- `.omx/discovery/selected-leader.env`
-
-这里要注意一件事：
-
-> `discover_copy_leader` 现在已经不是“按原始榜单 rank 直接拿第 1 名”。  
-> 它会严格按 `rust-copytrader/wallet_filter_v1.md` 去做 smart money 钱包筛选：
-> - 同类别 `WEEK + MONTH` 交集做候选池
-> - `ALL + PNL` 只加分
-> - `VOL` 榜只当红旗
-> - 再叠 `/activity`、`/positions`、`/value`、`/traded`、市场元数据做硬过滤 + 打分
-
-stdout 里会有类似：
-
-```text
-selected_wallet=0x...
-selected_category=SPORTS
-selected_score=87
-core_pool_count=3
-core_pool_wallets=0xaaa:95,0xbbb:88,0xccc:83
-active_pool_count=2
-active_pool_wallets=0xaaa:95,0xbbb:88
-selected_rank=12
-selected_week_rank=8
-selected_month_rank=12
-selected_all_rank=41
-selected_pnl=...
-selected_username=...
-filter_report_path=../.omx/discovery/wallet-filter-v1-report.txt
-latest_activity_side=BUY
-latest_activity_slug=...
-latest_activity_tx=0x...
-```
-
-如果你想看它为什么选这个 wallet，不要只看 `selected_wallet`，直接看：
-
-```bash
-cat ../.omx/discovery/wallet-filter-v1-report.txt
-```
-
-里面会直接告诉你每个候选钱包的：
-- score
-- maker rebate 情况
-- flip60
-- median hold
-- tail24 / tail72
-- copyable ratio
-- neg risk share
-- category purity
-- unique markets / traded markets
-- 以及被踢掉的原因
-
-如果这个类别里真的有通过硬过滤的钱包，现在还会额外给你两层池子：
-
-- `core_pool_*`
-  - 通过硬过滤的钱包里，按分数排前 **最多 5 个**
-- `active_pool_*`
-  - 在 core pool 里，再只保留 **当前还有仓位** 的钱包，按分数取前 **最多 2 个**
-
-也就是说：
-> 现在不是只能给你一个 wallet，而是开始把“核心池 / 激活池”也顺手算出来了。
-
-如果你看这些字段还是嫌抽象，可以直接看这份解释文档：
-
-```bash
-cat wallet_filter_metrics_explained.md
-```
-
-里面已经把 `score_total`、`maker_rebate_count`、`tail24`、`copyable_ratio`、`rejection_reasons` 这些指标全部翻成人话了。
-
-另外现在 report 里还会多出：
-
-- `review_status`
-- `review_reasons`
-
-这两个字段不是“这轮筛选过不过”，而是：
-
-> **如果一个钱包已经进了你的长期观察池，现在是不是该降级 / 拉黑。**
-
-### 7.1b 如果你想一口气扫多个类别
-
-如果你不是只看一个类别，而是想看：
-
-- `SPORTS`
-- `POLITICS`
-- `CRYPTO`
-- 或整个 `SPECIALIST`
-
-那就直接跑：
-
-```bash
-cd ~/onFire/rust-copytrader
-cargo run --bin scan_copy_leader_categories -- \
-  --discovery-dir ../.omx/discovery \
-  --categories SPECIALIST \
-  --proxy http://127.0.0.1:7897 \
-  --limit 1 \
-  --connect-timeout-ms 5000 \
-  --max-time-ms 12000
-```
-
-这个命令会：
-- 按类别调用 `discover_copy_leader`
-- 保留每个类别自己的 report
-- 再生成一份总汇总：
-  - `.omx/discovery/wallet-filter-v1-summary.txt`
-
-你最该先看：
-
-```bash
-cat ../.omx/discovery/wallet-filter-v1-summary.txt
-```
-
-它会告诉你：
-- 哪些 category 直接被拒了
-- 哪些 category 通过了
-- 每个 category 对应的 report 路径
-
-而且 summary 现在还会直接给你这几组聚合指标：
-
-- `best_rejected_*`
-  - strict 下最接近通过的类别
-- `best_watchlist_*`
-  - strict 没过，但最值得继续盯的观察对象
-- `watchlist_candidates`
-  - 当前最值得盯的前几条 watchlist lane
-- `closest_rejected_categories`
-  - 当前最接近过 strict gate 的前几条 lane
-
-也就是说：
-> 现在不只是“扫完以后给你一堆 report”，而是已经会直接把最该关注的类别排出来。
-
-比如会看到这种结构：
-
-```text
-== category SPORTS ==
-status=rejected
-error=...
-report_path=../.omx/discovery/wallet-filter-v1-sports.txt
-```
-
-所以现在不是只能“逐个手工试 category”，而是已经有了**批量扫 smart-money category 池**的入口。
-
-### 7.2 你也可以分开跑
-
-抓榜：
-
-```bash
-cargo run --bin fetch_trader_leaderboard -- \
-  --category OVERALL \
-  --time-period DAY \
-  --order-by PNL \
-  --limit 20 \
-  --proxy http://127.0.0.1:7897 \
-  --output ../.omx/discovery/leaderboard-overall-day-pnl.json
-```
-
-抓某个用户 activity：
-
-```bash
-cargo run --bin fetch_user_activity -- \
-  --user 0x你的wallet \
-  --type TRADE \
-  --limit 20 \
-  --proxy http://127.0.0.1:7897 \
-  --output ../.omx/discovery/activity-0x你的wallet-trade.json
-```
-
-用 leaderboard 结果选 leader：
-
-```bash
-cargo run --bin select_copy_leader -- \
-  --leaderboard ../.omx/discovery/leaderboard-overall-day-pnl.json \
-  --output ../.omx/discovery/selected-leader.env
-```
-
-用 activity 结果选 leader：
-
-```bash
-cargo run --bin select_copy_leader -- \
-  --activity ../.omx/discovery/activity-0x你的wallet-trade.json \
-  --output ../.omx/discovery/selected-leader.env
-```
-
----
-
-## 8. 第三步：真实 watcher，盯 leader 的 activity
-
-```bash
-cd ~/onFire/rust-copytrader
-cargo run --bin watch_copy_leader_activity -- \
-  --root .. \
-  --proxy http://127.0.0.1:7897 \
-  --poll-count 1
-```
-
-成功后你会看到：
-- `watch_user=0x...`
-- `watch_latest_path=.../latest-activity.json`
-- `watch_log_path=.../activity-events.jsonl`
-
-落地文件：
+它会把结果落到：
 - `.omx/live-activity/<wallet>/latest-activity.json`
 - `.omx/live-activity/<wallet>/activity-events.jsonl`
 - `.omx/live-activity/<wallet>/seen-tx.txt`
@@ -467,29 +217,7 @@ cargo run --bin watch_copy_leader_activity -- \
 
 ---
 
-## 9. 第四步：把真实 activity 喂进 guarded runtime
-
-```bash
-cd ~/onFire/rust-copytrader
-cargo run --bin run_copytrader_guarded_cycle -- --root ..
-```
-
-成功后通常能看到：
-- `cycle_outcome=processed`
-- `runtime_mode=replay`
-- `last_submit_status=verified`
-
-这里要说清楚：
-
-- 这一步是 **真实 activity 输入**
-- 但 runtime 执行侧仍然是 **guarded / replay-backed**
-- 它的作用是证明整条热路径在当前约束下能正确吃进去
-
-不是说已经真下单了。
-
----
-
-## 10. 第五步：跑到 live submit gate（默认安全）
+## 9. 第四步：跑到 live submit gate（默认安全）
 
 ### 10.1 单独跑 preview gate
 
@@ -497,10 +225,9 @@ cargo run --bin run_copytrader_guarded_cycle -- --root ..
 cd ~/onFire/rust-copytrader
 cargo run --bin run_copytrader_live_submit_gate -- \
   --root .. \
-  --activity-source-verified \
-  --activity-under-budget \
-  --activity-capability-detected \
-  --positions-under-budget
+  --max-total-exposure-usdc 100 \
+  --max-order-usdc 10 \
+  --account-snapshot runtime-verify-account/dashboard.json
 ```
 
 如果一切正常，你会看到：
@@ -528,82 +255,31 @@ live_submit_status=preview_only
 - `activity_tx=...`
 - `activity_side=...`
 - `activity_asset=...`
+- `activity_age_secs=...`
+- `preview_readiness=...`
+- `live_submit_readiness=...`
+- `risk_gate_status=...`
 - `unsigned_maker_amount=...`
 - `unsigned_taker_amount=...`
 - `preview_program=...`
 - `preview_args=...`
 
----
-
-## 11. 第六步：一键 operator flow（最推荐）
-
-如果你不想一步一步敲，直接跑这条：
-
-```bash
-cd ~/onFire/rust-copytrader
-cargo run --bin run_copytrader_operator_flow -- \
-  --root .. \
-  --discovery-dir ../.omx/discovery \
-  --proxy http://127.0.0.1:7897 \
-  --watch-poll-count 1 \
-  --connect-timeout-ms 8000 \
-  --max-time-ms 20000 \
-  --live-submit-gate
-```
-
-它会串起来：
-
-1. discovery
-2. 选 leader
-3. watcher
-4. guarded cycle
-5. live submit gate
-6. operator demo report
-
-最终会落：
-- `.omx/operator-demo/discover-and-demo-*.txt`
-
-你最该看这些字段：
- - `selected_category=...`
- - `selected_score=...`
-- `selected_rank=...`
-- `selected_pnl=...`
-- `watch_user=...`
-- `cycle_outcome=processed`
-- `live_gate_status=unlocked`
-- `live_submit_status=preview_only`
-
-如果这些都在，就说明：
-
-> **真实公开数据 -> 真实 leader -> 真实 watcher -> 真实 live preview**
-> 已经串通了。
+### 10.3 新的安全语义
+- `preview_args` 现在会**自动脱敏**，不再把 `POLY_API_KEY` / `POLY_SIGNATURE` 之类的敏感头原样写进报告
+- 如果 `selected-leader.env` 里是占位 wallet（比如 `0xleader`），live path 会直接 fail-closed
+- 如果你给了 `--max-total-exposure-usdc` / `--max-order-usdc`，gate 会尝试从 account snapshot 推导当前暴露并给出：
+  - `risk_current_total_exposure_usdc=...`
+  - `risk_projected_total_exposure_usdc=...`
+  - `risk_gate_status=ready|blocked:*`
+- 判断能不能**真下单**时，优先看：
+  - `live_submit_readiness`
+  - 再看 `risk_gate_status`
+- `preview_readiness=ready` 只表示“可以生成 preview”，**不等于**“可以 live submit”
+- `risk_gate_status=blocked:*` 在 preview 下只是提示；在 `--allow-live-submit` 下会直接阻止真下单
 
 ---
 
-## 12. 第七步：自动循环 lane
-
-如果你想让它不是只跑一轮，而是按 loop 跑：
-
-```bash
-cd ~/onFire/rust-copytrader
-cargo run --bin run_copytrader_auto_guarded_loop -- \
-  --root .. \
-  --proxy http://127.0.0.1:7897 \
-  --watch-poll-count 1 \
-  --loop-count 1 \
-  --live-submit-gate
-```
-
-会落：
-- `.omx/auto-guarded/auto-guarded-*.txt`
-
-这条 lane 当前也已经能跑到：
-- `live_gate_status=unlocked`
-- `live_submit_status=preview_only`
-
----
-
-## 13. 真下单怎么做（先看再决定）
+## 10. 真下单怎么做（先看再决定）
 
 先说结论：
 
@@ -621,10 +297,9 @@ cargo run --bin run_copytrader_auto_guarded_loop -- \
 cd ~/onFire/rust-copytrader
 cargo run --bin run_copytrader_live_submit_gate -- \
   --root .. \
-  --activity-source-verified \
-  --activity-under-budget \
-  --activity-capability-detected \
-  --positions-under-budget \
+  --max-total-exposure-usdc 100 \
+  --max-order-usdc 10 \
+  --account-snapshot runtime-verify-account/dashboard.json \
   --allow-live-submit
 ```
 
@@ -665,96 +340,31 @@ cargo run --bin run_copytrader_live_submit_gate -- \
 
 ## 15. 最常用命令速查表
 
-### 15.1 Bootstrap / smoke
+### 15.1 Bootstrap
 
 ```bash
 cd ~/onFire/rust-copytrader
 cargo run -- --root ..
-cargo run -- --smoke-helper --root ..
-cargo run -- --smoke-runtime --root ..
-cargo run -- --operator-demo --root ..
 ```
 
-### 15.2 Discovery
-
-```bash
-cargo run --bin fetch_trader_leaderboard -- --category OVERALL --time-period DAY --order-by PNL --limit 20 --proxy http://127.0.0.1:7897
-cargo run --bin fetch_user_activity -- --user 0xWALLET --type TRADE --limit 20 --proxy http://127.0.0.1:7897
-cargo run --bin discover_copy_leader -- --discovery-dir ../.omx/discovery --proxy http://127.0.0.1:7897 --category SPECIALIST --connect-timeout-ms 8000 --max-time-ms 20000
-```
-
-### 15.3 Watch / guarded
+### 15.2 Watch
 
 ```bash
 cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1:7897 --poll-count 1
-cargo run --bin run_copytrader_guarded_cycle -- --root ..
-cargo run --bin run_copytrader_auto_guarded_loop -- --root .. --proxy http://127.0.0.1:7897 --watch-poll-count 1 --loop-count 1 --live-submit-gate
 ```
 
 ### 15.4 Live preview / live submit
 
 ```bash
-cargo run --bin run_copytrader_live_submit_gate -- --root .. --activity-source-verified --activity-under-budget --activity-capability-detected --positions-under-budget
-cargo run --bin run_copytrader_live_submit_gate -- --root .. --activity-source-verified --activity-under-budget --activity-capability-detected --positions-under-budget --allow-live-submit
+cargo run --bin run_copytrader_live_submit_gate -- --root .. --max-total-exposure-usdc 100 --max-order-usdc 10 --account-snapshot runtime-verify-account/dashboard.json
+cargo run --bin run_copytrader_live_submit_gate -- --root .. --max-total-exposure-usdc 100 --max-order-usdc 10 --account-snapshot runtime-verify-account/dashboard.json --allow-live-submit
 ```
 
-### 15.4b Position targeting demo
-
-如果你想直接看：
-
-- 选中的 leader
-- positions / value
-- 仓位目标引擎算出来的 target / delta
-
-可以直接跑：
-
-```bash
-cargo run --bin run_position_targeting_demo -- --root ..
-```
-
-它会读取：
-- `.omx/discovery/selected-leader.env`
-- `.omx/discovery/positions-<wallet>.json`
-- `.omx/discovery/value-<wallet>.json`
-- `.omx/discovery/markets/*.json`
-
-然后输出：
-- `leader_position_count`
-- `leader_spot_value_usdc`
-- `leader_ewma_value_usdc`
-- `target_count`
-- `delta_count`
-- `diagnostic_total_target_risk_usdc`
 
 并且把报告落到：
 - `.omx/position-targeting/position-targeting-*.txt`
 
-### 15.4c ANSI 轻量终端面板
-
-## 15.4d monitor v1（smart-money 实时监控）
-
-```bash
-cargo run --bin run_copytrader_monitor_v1 -- --root .. --proxy http://127.0.0.1:7897
-```
-
-或者直接一键跑：
-
-```bash
-bash scripts/run_rust_monitor_v2.sh
-```
-
-想切布局宽度：
-
-```bash
-MONITOR_COLUMNS=110 bash scripts/run_rust_monitor_v2.sh
-MONITOR_COLUMNS=90 bash scripts/run_rust_monitor_v2.sh
-```
-
-详细解释见：
-
-- `monitor_v1_explained.md`
-
-## 15.4e min-max activity 跟单策略（新）
+## 15.4c min-max activity 跟单策略（新）
 
 如果你想做一个**超简单、低延时、按 leader 最近 activity 金额归一化开仓**的策略，现在可以直接跑：
 
@@ -791,10 +401,9 @@ bash scripts/run_rust_minmax_follow.sh \
 # 真正放开 live submit（前提是你的 live gate / 签名 / 下单配置都已经准备好）
 bash scripts/run_rust_minmax_follow.sh \
   --user 0xae7c98235d5dc797edfa3d3af2e0334238a4487e \
-  --activity-source-verified \
-  --activity-under-budget \
-  --activity-capability-detected \
-  --positions-under-budget \
+  --max-total-exposure-usdc 100 \
+  --max-order-usdc 10 \
+  --account-snapshot runtime-verify-account/dashboard.json \
   --allow-live-submit
 ```
 
@@ -805,11 +414,28 @@ bash scripts/run_rust_minmax_follow.sh \
 - `recent_usdc_max`
 - `normalized_score`
 - `normalized_open_usdc`
+- `planned_open_usdc`
+- `condition_key`
+- `condition_outcome`
+- `condition_same_outcome_sum_usdc`
+- `condition_opposite_outcome_sum_usdc`
+- `condition_decision`
 - `live_submit_status`
 
 落盘位置：
 
 - `.omx/minmax-follow/<wallet>/`
+- `.omx/minmax-follow/<wallet>/latest.txt`
+- `.omx/minmax-follow/<wallet>/latest.json`
+
+如果这轮真的走到了 `live_submit_status=submitted`，Rust 跟单循环还会在提交后再刷新一次 account snapshot，方便下一轮风控和后续对账。
+
+另外现在每轮会明确写：
+
+- `auto_submit_enabled=true|false`
+- `submit_mode=live|preview`
+
+所以如果你没看到真下单，先看这两个字段，不要只看 wrapper 启动命令。
 
 如果你要**持续实时检测 + 自动下单**，直接跑：
 
@@ -820,24 +446,115 @@ bash scripts/run_rust_minmax_follow_live.sh \
 
 这个 live 脚本默认会带：
 
-- `--forever`
-- `--allow-live-submit`
-- `--activity-source-verified`
-- `--activity-under-budget`
-- `--activity-capability-detected`
-- `--positions-under-budget`
+- `--max-total-exposure-usdc 100`
+- `--max-order-usdc 10`
+- `--account-snapshot runtime-verify-account/dashboard.json`
+- Rust 跟单循环内每轮自动用 `run_rust_show_account_info.sh` 刷新 `runtime-verify-account/dashboard.json`
+- 如果 watch 本轮返回 `poll_new_events=0`，会直接 `submit_status=skipped_no_new_activity`
+- 进程失败时默认自动重启（最多 20 次，每次间隔 5 秒）
+- **不会默认 `--allow-live-submit`**
+- **不会默认 `--forever`**
 
 默认每 `500ms` 检一次，你也可以改：
 
 ```bash
 MIN_OPEN_USDC=5 \
 MAX_OPEN_USDC=50 \
+MAX_TOTAL_EXPOSURE_USDC=100 \
+MAX_ORDER_USDC=10 \
 LOOP_INTERVAL_MS=300 \
 WATCH_LIMIT=80 \
 bash scripts/run_rust_minmax_follow_live.sh --user <wallet>
 ```
 
-如果你要**安全 smoke / dry-run**，不要真的自动下单，可以这样：
+如果你想关掉自动重启：
+
+```bash
+RESTART_ON_FAILURE=0 \
+bash scripts/run_rust_minmax_follow_live.sh --user <wallet>
+```
+
+如果你想调重启策略：
+
+```bash
+RESTART_ON_FAILURE=1 \
+MAX_RESTARTS=50 \
+RESTART_DELAY_SECONDS=3 \
+bash scripts/run_rust_minmax_follow_live.sh --user <wallet>
+```
+
+每轮报告现在还会带：
+
+- `poll_transport_mode=proxy|direct_fallback|direct`
+- `watch_has_new_activity=true|false`
+- `account_snapshot_refresh_status=ok|failed|disabled:*`
+- `submit_status=skipped_no_new_activity|skipped_account_snapshot_refresh_failed|skipped_condition_unconfirmed_small_entry|skipped_condition_hedge_candidate|skipped_duplicate_tx|skipped_live_gate_blocked|...`
+
+其中 condition-aware 跟单规则现在是：
+
+- `condition_unconfirmed_small_entry`
+  - 同一事件下第一次看到的这笔太小，先不跟，避免把零碎试探单/对冲单当成新开仓
+- `condition_hedge_candidate`
+  - 同一事件下 opposite outcome 的历史资金明显更大，而当前这笔又很小，默认视为对冲/减仓信号，不新开反向跟单
+- `condition_follow_confirmed`
+  - 同一事件、同一 outcome 已经有足够确认（单笔够大、累计够大，或连续多笔），才允许按 `planned_open_usdc` 跟单
+
+如果你要真的持续 live submit，需要显式打开：
+
+```bash
+FOLLOW_FOREVER=1 \
+AUTO_SUBMIT=1 \
+bash scripts/run_rust_minmax_follow_live.sh --user <wallet>
+```
+
+如果你不想每次手动配这两个开关，也可以直接用专门的 real-submit launcher：
+
+```bash
+bash scripts/run_rust_minmax_follow_live_submit.sh --user <wallet>
+```
+
+这个 launcher 现在默认会**循环复用**：
+- `bash scripts/run_rust_follow_last_action_force_live_once.sh --user <wallet>`
+
+也就是每轮都按“最新一笔动作 -> force live submit once”的已验证真路径执行。
+同时它会默认带：
+- `REQUIRE_NEW_ACTIVITY=1`
+
+所以如果 watch 本轮返回 `poll_new_events=0`，continuous wrapper 会**安全跳过**，不会在首次启动时盲追一笔旧单。
+
+默认会：
+- `FOLLOW_FOREVER=1`
+- `RESTART_ON_FAILURE=1`
+- `LOOP_DELAY_SECONDS=1`
+
+如果你想先做**单次真开单**而不是一直挂循环，也可以直接用：
+
+```bash
+bash scripts/run_rust_minmax_follow_live_submit_once.sh --user <wallet>
+```
+
+这个 one-shot launcher 会直接复用：
+- `bash scripts/run_rust_follow_last_action_force_live_once.sh --user <wallet>`
+
+并且同样带：
+- `REQUIRE_NEW_ACTIVITY=1`
+
+如果你想完全跳过 minmax/seen 这类“策略/保护层”，只拿某个 wallet 的**最新一笔动作**做 1 USD 真开单验证，可以直接用：
+
+```bash
+bash scripts/run_rust_follow_last_action_force_live_once.sh --user <wallet>
+```
+
+这个 force-live 验证脚本会：
+- 先尝试 `watch_copy_leader_activity`
+- watch 失败但本地已有 `latest-activity.json` 时，直接用缓存动作继续
+- 用 `--override-usdc-size 1`
+- 带 `--allow-live-submit`
+- 带 `--force-live-submit`
+
+它是**危险验证入口**，只适合回答“到底能不能真下单”这个问题。
+
+如果你要**安全 smoke / dry-run**，保持默认就行，或者显式写：
 
 ```bash
 FOLLOW_FOREVER=0 \
@@ -848,77 +565,6 @@ bash scripts/run_rust_minmax_follow_live.sh \
 ```
 
 这样仍然会走实时策略链路，但只会走到 preview，不会 live submit。
-
-这个 monitor 会把：
-
-- 当前 selected smart-money 钱包
-- 最新 activity
-- position targeting 结果
-- probable blockers（解释为什么 `delta_count=0`）
-- healthz / readyz / metrics
-
-整成一条轻量监控面。
-
-
-如果你不想一条条翻：
-
-- `wallet-filter-v1-summary.txt`
-- `selected-leader.env`
-- `operator-demo/latest.txt`
-- `position-targeting-*.txt`
-
-那可以直接开一个轻量 ANSI 终端面板：
-
-```bash
-cargo run --bin run_copytrader_ansi_dashboard -- --root ..
-```
-
-它会用 ANSI 清屏重绘，默认每秒刷新一次，主要展示：
-
-- smart-money summary
-- selected leader
-- tracked activity
-- operator lane
-- position targeting
-- auto-guarded 最新报告
-
-其中 `tracked activity` 会优先读取：
-
-- `.omx/live-activity/<wallet>/latest-activity.json`
-
-所以如果你已经选中了一个活跃钱包，并且想让 ANSI 里看到它最新一笔活动，最短操作就是：
-
-```bash
-cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1:7897 --poll-count 1
-cargo run --bin run_copytrader_ansi_dashboard -- --root .. --once
-```
-
-这样面板里会直接显示：
-
-- `tx`
-- `side`
-- `slug`
-- `timestamp`
-
-如果你只想看一帧，不要持续刷新：
-
-```bash
-cargo run --bin run_copytrader_ansi_dashboard -- --root .. --once
-```
-
-如果想调刷新频率：
-
-```bash
-cargo run --bin run_copytrader_ansi_dashboard -- --root .. --interval-ms 500
-```
-
-### 15.5 One-command operator flow
-
-```bash
-cargo run --bin run_copytrader_operator_flow -- --root .. --discovery-dir ../.omx/discovery --proxy http://127.0.0.1:7897 --watch-poll-count 1 --connect-timeout-ms 8000 --max-time-ms 20000 --live-submit-gate
-```
-
----
 
 ## 16. 怎么测试（开发 / 回归）
 
@@ -935,30 +581,8 @@ cargo test
 
 ```bash
 cargo test --bin rust-copytrader
-cargo test --bin run_copytrader_operator_flow
-cargo test --bin run_copytrader_auto_guarded_loop
 cargo test --bin run_copytrader_live_submit_gate
 ```
-
-### 16.3 Python helper / shell wrapper
-
-```bash
-cd ~/onFire
-PYTHONPATH=polymarket_arb $HOME/anaconda3/bin/python3 -m unittest \
-  scripts.tests.test_clob_sign_helpers \
-  scripts.tests.test_run_rust_helper_smoke \
-  scripts.tests.test_run_rust_operator_demo \
-  scripts.tests.test_run_rust_runtime_smoke
-```
-
-### 16.4 文档相关测试
-
-```bash
-cd ~/onFire
-PYTHONPATH=polymarket_arb $HOME/anaconda3/bin/python3 -m pytest -q tests/test_secret_setup_doc.py
-```
-
----
 
 ## 17. 常见报错怎么处理
 
@@ -980,13 +604,7 @@ PYTHONPATH=polymarket_arb $HOME/anaconda3/bin/python3 -m pytest -q tests/test_se
 
 如果还出现：
 - 看 `.env` / `.env.local` 里有没有私钥和 CLOB creds
-- 先跑：
-
-```bash
-cargo run -- --smoke-helper --root ..
-```
-
-如果 helper smoke 都过不了，再看 Python SDK / key 配置。
+- 再看 `auth_env_source` / `auth_signer_address` / `auth_effective_funder_address` 是否符合预期
 
 ---
 
@@ -997,19 +615,6 @@ cargo run -- --smoke-helper --root ..
 如果你还碰到：
 - discovery/watch 继续用显式 `--proxy`
 - 不要指望 signing helper 靠 SOCKS 环境工作
-
----
-
-### 17.4 `py-clob-client / py-order-utils import failed`
-说明本地 Python SDK 依赖不完整。
-
-处理：
-- 确认当前 `python3` / `PYTHON_BIN` 对应的是你装过 SDK 的环境
-- 最稳妥是用：
-
-```bash
-export PYTHON_BIN=$HOME/anaconda3/bin/python3
-```
 
 ---
 
@@ -1042,46 +647,23 @@ export PYTHON_BIN=$HOME/anaconda3/bin/python3
 
 答案是：
 
-> **只差你显式执行 `--allow-live-submit` 这一步。**
+> **不只是 `--allow-live-submit`。你还需要：**
+> - 新鲜 activity
+> - 新鲜 account snapshot
+> - 风控上限（total exposure / max order）
+> - 正确 signer / funder / creds
 
 也就是说：
 - discovery 已经真连了
 - watcher 已经真连了
 - guarded cycle 已经真吃到 activity 了
 - submit preview 已经真生成了
+- 但 live gate 现在不会再接受“手工把 activity / positions 说成没问题”这种绕过方式
 - 剩下就是真正放开 live submit
 
 ---
 
 ## 19. 我建议你怎么实际使用
-
-### 如果你现在只是想确认“整条链通没通”
-直接跑：
-
-```bash
-cd ~/onFire/rust-copytrader
-cargo run --bin run_copytrader_operator_flow -- \
-  --root .. \
-  --discovery-dir ../.omx/discovery \
-  --proxy http://127.0.0.1:7897 \
-  --watch-poll-count 1 \
-  --connect-timeout-ms 8000 \
-  --max-time-ms 20000 \
-  --live-submit-gate
-```
-
-### 如果你想持续看自动链路是否还稳定
-跑：
-
-```bash
-cd ~/onFire/rust-copytrader
-cargo run --bin run_copytrader_auto_guarded_loop -- \
-  --root .. \
-  --proxy http://127.0.0.1:7897 \
-  --watch-poll-count 1 \
-  --loop-count 1 \
-  --live-submit-gate
-```
 
 ### 如果你准备冲真下单
 先别急，先确认三件事：

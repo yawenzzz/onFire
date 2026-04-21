@@ -1,8 +1,0 @@
-{
-  "title": "polymarket-arb",
-  "panels": [
-    {"title": "preview_success_rate"},
-    {"title": "health"},
-    {"title": "alerts"}
-  ]
-}

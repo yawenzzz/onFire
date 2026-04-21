@@ -1,6 +1,6 @@
 use crate::adapters::auth::L2AuthHeaders;
 use crate::adapters::http_submit::{OrderType, SignedOrderEnvelope, SignedOrderPayload};
-use crate::config::{RootEnvLoadError, merged_root_env};
+use crate::config::RootEnvLoadError;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
@@ -155,7 +155,7 @@ impl AuthMaterial {
     }
 
     pub fn from_root(root: impl AsRef<Path>) -> Result<Self, RootEnvLoadError> {
-        let env = merged_root_env(root)?;
+        let env = auth_root_env(root)?;
         Self::from_env_map(&env)
     }
 
@@ -231,6 +231,47 @@ impl AuthMaterial {
     fn api_secret(&self) -> Option<&str> {
         self.api_secret.as_deref().filter(|value| !value.is_empty())
     }
+}
+
+fn auth_root_env(root: impl AsRef<Path>) -> Result<BTreeMap<String, String>, RootEnvLoadError> {
+    let root = root.as_ref();
+    let mut env = std::env::vars().collect::<BTreeMap<_, _>>();
+    let env_path = root.join(".env");
+    let env_local_path = root.join(".env.local");
+    if env_path.exists() {
+        merge_auth_env_file(&mut env, &env_path)?;
+    } else {
+        merge_auth_env_file(&mut env, &env_local_path)?;
+    }
+    Ok(env)
+}
+
+fn merge_auth_env_file(
+    env: &mut BTreeMap<String, String>,
+    path: &Path,
+) -> Result<(), RootEnvLoadError> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(path).map_err(|err| RootEnvLoadError::Io {
+        path: path.to_path_buf(),
+        error: err.to_string(),
+    })?;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || !line.contains('=') {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        env.insert(key.trim().to_string(), value.trim().to_string());
+    }
+
+    Ok(())
 }
 
 impl SigningCommandRunner for StdSigningCommandRunner {

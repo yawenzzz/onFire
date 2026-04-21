@@ -1,3 +1,7 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityMode {
     LiveListen,
@@ -84,14 +88,6 @@ impl CommandAdapterConfig {
         }
     }
 
-    pub fn repo_local_order_sign_helper(program: impl Into<String>) -> Self {
-        Self::new(program).with_args(vec!["scripts/sign_order.py".into(), "--json".into()])
-    }
-
-    pub fn repo_local_l2_header_helper(program: impl Into<String>) -> Self {
-        Self::new(program).with_args(vec!["scripts/sign_l2.py".into(), "--json".into()])
-    }
-
     pub fn with_args(mut self, args: Vec<String>) -> Self {
         self.args = args;
         self
@@ -170,11 +166,6 @@ impl SigningAdapterConfig {
     pub fn live_ready(&self) -> bool {
         self.command_config()
             .is_some_and(CommandAdapterConfig::configured)
-    }
-
-    pub fn repo_local_l2_header_helper(&self) -> Option<CommandAdapterConfig> {
-        self.command_config()
-            .map(|command| CommandAdapterConfig::repo_local_l2_header_helper(&command.program))
     }
 }
 
@@ -312,19 +303,6 @@ impl ExecutionAdapterConfig {
         }
     }
 
-    pub fn live_command_helper_http(
-        signing_program: impl Into<String>,
-        base_url: impl Into<String>,
-        submit_command_program: impl Into<String>,
-    ) -> Self {
-        Self {
-            signing: SigningAdapterConfig::Command {
-                command: CommandAdapterConfig::repo_local_order_sign_helper(signing_program),
-            },
-            submit: SubmitAdapterConfig::http(base_url, submit_command_program),
-        }
-    }
-
     pub fn from_root(root: impl AsRef<Path>) -> Result<Self, RootEnvLoadError> {
         let env = merged_root_env(root)?;
         Self::from_env_map(&env)
@@ -359,7 +337,7 @@ impl ExecutionAdapterConfig {
             && submit_args.is_none();
         let signing_program = signing_program.unwrap_or_else(|| {
             if default_helper_mode {
-                "python3".to_string()
+                "rust_sdk".to_string()
             } else {
                 String::new()
             }
@@ -371,7 +349,7 @@ impl ExecutionAdapterConfig {
         }
         let submit_program = submit_program.unwrap_or_else(|| {
             if default_helper_mode {
-                "python3".to_string()
+                "curl".to_string()
             } else {
                 String::new()
             }
@@ -396,19 +374,12 @@ impl ExecutionAdapterConfig {
 
         Ok(Self {
             signing: SigningAdapterConfig::Command {
-                command: if let Some(signing_args) = signing_args {
-                    CommandAdapterConfig::from_env(signing_program, Some(signing_args))
-                } else {
-                    CommandAdapterConfig::repo_local_order_sign_helper(signing_program)
-                },
+                command: CommandAdapterConfig::from_env(signing_program, signing_args),
             },
             submit: SubmitAdapterConfig::http_with_command(
                 submit_base_url,
                 if default_helper_mode {
-                    CommandAdapterConfig::from_env(
-                        submit_program,
-                        Some("scripts/submit_helper.py --json --curl-bin curl".to_string()),
-                    )
+                    CommandAdapterConfig::new(submit_program)
                 } else {
                     CommandAdapterConfig::from_env(submit_program, submit_args)
                 },
@@ -440,14 +411,6 @@ impl ExecutionAdapterConfig {
 
     pub fn live_ready(&self) -> bool {
         self.live_execution_wiring().is_some()
-    }
-
-    pub fn live_l2_header_helper(&self) -> Option<CommandAdapterConfig> {
-        if !self.submit.live_ready() {
-            return None;
-        }
-
-        self.signing.repo_local_l2_header_helper()
     }
 }
 
@@ -505,12 +468,19 @@ impl LiveModeGate {
     }
 }
 
+pub fn is_valid_evm_wallet(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.len() == 42
+        && trimmed.starts_with("0x")
+        && trimmed.chars().skip(2).all(|ch| ch.is_ascii_hexdigit())
+}
+
 pub(crate) fn merged_root_env(
     root: impl AsRef<Path>,
 ) -> Result<BTreeMap<String, String>, RootEnvLoadError> {
     let mut env = std::env::vars().collect::<BTreeMap<_, _>>();
-    merge_env_file(&mut env, &root.as_ref().join(".env"))?;
     merge_env_file(&mut env, &root.as_ref().join(".env.local"))?;
+    merge_env_file(&mut env, &root.as_ref().join(".env"))?;
     Ok(env)
 }
 
@@ -561,6 +531,22 @@ fn parse_u64_field(
         None => Ok(default),
     }
 }
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+mod tests {
+    use super::is_valid_evm_wallet;
+
+    #[test]
+    fn valid_evm_wallet_requires_prefixed_40_hex_chars() {
+        assert!(is_valid_evm_wallet(
+            "0x11084005d88A0840b5F38F8731CCa9152BbD99F7"
+        ));
+        assert!(!is_valid_evm_wallet("0xleader"));
+        assert!(!is_valid_evm_wallet(
+            "11084005d88A0840b5F38F8731CCa9152BbD99F7"
+        ));
+        assert!(!is_valid_evm_wallet(
+            "0x11084005d88A0840b5F38F8731CCa9152BbD99FG"
+        ));
+    }
+}
