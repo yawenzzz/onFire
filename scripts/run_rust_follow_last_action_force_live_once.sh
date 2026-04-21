@@ -45,11 +45,31 @@ extract_latest_tx() {
   local latest_activity="$1"
   [[ -f "$latest_activity" ]] || return 0
 
-  local match=""
-  match="$(grep -oE '"transactionHash"[[:space:]]*:[[:space:]]*"[^"]+"' "$latest_activity" | head -n1 || true)"
-  [[ -n "$match" ]] || return 0
-
-  printf '%s\n' "$match" | sed -E 's/.*:[[:space:]]*"([^"]+)"/\1/'
+  perl -MJSON::PP -e '
+    my ($path) = @ARGV;
+    local $/;
+    open my $fh, "<", $path or exit 0;
+    my $body = <$fh>;
+    my $decoded = eval { JSON::PP->new->decode($body) };
+    exit 0 if $@;
+    my @items =
+      ref($decoded) eq "ARRAY" ? @$decoded :
+      ref($decoded) eq "HASH"  ? ($decoded) :
+      ();
+    my ($best_tx, $best_ts);
+    for my $item (@items) {
+      next unless ref($item) eq "HASH";
+      my $tx = $item->{transactionHash};
+      my $ts = $item->{timestamp};
+      next unless defined $tx;
+      $ts = 0 unless defined $ts;
+      if (!defined($best_tx) || $ts > $best_ts) {
+        $best_tx = $tx;
+        $best_ts = $ts;
+      }
+    }
+    print $best_tx if defined $best_tx;
+  ' "$latest_activity" 2>/dev/null || true
 }
 
 extract_metric_value() {
@@ -342,7 +362,23 @@ if [[ -s "$SUBMIT_STDERR" ]]; then
   cat "$SUBMIT_STDERR" >&2
 fi
 
-if [[ "$SUBMIT_EXIT" -eq 0 && -n "$LATEST_TX" ]]; then
+submit_marks_seen() {
+  if [[ ! -f "$SUBMIT_STDOUT" ]]; then
+    return 1
+  fi
+  if grep -q '^ctf_action_status=submitted$' "$SUBMIT_STDOUT"; then
+    return 0
+  fi
+  if grep -q '^live_submit_status=submitted$' "$SUBMIT_STDOUT"; then
+    if grep -q '^submit_success=false$' "$SUBMIT_STDOUT"; then
+      return 1
+    fi
+    return 0
+  fi
+  return 1
+}
+
+if [[ "$SUBMIT_EXIT" -eq 0 && -n "$LATEST_TX" ]] && submit_marks_seen; then
   printf '%s\n' "$LATEST_TX" > "$LAST_SUBMITTED_TX_FILE"
 fi
 

@@ -298,6 +298,109 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             shutil.rmtree(state_root, ignore_errors=True)
             shutil.rmtree(activity_root, ignore_errors=True)
 
+    def test_force_live_once_falls_back_to_latest_timestamp_when_latest_new_tx_missing(self) -> None:
+        root = Path.cwd()
+        state_root = root / ".omx" / "force-live-follow" / WALLET
+        activity_root = root / ".omx" / "live-activity" / WALLET
+        log_dir = Path(tempfile.mkdtemp(prefix="force-live-once-fallback-tx-test-"))
+        try:
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+            activity_root.mkdir(parents=True, exist_ok=True)
+
+            latest_activity = activity_root / "latest-activity.json"
+            latest_activity.write_text(
+                '[{"proxyWallet":"%s","timestamp":10,"type":"TRADE","asset":"asset-old","size":2.0,"usdcSize":1.0,"transactionHash":"0xold","price":0.1,"side":"BUY","slug":"market-a"},{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-new","size":2.0,"usdcSize":1.0,"transactionHash":"0xnew","price":0.9,"side":"BUY","slug":"market-a"}]'
+                % (WALLET, WALLET)
+            )
+
+            watch = log_dir / "watch.sh"
+            submit = log_dir / "submit.sh"
+            submit_activity = log_dir / "submit-latest-activity.json"
+
+            self._make_exec(
+                watch,
+                "#!/usr/bin/env bash\nprintf 'watch_user=%s\\npoll_new_events=1\\n'\n"
+                % WALLET,
+            )
+            self._make_exec(
+                submit,
+                "#!/usr/bin/env bash\nlatest=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--latest-activity\" ]; then latest=\"$2\"; shift 2; continue; fi\n  shift\n done\ncat \"$latest\" > %s\nprintf 'live_submit_status=submitted\\n'\nprintf 'leader_price=0.90000000\\n'\nprintf 'follower_effective_price=0.90000000\\n'\nprintf 'price_gap_bps=0.0000\\n'\n"
+                % submit_activity,
+            )
+
+            env = os.environ.copy()
+            env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
+            env["POLYMARKET_CURL_PROXY"] = ""
+
+            subprocess.run(
+                ["bash", "scripts/run_rust_follow_last_action_force_live_once.sh", "--user", WALLET],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            selected_payload = submit_activity.read_text()
+            self.assertIn("0xnew", selected_payload)
+            self.assertNotIn("0xold", selected_payload)
+            self.assertIn("asset-new", selected_payload)
+        finally:
+            shutil.rmtree(log_dir, ignore_errors=True)
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+
+    def test_force_live_once_does_not_mark_seen_when_submit_success_false(self) -> None:
+        root = Path.cwd()
+        state_root = root / ".omx" / "force-live-follow" / WALLET
+        activity_root = root / ".omx" / "live-activity" / WALLET
+        log_dir = Path(tempfile.mkdtemp(prefix="force-live-once-submit-false-"))
+        try:
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+            activity_root.mkdir(parents=True, exist_ok=True)
+
+            latest_activity = activity_root / "latest-activity.json"
+            latest_activity.write_text(
+                '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","size":2.0,"usdcSize":1.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
+                % WALLET
+            )
+
+            watch = log_dir / "watch.sh"
+            submit = log_dir / "submit.sh"
+
+            self._make_exec(
+                watch,
+                "#!/usr/bin/env bash\nprintf 'watch_user=%s\\npoll_new_events=1\\nlatest_new_tx=0xnew\\n'\n"
+                % WALLET,
+            )
+            self._make_exec(
+                submit,
+                "#!/usr/bin/env bash\nprintf 'live_submit_status=submitted\\nsubmit_success=false\\n'\n",
+            )
+
+            env = os.environ.copy()
+            env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
+            env["POLYMARKET_CURL_PROXY"] = ""
+
+            subprocess.run(
+                ["bash", "scripts/run_rust_follow_last_action_force_live_once.sh", "--user", WALLET],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            self.assertFalse((state_root / "last-submitted-tx.txt").exists())
+        finally:
+            shutil.rmtree(log_dir, ignore_errors=True)
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+
     def test_force_live_once_routes_merge_activity_to_ctf_action_bin(self) -> None:
         root = Path.cwd()
         state_root = root / ".omx" / "force-live-follow" / WALLET
