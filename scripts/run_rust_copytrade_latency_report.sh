@@ -126,6 +126,7 @@ LEADER_PRICE="$(kv "$REPORT_PATH" latest_activity_price)"
 if [[ -z "$LEADER_PRICE" ]]; then
   LEADER_PRICE="$(kv "$REPORT_PATH" activity_price)"
 fi
+LEADER_ACTIVITY_TYPE="$(kv "$REPORT_PATH" latest_activity_type)"
 WATCH_STARTED="$(kv "$REPORT_PATH" watch_started_at_unix_ms)"
 WATCH_FINISHED="$(kv "$REPORT_PATH" watch_finished_at_unix_ms)"
 WATCH_ELAPSED="$(kv "$REPORT_PATH" watch_elapsed_ms)"
@@ -146,6 +147,11 @@ SUBMIT_FINISHED="$(kv "$REPORT_PATH" submit_finished_at_unix_ms)"
 SUBMIT_ROUNDTRIP="$(kv "$REPORT_PATH" submit_roundtrip_elapsed_ms)"
 LEADER_TO_SUBMIT_STARTED="$(kv "$REPORT_PATH" leader_to_submit_started_ms)"
 LEADER_TO_SUBMIT_FINISHED="$(kv "$REPORT_PATH" leader_to_submit_finished_ms)"
+CTF_ACTION_TYPE="$(kv "$REPORT_PATH" ctf_action_type)"
+CTF_ACTION_STATUS="$(kv "$REPORT_PATH" ctf_action_status)"
+CTF_ACTION_TX_HASH="$(kv "$REPORT_PATH" ctf_action_tx_hash)"
+CTF_ACTION_BLOCK_NUMBER="$(kv "$REPORT_PATH" ctf_action_block_number)"
+CTF_ACTION_USDC_SIZE="$(kv "$REPORT_PATH" action_usdc_size)"
 STATUS="$(kv "$REPORT_PATH" status)"
 if [[ -z "$STATUS" ]]; then
   STATUS="$(kv "$REPORT_PATH" submit_status)"
@@ -180,7 +186,8 @@ if [[ "$JSON_MODE" == "1" ]]; then
   "latest_tx": "$(json_escape "$LATEST_TX")",
   "leader": {
     "timestamp": "$(json_escape "$LEADER_TS")",
-    "price": "$(json_escape "$LEADER_PRICE")"
+    "price": "$(json_escape "$LEADER_PRICE")",
+    "activity_type": "$(json_escape "$LEADER_ACTIVITY_TYPE")"
   },
   "watch": {
     "started_at_unix_ms": "$(json_escape "$WATCH_STARTED")",
@@ -207,6 +214,13 @@ if [[ "$JSON_MODE" == "1" ]]; then
     "leader_to_submit_started_ms": "$(json_escape "$LEADER_TO_SUBMIT_STARTED")",
     "leader_to_submit_finished_ms": "$(json_escape "$LEADER_TO_SUBMIT_FINISHED")"
   },
+  "ctf": {
+    "action_type": "$(json_escape "$CTF_ACTION_TYPE")",
+    "status": "$(json_escape "$CTF_ACTION_STATUS")",
+    "tx_hash": "$(json_escape "$CTF_ACTION_TX_HASH")",
+    "block_number": "$(json_escape "$CTF_ACTION_BLOCK_NUMBER")",
+    "action_usdc_size": "$(json_escape "$CTF_ACTION_USDC_SIZE")"
+  },
   "pricing": {
     "leader_price": "$(json_escape "$LEADER_PRICE")",
     "follower_effective_price": "$(json_escape "$FOLLOWER_PRICE")",
@@ -229,6 +243,7 @@ latest_tx=$LATEST_TX
 [leader]
 leader_timestamp=$LEADER_TS
 leader_price=$LEADER_PRICE
+leader_activity_type=$LEADER_ACTIVITY_TYPE
 
 [watch]
 watch_started_at_unix_ms=$WATCH_STARTED
@@ -255,6 +270,13 @@ capture_to_submit_started_ms=$capture_to_submit_started
 capture_to_submit_finished_ms=$capture_to_submit_finished
 leader_to_submit_started_ms=$LEADER_TO_SUBMIT_STARTED
 leader_to_submit_finished_ms=$LEADER_TO_SUBMIT_FINISHED
+
+[ctf]
+ctf_action_type=$CTF_ACTION_TYPE
+ctf_action_status=$CTF_ACTION_STATUS
+ctf_action_tx_hash=$CTF_ACTION_TX_HASH
+ctf_action_block_number=$CTF_ACTION_BLOCK_NUMBER
+ctf_action_usdc_size=$CTF_ACTION_USDC_SIZE
 
 [pricing]
 follower_effective_price=$FOLLOWER_PRICE

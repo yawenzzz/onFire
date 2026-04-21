@@ -71,6 +71,7 @@ class CopytradeLatencyReportScriptTests(unittest.TestCase):
             self.assertEqual(payload["status"], "submit_completed")
             self.assertEqual(payload["pricing"]["price_gap_bps"], "340.9193")
             self.assertEqual(payload["payload"]["capture_to_payload_ready_ms"], "10997")
+            self.assertEqual(payload["leader"]["activity_type"], "")
 
     def test_latency_report_script_keeps_watch_and_leader_fields_for_duplicate_skip(self) -> None:
         with tempfile.TemporaryDirectory(prefix="copytrade-latency-duplicate-") as tmpdir:
@@ -177,3 +178,58 @@ class CopytradeLatencyReportScriptTests(unittest.TestCase):
             self.assertEqual(payload["leader"]["timestamp"], "1776763674")
             self.assertEqual(payload["leader"]["price"], "0.06")
             self.assertEqual(payload["watch"]["elapsed_ms"], "22618")
+
+    def test_latency_report_script_renders_ctf_action_fields(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="copytrade-latency-ctf-") as tmpdir:
+            summary = Path(tmpdir) / "summary.txt"
+            summary.write_text(
+                "\n".join(
+                    [
+                        "user=0xwallet",
+                        "status=submit_completed",
+                        "latest_tx=0xmerge",
+                        "latest_activity_timestamp=1776789000",
+                        "latest_activity_type=MERGE",
+                        "watch_started_at_unix_ms=1776789121939",
+                        "watch_finished_at_unix_ms=1776789122473",
+                        "watch_elapsed_ms=534",
+                        "leader_to_watch_finished_ms=122473",
+                        "ctf_action_type=MERGE",
+                        "ctf_action_status=submitted",
+                        "ctf_action_tx_hash=0xdeadbeef",
+                        "ctf_action_block_number=12345",
+                        "action_usdc_size=1.5",
+                    ]
+                )
+                + "\n"
+            )
+
+            text_result = subprocess.run(
+                ["bash", "scripts/run_rust_copytrade_latency_report.sh", "--report", str(summary)],
+                cwd=Path.cwd(),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertIn("leader_activity_type=MERGE", text_result.stdout)
+            self.assertIn("[ctf]", text_result.stdout)
+            self.assertIn("ctf_action_type=MERGE", text_result.stdout)
+            self.assertIn("ctf_action_tx_hash=0xdeadbeef", text_result.stdout)
+
+            json_result = subprocess.run(
+                [
+                    "bash",
+                    "scripts/run_rust_copytrade_latency_report.sh",
+                    "--report",
+                    str(summary),
+                    "--json",
+                ],
+                cwd=Path.cwd(),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            payload = json.loads(json_result.stdout)
+            self.assertEqual(payload["leader"]["activity_type"], "MERGE")
+            self.assertEqual(payload["ctf"]["action_type"], "MERGE")
+            self.assertEqual(payload["ctf"]["tx_hash"], "0xdeadbeef")
