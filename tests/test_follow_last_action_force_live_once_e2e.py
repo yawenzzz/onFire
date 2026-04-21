@@ -298,6 +298,76 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             shutil.rmtree(state_root, ignore_errors=True)
             shutil.rmtree(activity_root, ignore_errors=True)
 
+    def test_force_live_once_routes_merge_activity_to_ctf_action_bin(self) -> None:
+        root = Path.cwd()
+        state_root = root / ".omx" / "force-live-follow" / WALLET
+        activity_root = root / ".omx" / "live-activity" / WALLET
+        log_dir = Path(tempfile.mkdtemp(prefix="force-live-once-merge-"))
+        try:
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+            activity_root.mkdir(parents=True, exist_ok=True)
+
+            latest_activity = activity_root / "latest-activity.json"
+            latest_activity.write_text(
+                '[{"proxyWallet":"%s","timestamp":20,"type":"MERGE","conditionId":"0x1111111111111111111111111111111111111111111111111111111111111111","usdcSize":1.5,"transactionHash":"0xmerge","outcome":"No","slug":"market-a"}]'
+                % WALLET
+            )
+
+            watch = log_dir / "watch.sh"
+            submit = log_dir / "submit.sh"
+            submit_log = log_dir / "submit-called.txt"
+            ctf = log_dir / "ctf.sh"
+            ctf_args = log_dir / "ctf-args.txt"
+
+            self._make_exec(
+                watch,
+                "#!/usr/bin/env bash\nprintf 'watch_user=%s\\npoll_new_events=1\\nlatest_new_tx=0xmerge\\n'\n"
+                % WALLET,
+            )
+            self._make_exec(
+                submit,
+                "#!/usr/bin/env bash\nprintf 'called\\n' >> %s\nprintf 'live_submit_status=submitted\\n'\n"
+                % submit_log,
+            )
+            self._make_exec(
+                ctf,
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nprintf 'ctf_action_type=MERGE\\n'\nprintf 'ctf_action_status=submitted\\n'\n"
+                % ("%s", ctf_args),
+            )
+
+            env = os.environ.copy()
+            env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
+            env["CTF_ACTION_BIN_DEFAULT"] = str(ctf)
+            env["POLYMARKET_CURL_PROXY"] = ""
+
+            completed = subprocess.run(
+                ["bash", "scripts/run_rust_follow_last_action_force_live_once.sh", "--user", WALLET],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            self.assertIn("ctf_action_type=MERGE", completed.stdout)
+            self.assertFalse(submit_log.exists())
+            ctf_forwarded = ctf_args.read_text()
+            self.assertIn("--latest-activity", ctf_forwarded)
+            self.assertIn("--allow-live-submit", ctf_forwarded)
+            runs_dir = root / ".omx" / "force-live-follow" / WALLET / "runs"
+            run_dirs = list(runs_dir.iterdir())
+            self.assertEqual(len(run_dirs), 1)
+            summary = (run_dirs[0] / "summary.txt").read_text()
+            self.assertIn("latest_activity_type=MERGE", summary)
+            self.assertIn("ctf_action_type=MERGE", summary)
+            self.assertIn("ctf_action_status=submitted", summary)
+        finally:
+            shutil.rmtree(log_dir, ignore_errors=True)
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+
     def test_force_live_once_accepts_external_proxy_argument(self) -> None:
         root = Path.cwd()
         state_root = root / ".omx" / "force-live-follow" / WALLET

@@ -10,6 +10,8 @@ class FollowLastActionForceLiveOnceScriptTests(unittest.TestCase):
         self.assertIn("--override-usdc-size", text)
         self.assertIn("run_rust_watch_copy_leader_activity.sh", text)
         self.assertIn("run_rust_live_submit_gate.sh", text)
+        self.assertIn("run_rust_ctf_action.sh", text)
+        self.assertIn('WATCH_ACTIVITY_TYPES="${WATCH_ACTIVITY_TYPES:-TRADE,MERGE,SPLIT}"', text)
         self.assertIn("using cached latest activity", text)
         self.assertIn("last-submitted-tx.txt", text)
         self.assertNotIn("127.0.0.1:7897", text)

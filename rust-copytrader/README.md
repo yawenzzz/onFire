@@ -576,6 +576,17 @@ bash scripts/run_rust_follow_last_action_force_live_once.sh \
 - 带 `--allow-live-submit`
 - 带 `--force-live-submit`
 
+如果最新动作不是普通 `TRADE`，而是官方链上：
+- `SPLIT`
+- `MERGE`
+
+这个脚本现在会自动切到官方 CTF action 路径：
+- `run_rust_ctf_action.sh`
+
+也就是：
+- `TRADE` → 走 `run_rust_live_submit_gate.sh`
+- `SPLIT/MERGE` → 走官方 CTF split/merge
+
 它是**危险验证入口**，只适合回答“到底能不能真下单”这个问题。
 
 如果你要**安全 smoke / dry-run**，保持默认就行，或者显式写：

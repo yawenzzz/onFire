@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+alloy = { version = "1.6.3", default-features = false, features = ["providers", "reqwest", "reqwest-rustls-tls", "signer-local", "signers"] }
 futures = "0.3"
-polymarket-client-sdk = { version = "0.4.4", features = ["clob", "ws", "data"] }
+polymarket-client-sdk = { version = "0.4.4", features = ["clob", "ws", "data", "ctf"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

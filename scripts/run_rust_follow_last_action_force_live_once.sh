@@ -5,9 +5,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CARGO_BIN="${CARGO_BIN:-cargo}"
 WATCH_BIN_DEFAULT="${WATCH_BIN_DEFAULT:-$ROOT/scripts/run_rust_watch_copy_leader_activity.sh}"
 LIVE_SUBMIT_BIN_DEFAULT="${LIVE_SUBMIT_BIN_DEFAULT:-$ROOT/scripts/run_rust_live_submit_gate.sh}"
+CTF_ACTION_BIN_DEFAULT="${CTF_ACTION_BIN_DEFAULT:-$ROOT/scripts/run_rust_ctf_action.sh}"
 WATCH_LIMIT="${WATCH_LIMIT:-50}"
 WATCH_RETRY_COUNT="${WATCH_RETRY_COUNT:-3}"
 WATCH_RETRY_DELAY_MS="${WATCH_RETRY_DELAY_MS:-1000}"
+WATCH_ACTIVITY_TYPES="${WATCH_ACTIVITY_TYPES:-TRADE,MERGE,SPLIT}"
 OPEN_USDC="${OPEN_USDC:-1}"
 IGNORE_SEEN_TX="${IGNORE_SEEN_TX:-0}"
 REQUIRE_NEW_ACTIVITY="${REQUIRE_NEW_ACTIVITY:-0}"
@@ -166,6 +168,8 @@ WATCH_ARGS=(
   "$WATCH_LIMIT"
   --poll-count
   1
+  --activity-type
+  "$WATCH_ACTIVITY_TYPES"
   --retry-count
   "$WATCH_RETRY_COUNT"
   --retry-delay-ms
@@ -188,6 +192,7 @@ echo "submit_proxy=${HTTPS_PROXY:-disabled}"
 echo "watch_limit=$WATCH_LIMIT"
 echo "watch_retry_count=$WATCH_RETRY_COUNT"
 echo "watch_retry_delay_ms=$WATCH_RETRY_DELAY_MS"
+echo "watch_activity_types=$WATCH_ACTIVITY_TYPES"
 echo "open_usdc=$OPEN_USDC"
 echo "ignore_seen_tx=$IGNORE_SEEN_TX"
 echo "require_new_activity=$REQUIRE_NEW_ACTIVITY"
@@ -239,6 +244,10 @@ LATEST_ACTIVITY_PRICE="$(extract_event_field_by_tx "$LATEST_ACTIVITY" "$LATEST_T
 if [[ -z "$LATEST_ACTIVITY_PRICE" ]]; then
   LATEST_ACTIVITY_PRICE="$(extract_latest_number_field "$LATEST_ACTIVITY" "price")"
 fi
+LATEST_ACTIVITY_TYPE="$(extract_event_field_by_tx "$LATEST_ACTIVITY" "$LATEST_TX" "type")"
+if [[ -z "$LATEST_ACTIVITY_TYPE" ]]; then
+  LATEST_ACTIVITY_TYPE="TRADE"
+fi
 SELECTED_ACTIVITY_JSON="$(extract_event_json_by_tx "$LATEST_ACTIVITY" "$LATEST_TX")"
 if [[ -n "$SELECTED_ACTIVITY_JSON" ]]; then
   printf '%s\n' "$SELECTED_ACTIVITY_JSON" > "$SELECTED_ACTIVITY"
@@ -259,6 +268,7 @@ submit_exit=not_run
 latest_tx=$LATEST_TX
 latest_activity_timestamp=$LATEST_ACTIVITY_TIMESTAMP
 latest_activity_price=$LATEST_ACTIVITY_PRICE
+latest_activity_type=$LATEST_ACTIVITY_TYPE
 watch_started_at_unix_ms=$WATCH_STARTED_AT_UNIX_MS
 watch_finished_at_unix_ms=$WATCH_FINISHED_AT_UNIX_MS
 watch_elapsed_ms=$WATCH_ELAPSED_MS
@@ -287,6 +297,7 @@ submit_exit=not_run
 latest_tx=$LATEST_TX
 latest_activity_timestamp=$LATEST_ACTIVITY_TIMESTAMP
 latest_activity_price=$LATEST_ACTIVITY_PRICE
+latest_activity_type=$LATEST_ACTIVITY_TYPE
 watch_started_at_unix_ms=$WATCH_STARTED_AT_UNIX_MS
 watch_finished_at_unix_ms=$WATCH_FINISHED_AT_UNIX_MS
 watch_elapsed_ms=$WATCH_ELAPSED_MS
@@ -305,14 +316,22 @@ EOF_SUMMARY
   fi
 fi
 
+ACTION_BIN="$LIVE_SUBMIT_BIN_DEFAULT"
+ACTION_ARGS=(
+  --root ..
+  --selected-leader-env "$SELECTED_ENV"
+  --latest-activity "$SELECTED_ACTIVITY"
+  --override-usdc-size "$OPEN_USDC"
+)
+if [[ "$LATEST_ACTIVITY_TYPE" == "MERGE" || "$LATEST_ACTIVITY_TYPE" == "SPLIT" ]]; then
+  ACTION_BIN="$CTF_ACTION_BIN_DEFAULT"
+  ACTION_ARGS+=(--allow-live-submit)
+else
+  ACTION_ARGS+=(--allow-live-submit --force-live-submit)
+fi
+
 set +e
-"$LIVE_SUBMIT_BIN_DEFAULT" \
-  --root .. \
-  --selected-leader-env "$SELECTED_ENV" \
-  --latest-activity "$SELECTED_ACTIVITY" \
-  --override-usdc-size "$OPEN_USDC" \
-  --allow-live-submit \
-  --force-live-submit >"$SUBMIT_STDOUT" 2>"$SUBMIT_STDERR"
+"$ACTION_BIN" "${ACTION_ARGS[@]}" >"$SUBMIT_STDOUT" 2>"$SUBMIT_STDERR"
 SUBMIT_EXIT=$?
 set -e
 
@@ -341,6 +360,7 @@ submit_exit=$SUBMIT_EXIT
 latest_tx=$LATEST_TX
 latest_activity_timestamp=$LATEST_ACTIVITY_TIMESTAMP
 latest_activity_price=$LATEST_ACTIVITY_PRICE
+latest_activity_type=$LATEST_ACTIVITY_TYPE
 watch_started_at_unix_ms=$WATCH_STARTED_AT_UNIX_MS
 watch_finished_at_unix_ms=$WATCH_FINISHED_AT_UNIX_MS
 watch_elapsed_ms=$WATCH_ELAPSED_MS
@@ -364,6 +384,11 @@ $(metric_from_submit follower_effective_price)
 $(metric_from_submit price_gap)
 $(metric_from_submit price_gap_bps)
 $(metric_from_submit adverse_price_gap_bps)
+$(metric_from_submit ctf_action_type)
+$(metric_from_submit ctf_action_status)
+$(metric_from_submit ctf_action_tx_hash)
+$(metric_from_submit ctf_action_block_number)
+$(metric_from_submit action_usdc_size)
 $(metric_from_submit submit_started_at_unix_ms)
 $(metric_from_submit submit_finished_at_unix_ms)
 $(metric_from_submit submit_roundtrip_elapsed_ms)
