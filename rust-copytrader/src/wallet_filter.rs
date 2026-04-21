@@ -48,6 +48,17 @@ pub fn parse_activity_records(content: &str) -> Vec<ActivityRecord> {
         .collect()
 }
 
+pub fn select_activity_record_json(content: &str, tx: &str) -> Option<String> {
+    json_objects(content)
+        .into_iter()
+        .find(|object| {
+            extract_json_field(object, "transactionHash")
+                .as_deref()
+                .is_some_and(|candidate| candidate == tx)
+        })
+        .map(|object| format!("[{object}]"))
+}
+
 fn parse_u64(value: &str) -> Option<u64> {
     value.trim().parse::<u64>().ok()
 }
@@ -124,7 +135,7 @@ fn extract_json_field(object: &str, field: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActivityRecord, parse_activity_records};
+    use super::{ActivityRecord, parse_activity_records, select_activity_record_json};
 
     #[test]
     fn parse_activity_records_extracts_trade_fields() {
@@ -149,5 +160,18 @@ mod tests {
                 slug: Some("slug-1".into()),
             }]
         );
+    }
+
+    #[test]
+    fn select_activity_record_json_picks_matching_transaction() {
+        let selected = select_activity_record_json(
+            r#"[{"transactionHash":"0xold","price":0.1},{"transactionHash":"0xnew","price":0.9}]"#,
+            "0xnew",
+        )
+        .expect("matching tx");
+
+        assert!(selected.contains("0xnew"));
+        assert!(!selected.contains("0xold"));
+        assert!(selected.starts_with('['));
     }
 }

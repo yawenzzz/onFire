@@ -1,5 +1,7 @@
 use rust_copytrader::config::is_valid_evm_wallet;
-use rust_copytrader::wallet_filter::{ActivityRecord, parse_activity_records};
+use rust_copytrader::wallet_filter::{
+    ActivityRecord, parse_activity_records, select_activity_record_json,
+};
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -313,7 +315,11 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
             decide_condition_sizing(&activities, latest, normalized_open_usdc, options);
         let open_usdc = condition_decision.recommended_open_usdc;
         let history = history_min_max(&activities);
-        let report_path = state_root.join(format!("run-{}-{}.txt", index, now_nanos()?));
+        let run_id = now_nanos()?;
+        let report_path = state_root.join(format!("run-{}-{run_id}.txt", index));
+        let selected_latest_activity_path =
+            state_root.join(format!("run-{}-{run_id}.selected-latest-activity.json", index));
+        write_selected_activity_file(&latest_activity_path, &selected_latest_activity_path, &latest.tx)?;
 
         let mut lines = vec![
             "strategy=minmax_activity_v1".to_string(),
@@ -330,6 +336,10 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
                 }
             ),
             format!("latest_activity_path={}", latest_activity_path.display()),
+            format!(
+                "selected_latest_activity_path={}",
+                selected_latest_activity_path.display()
+            ),
             format!("selected_leader_env_path={}", submit_selected_env.display()),
             format!("latest_tx={}", latest.tx),
             format!("latest_timestamp={}", latest.timestamp),
@@ -436,7 +446,7 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
             let submit_output = run_live_submit(
                 &live_submit_bin,
                 &root,
-                &latest_activity_path,
+                &selected_latest_activity_path,
                 &submit_selected_env,
                 open_usdc,
                 options,
@@ -553,6 +563,27 @@ fn run_live_submit(
         .map_err(|error| format!("run_copytrader_live_submit_gate stdout was not utf-8: {error}"))
 }
 
+fn write_selected_activity_file(
+    latest_activity_path: &Path,
+    selected_activity_path: &Path,
+    tx: &str,
+) -> Result<(), String> {
+    let body = fs::read_to_string(latest_activity_path)
+        .map_err(|error| format!("failed to read {}: {error}", latest_activity_path.display()))?;
+    let selected = select_activity_record_json(&body, tx).ok_or_else(|| {
+        format!(
+            "failed to select tx {tx} from {}",
+            latest_activity_path.display()
+        )
+    })?;
+    if let Some(parent) = selected_activity_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+    fs::write(selected_activity_path, format!("{selected}\n"))
+        .map_err(|error| format!("failed to write {}: {error}", selected_activity_path.display()))
+}
+
 fn run_account_snapshot_refresh(root: &Path, options: &Options) -> Vec<String> {
     run_snapshot_refresh_with_prefix(root, options, "account_snapshot_refresh")
 }
@@ -600,12 +631,9 @@ fn run_snapshot_refresh_with_prefix(root: &Path, options: &Options, prefix: &str
 }
 
 fn submit_output_marks_seen(output: &str) -> bool {
-    output.lines().any(|line| {
-        matches!(
-            line.trim(),
-            "live_submit_status=preview_only" | "live_submit_status=submitted"
-        )
-    })
+    output
+        .lines()
+        .any(|line| matches!(line.trim(), "live_submit_status=submitted"))
 }
 
 fn sanitize_report_text(value: &str) -> String {
@@ -1421,6 +1449,79 @@ mod tests {
     }
 
     #[test]
+    fn run_minmax_follow_passes_selected_latest_tx_file_to_submit() {
+        let root = unique_temp_dir("selected-submit-activity");
+        fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
+        let selected_env = root.join(".omx/discovery/selected-leader.env");
+        fs::write(
+            &selected_env,
+            format!("COPYTRADER_DISCOVERY_WALLET={WALLET}\nCOPYTRADER_LEADER_WALLET={WALLET}\n"),
+        )
+        .expect("env written");
+
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            &format!(
+                "#!/bin/sh\nmkdir -p '{root}/.omx/live-activity/{wallet}'\ncat > '{root}/.omx/live-activity/{wallet}/latest-activity.json' <<'JSON'\n[\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":10,\"type\":\"TRADE\",\"asset\":\"asset-old\",\"size\":20.0,\"usdcSize\":2.0,\"transactionHash\":\"0xold\",\"price\":0.1,\"side\":\"BUY\",\"slug\":\"market-a\"}},\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":20,\"type\":\"TRADE\",\"asset\":\"asset-new\",\"size\":20.0,\"usdcSize\":10.0,\"transactionHash\":\"0xnew\",\"price\":0.9,\"side\":\"BUY\",\"slug\":\"market-a\"}}\n]\nJSON\nprintf 'watch_user={wallet}\\npoll_transport_mode=direct\\npoll_new_events=1\\nlatest_new_tx=0xnew\\n'\n",
+                root = root.display(),
+                wallet = WALLET
+            ),
+        );
+        let submit = root.join("run_copytrader_live_submit_gate");
+        let forwarded = root.join("forwarded-latest-activity.json");
+        write_executable(
+            &submit,
+            &format!(
+                "#!/bin/sh\nlatest=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--latest-activity\" ]; then latest=\"$2\"; shift 2; continue; fi\n  shift\n done\ncat \"$latest\" > '{forwarded}'\nprintf 'live_submit_status=preview_only\\n'\n",
+                forwarded = forwarded.display()
+            ),
+        );
+        let account_monitor = root.join("run_copytrader_account_monitor");
+        write_executable(
+            &account_monitor,
+            "#!/bin/sh\nout=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--output\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\n done\nmkdir -p \"$(dirname \"$out\")\"\nprintf '{\"account_snapshot\":{\"positions\":[],\"open_orders\":[]}}' > \"$out\"\n",
+        );
+
+        let options = Options {
+            root: root.display().to_string(),
+            user: Some(WALLET.into()),
+            selected_leader_env: Some(selected_env.display().to_string()),
+            proxy: None,
+            watch_limit: 10,
+            loop_count: 1,
+            forever: false,
+            loop_interval_ms: 0,
+            min_open_usdc: 1.0,
+            max_open_usdc: 100.0,
+            flat_score: 50,
+            max_total_exposure_usdc: Some("100".into()),
+            max_order_usdc: Some("10".into()),
+            account_snapshot: Some("runtime-verify-account/dashboard.json".into()),
+            account_snapshot_max_age_secs: 300,
+            allow_live_submit: false,
+            force_live_submit: false,
+            ignore_seen_tx: false,
+            activity_source_verified: false,
+            activity_under_budget: false,
+            activity_capability_detected: false,
+            positions_under_budget: false,
+            watch_bin: Some(watch.display().to_string()),
+            live_submit_bin: Some(submit.display().to_string()),
+            account_monitor_bin: Some(account_monitor.display().to_string()),
+        };
+
+        let lines = run_minmax_follow(&options).expect("strategy should succeed");
+        assert!(lines.iter().any(|line| line == "latest_tx=0xnew"));
+        let selected = fs::read_to_string(&forwarded).expect("submit latest activity captured");
+        assert!(selected.contains("0xnew"));
+        assert!(!selected.contains("0xold"));
+        assert!(selected.contains("asset-new"));
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
     fn run_minmax_follow_does_not_forward_manual_gate_override_flags() {
         let root = unique_temp_dir("no-manual-gate-forward");
         fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
@@ -1490,7 +1591,7 @@ mod tests {
 
     #[test]
     fn blocked_submit_output_does_not_mark_seen() {
-        assert!(submit_output_marks_seen(
+        assert!(!submit_output_marks_seen(
             "live_submit_status=preview_only\n"
         ));
         assert!(submit_output_marks_seen("live_submit_status=submitted\n"));
