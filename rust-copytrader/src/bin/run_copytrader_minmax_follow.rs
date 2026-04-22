@@ -2,6 +2,7 @@ use rust_copytrader::config::is_valid_evm_wallet;
 use rust_copytrader::wallet_filter::{
     ActivityRecord, parse_activity_records, select_activity_record_json,
 };
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -103,6 +104,16 @@ struct ConditionSizingDecision {
     reason: &'static str,
     should_follow: bool,
     recommended_open_usdc: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SellInventoryDecision {
+    inventory_net_size: Option<f64>,
+    sellable_usdc: Option<f64>,
+    decision_tag: &'static str,
+    reason: &'static str,
+    should_follow: bool,
+    adjusted_open_usdc: f64,
 }
 
 const MIN_NEW_CONDITION_ENTRY_USDC: f64 = 5.0;
@@ -322,7 +333,6 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
             map_score_to_open_usdc(score, options.min_open_usdc, options.max_open_usdc);
         let condition_decision =
             decide_condition_sizing(&activities, latest, normalized_open_usdc, options);
-        let open_usdc = condition_decision.recommended_open_usdc;
         let history = history_min_max(&activities);
         let run_id = now_nanos()?;
         let report_path = state_root.join(format!("run-{}-{run_id}.txt", index));
@@ -402,7 +412,6 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
                 condition_decision.should_follow
             ),
             format!("normalized_open_usdc={normalized_open_usdc:.6}"),
-            format!("planned_open_usdc={open_usdc:.6}"),
         ];
         lines.extend(watch_lines.into_iter().filter(|line| {
             line.starts_with("watch_")
@@ -434,6 +443,41 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
             .iter()
             .any(|line| line == "account_snapshot_refresh_status=ok");
         lines.extend(refresh_lines);
+        let sell_inventory_decision = evaluate_sell_inventory(
+            &root,
+            options,
+            latest,
+            refresh_ok,
+            condition_decision.recommended_open_usdc,
+        )?;
+        let open_usdc = sell_inventory_decision.adjusted_open_usdc;
+        lines.push(format!(
+            "sell_inventory_net_size={}",
+            sell_inventory_decision
+                .inventory_net_size
+                .map(|value| format!("{value:.6}"))
+                .unwrap_or_default()
+        ));
+        lines.push(format!(
+            "sell_inventory_sellable_usdc={}",
+            sell_inventory_decision
+                .sellable_usdc
+                .map(|value| format!("{value:.6}"))
+                .unwrap_or_default()
+        ));
+        lines.push(format!(
+            "sell_inventory_decision={}",
+            sell_inventory_decision.decision_tag
+        ));
+        lines.push(format!(
+            "sell_inventory_reason={}",
+            sell_inventory_decision.reason
+        ));
+        lines.push(format!(
+            "sell_inventory_should_follow={}",
+            sell_inventory_decision.should_follow
+        ));
+        lines.push(format!("planned_open_usdc={open_usdc:.6}"));
 
         if !options.force_live_submit && poll_new_events == Some(0) {
             lines.push("submit_status=skipped_no_new_activity".to_string());
@@ -456,6 +500,16 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
             lines.push(format!(
                 "submit_status=skipped_{}",
                 condition_decision.decision_tag
+            ));
+            lines.push(format!("report_path={}", report_path.display()));
+            persist_iteration_report(&state_root, &report_path, &lines)?;
+            if !options.forever && index + 1 >= loop_total {
+                break lines;
+            }
+        } else if !sell_inventory_decision.should_follow {
+            lines.push(format!(
+                "submit_status=skipped_{}",
+                sell_inventory_decision.decision_tag
             ));
             lines.push(format!("report_path={}", report_path.display()));
             persist_iteration_report(&state_root, &report_path, &lines)?;
@@ -666,6 +720,147 @@ fn run_snapshot_refresh_with_prefix(root: &Path, options: &Options, prefix: &str
             format!("{prefix}_error={}", sanitize_report_text(&error)),
         ],
     }
+}
+
+fn evaluate_sell_inventory(
+    root: &Path,
+    options: &Options,
+    latest: &SizedActivity,
+    refresh_ok: bool,
+    planned_open_usdc: f64,
+) -> Result<SellInventoryDecision, String> {
+    if !latest.side.eq_ignore_ascii_case("SELL") {
+        return Ok(SellInventoryDecision {
+            inventory_net_size: None,
+            sellable_usdc: None,
+            decision_tag: "not_sell",
+            reason: "latest_side_not_sell",
+            should_follow: true,
+            adjusted_open_usdc: planned_open_usdc,
+        });
+    }
+
+    if !refresh_ok {
+        return Ok(SellInventoryDecision {
+            inventory_net_size: None,
+            sellable_usdc: None,
+            decision_tag: "sell_inventory_unknown",
+            reason: "account_snapshot_refresh_not_ok",
+            should_follow: false,
+            adjusted_open_usdc: planned_open_usdc,
+        });
+    }
+
+    let Some(snapshot_path) = options.account_snapshot.as_deref().filter(|value| !value.is_empty()) else {
+        return Ok(SellInventoryDecision {
+            inventory_net_size: None,
+            sellable_usdc: None,
+            decision_tag: "sell_inventory_unknown",
+            reason: "missing_account_snapshot_path",
+            should_follow: false,
+            adjusted_open_usdc: planned_open_usdc,
+        });
+    };
+
+    let snapshot_path = root.join(snapshot_path);
+    let inventory_net_size = read_asset_inventory_net_size(&snapshot_path, &latest.asset)?;
+    let Some(inventory_net_size) = inventory_net_size else {
+        return Ok(SellInventoryDecision {
+            inventory_net_size: None,
+            sellable_usdc: Some(0.0),
+            decision_tag: "sell_without_inventory",
+            reason: "asset_not_present_in_snapshot",
+            should_follow: false,
+            adjusted_open_usdc: 0.0,
+        });
+    };
+
+    if inventory_net_size <= 0.0 {
+        return Ok(SellInventoryDecision {
+            inventory_net_size: Some(inventory_net_size),
+            sellable_usdc: Some(0.0),
+            decision_tag: "sell_without_inventory",
+            reason: "inventory_net_size_non_positive",
+            should_follow: false,
+            adjusted_open_usdc: 0.0,
+        });
+    }
+
+    let sellable_usdc = if latest.size > 0.0 && latest.usdc_size > 0.0 {
+        latest.usdc_size * (inventory_net_size / latest.size)
+    } else {
+        0.0
+    };
+
+    if sellable_usdc <= 0.0 {
+        return Ok(SellInventoryDecision {
+            inventory_net_size: Some(inventory_net_size),
+            sellable_usdc: Some(0.0),
+            decision_tag: "sell_without_inventory",
+            reason: "sellable_usdc_non_positive",
+            should_follow: false,
+            adjusted_open_usdc: 0.0,
+        });
+    }
+
+    if sellable_usdc < planned_open_usdc {
+        return Ok(SellInventoryDecision {
+            inventory_net_size: Some(inventory_net_size),
+            sellable_usdc: Some(sellable_usdc),
+            decision_tag: "sell_inventory_capped",
+            reason: "planned_sell_exceeds_inventory",
+            should_follow: true,
+            adjusted_open_usdc: sellable_usdc.min(planned_open_usdc),
+        });
+    }
+
+    Ok(SellInventoryDecision {
+        inventory_net_size: Some(inventory_net_size),
+        sellable_usdc: Some(sellable_usdc),
+        decision_tag: "sell_inventory_ok",
+        reason: "inventory_covers_planned_sell",
+        should_follow: true,
+        adjusted_open_usdc: planned_open_usdc,
+    })
+}
+
+fn read_asset_inventory_net_size(snapshot_path: &Path, asset_id: &str) -> Result<Option<f64>, String> {
+    let body = fs::read_to_string(snapshot_path)
+        .map_err(|error| format!("failed to read {}: {error}", snapshot_path.display()))?;
+    let snapshot: Value = serde_json::from_str(&body)
+        .map_err(|error| format!("failed to parse {}: {error}", snapshot_path.display()))?;
+    let positions = snapshot
+        .get("account_snapshot")
+        .and_then(|value| value.get("positions"))
+        .or_else(|| snapshot.get("positions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    for position in positions {
+        let candidate_asset = position
+            .get("asset_id")
+            .or_else(|| position.get("asset"))
+            .and_then(Value::as_str);
+        if candidate_asset != Some(asset_id) {
+            continue;
+        }
+        let net_size = position
+            .get("net_size")
+            .or_else(|| position.get("size"))
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| value.to_string())
+            })
+            .ok_or_else(|| format!("missing net_size for asset {asset_id} in {}", snapshot_path.display()))?
+            .parse::<f64>()
+            .map_err(|error| format!("invalid net_size for asset {asset_id}: {error}"))?;
+        return Ok(Some(net_size));
+    }
+
+    Ok(None)
 }
 
 fn submit_output_marks_seen(output: &str) -> bool {
@@ -1164,8 +1359,8 @@ fn current_unix_ms() -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Options, compute_normalized_score, decide_condition_sizing, map_score_to_open_usdc,
-        parse_args, run_minmax_follow, submit_output_contains_prefix,
+        Options, compute_normalized_score, decide_condition_sizing, evaluate_sell_inventory,
+        map_score_to_open_usdc, parse_args, run_minmax_follow, submit_output_contains_prefix,
         submit_output_contains_status, submit_output_marks_seen,
     };
     use std::fs;
@@ -1318,6 +1513,75 @@ mod tests {
         assert!(!decision.should_follow);
         assert_eq!(decision.decision_tag, "condition_hedge_candidate");
         assert!(decision.opposite_outcome_sum_usdc > decision.same_outcome_sum_usdc);
+    }
+
+    #[test]
+    fn sell_inventory_decision_skips_when_asset_not_held() {
+        let root = unique_temp_dir("sell-no-inventory");
+        fs::create_dir_all(root.join("runtime-verify-account")).expect("dir created");
+        fs::write(
+            root.join("runtime-verify-account/dashboard.json"),
+            "{\"account_snapshot\":{\"positions\":[],\"open_orders\":[]}}",
+        )
+        .expect("snapshot written");
+
+        let latest = super::SizedActivity {
+            tx: "0xsell".into(),
+            timestamp: 20,
+            side: "SELL".into(),
+            asset: "asset-sell".into(),
+            condition_id: Some("cond-1".into()),
+            outcome: Some("Yes".into()),
+            slug: Some("market-a".into()),
+            size: 10.0,
+            usdc_size: 5.0,
+        };
+        let options = Options {
+            root: root.display().to_string(),
+            account_snapshot: Some("runtime-verify-account/dashboard.json".into()),
+            ..Options::default()
+        };
+
+        let decision = evaluate_sell_inventory(&root, &options, &latest, true, 1.0).expect("decision");
+        assert!(!decision.should_follow);
+        assert_eq!(decision.decision_tag, "sell_without_inventory");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn sell_inventory_decision_caps_planned_sell_to_inventory() {
+        let root = unique_temp_dir("sell-cap-inventory");
+        fs::create_dir_all(root.join("runtime-verify-account")).expect("dir created");
+        fs::write(
+            root.join("runtime-verify-account/dashboard.json"),
+            "{\"account_snapshot\":{\"positions\":[{\"asset_id\":\"asset-sell\",\"net_size\":\"1.0\",\"last_price\":\"0.5\",\"estimated_equity\":\"0.5\"}],\"open_orders\":[]}}",
+        )
+        .expect("snapshot written");
+
+        let latest = super::SizedActivity {
+            tx: "0xsell".into(),
+            timestamp: 20,
+            side: "SELL".into(),
+            asset: "asset-sell".into(),
+            condition_id: Some("cond-1".into()),
+            outcome: Some("Yes".into()),
+            slug: Some("market-a".into()),
+            size: 10.0,
+            usdc_size: 5.0,
+        };
+        let options = Options {
+            root: root.display().to_string(),
+            account_snapshot: Some("runtime-verify-account/dashboard.json".into()),
+            ..Options::default()
+        };
+
+        let decision = evaluate_sell_inventory(&root, &options, &latest, true, 1.0).expect("decision");
+        assert!(decision.should_follow);
+        assert_eq!(decision.decision_tag, "sell_inventory_capped");
+        assert_eq!(decision.adjusted_open_usdc, 0.5);
+
+        fs::remove_dir_all(root).expect("temp dir removed");
     }
 
     #[test]
@@ -1492,6 +1756,151 @@ mod tests {
         assert!(lines.iter().any(|line| line == "condition_decision=condition_hedge_candidate"));
         assert!(lines.iter().any(|line| line == "submit_status=skipped_condition_hedge_candidate"));
         assert!(!forwarded.exists(), "submit should not be invoked for hedge candidate");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn run_minmax_follow_skips_sell_when_inventory_missing() {
+        let root = unique_temp_dir("skip-sell-no-inventory");
+        fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
+        let selected_env = root.join(".omx/discovery/selected-leader.env");
+        fs::write(
+            &selected_env,
+            format!("COPYTRADER_DISCOVERY_WALLET={WALLET}\nCOPYTRADER_LEADER_WALLET={WALLET}\n"),
+        )
+        .expect("env written");
+
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            &format!(
+                "#!/bin/sh\nmkdir -p '{root}/.omx/live-activity/{wallet}'\ncat > '{root}/.omx/live-activity/{wallet}/latest-activity.json' <<'JSON'\n[\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":20,\"type\":\"TRADE\",\"asset\":\"asset-sell\",\"size\":10.0,\"usdcSize\":5.0,\"transactionHash\":\"0xsell\",\"price\":0.5,\"side\":\"SELL\",\"conditionId\":\"cond-1\",\"outcome\":\"Yes\",\"slug\":\"market-a\"}}\n]\nJSON\nprintf 'watch_user={wallet}\\npoll_transport_mode=direct\\npoll_new_events=1\\nlatest_new_tx=0xsell\\nlatest_new_side=SELL\\n'\n",
+                root = root.display(),
+                wallet = WALLET
+            ),
+        );
+        let submit = root.join("run_copytrader_live_submit_gate");
+        let forwarded = root.join("forwarded-args.txt");
+        write_executable(
+            &submit,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{forwarded}'\nprintf 'live_submit_status=submitted\\n'\n",
+                forwarded = forwarded.display()
+            ),
+        );
+        let account_monitor = root.join("run_copytrader_account_monitor");
+        write_executable(
+            &account_monitor,
+            "#!/bin/sh\nout=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--output\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\n done\nmkdir -p \"$(dirname \"$out\")\"\nprintf '{\"account_snapshot\":{\"positions\":[],\"open_orders\":[]}}' > \"$out\"\n",
+        );
+
+        let options = Options {
+            root: root.display().to_string(),
+            user: Some(WALLET.into()),
+            selected_leader_env: Some(selected_env.display().to_string()),
+            proxy: None,
+            watch_limit: 10,
+            loop_count: 1,
+            forever: false,
+            loop_interval_ms: 0,
+            min_open_usdc: 0.1,
+            max_open_usdc: 10.0,
+            flat_score: 50,
+            max_total_exposure_usdc: Some("100".into()),
+            max_order_usdc: Some("10".into()),
+            account_snapshot: Some("runtime-verify-account/dashboard.json".into()),
+            account_snapshot_max_age_secs: 300,
+            activity_max_age_secs: 60,
+            allow_live_submit: true,
+            force_live_submit: false,
+            ignore_seen_tx: false,
+            activity_source_verified: false,
+            activity_under_budget: false,
+            activity_capability_detected: false,
+            positions_under_budget: false,
+            watch_bin: Some(watch.display().to_string()),
+            live_submit_bin: Some(submit.display().to_string()),
+            account_monitor_bin: Some(account_monitor.display().to_string()),
+        };
+
+        let lines = run_minmax_follow(&options).expect("strategy should succeed");
+        assert!(lines.iter().any(|line| line == "sell_inventory_decision=sell_without_inventory"));
+        assert!(lines.iter().any(|line| line == "submit_status=skipped_sell_without_inventory"));
+        assert!(!forwarded.exists(), "submit should not be invoked when no sell inventory");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
+    fn run_minmax_follow_caps_sell_submit_to_inventory() {
+        let root = unique_temp_dir("cap-sell-inventory");
+        fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
+        let selected_env = root.join(".omx/discovery/selected-leader.env");
+        fs::write(
+            &selected_env,
+            format!("COPYTRADER_DISCOVERY_WALLET={WALLET}\nCOPYTRADER_LEADER_WALLET={WALLET}\n"),
+        )
+        .expect("env written");
+
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            &format!(
+                "#!/bin/sh\nmkdir -p '{root}/.omx/live-activity/{wallet}'\ncat > '{root}/.omx/live-activity/{wallet}/latest-activity.json' <<'JSON'\n[\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":20,\"type\":\"TRADE\",\"asset\":\"asset-sell\",\"size\":10.0,\"usdcSize\":5.0,\"transactionHash\":\"0xsell\",\"price\":0.5,\"side\":\"SELL\",\"conditionId\":\"cond-1\",\"outcome\":\"Yes\",\"slug\":\"market-a\"}},\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":10,\"type\":\"TRADE\",\"asset\":\"asset-sell\",\"size\":20.0,\"usdcSize\":10.0,\"transactionHash\":\"0xbuy\",\"price\":0.5,\"side\":\"BUY\",\"conditionId\":\"cond-1\",\"outcome\":\"Yes\",\"slug\":\"market-a\"}}\n]\nJSON\nprintf 'watch_user={wallet}\\npoll_transport_mode=direct\\npoll_new_events=1\\nlatest_new_tx=0xsell\\nlatest_new_side=SELL\\n'\n",
+                root = root.display(),
+                wallet = WALLET
+            ),
+        );
+        let submit = root.join("run_copytrader_live_submit_gate");
+        let forwarded = root.join("forwarded-args.txt");
+        write_executable(
+            &submit,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{forwarded}'\nprintf 'live_submit_status=preview_only\\n'\n",
+                forwarded = forwarded.display()
+            ),
+        );
+        let account_monitor = root.join("run_copytrader_account_monitor");
+        write_executable(
+            &account_monitor,
+            "#!/bin/sh\nout=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--output\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\n done\nmkdir -p \"$(dirname \"$out\")\"\nprintf '{\"account_snapshot\":{\"positions\":[{\"asset_id\":\"asset-sell\",\"net_size\":\"0.5\",\"last_price\":\"0.5\",\"estimated_equity\":\"0.25\"}],\"open_orders\":[]}}' > \"$out\"\n",
+        );
+
+        let options = Options {
+            root: root.display().to_string(),
+            user: Some(WALLET.into()),
+            selected_leader_env: Some(selected_env.display().to_string()),
+            proxy: None,
+            watch_limit: 10,
+            loop_count: 1,
+            forever: false,
+            loop_interval_ms: 0,
+            min_open_usdc: 0.1,
+            max_open_usdc: 10.0,
+            flat_score: 50,
+            max_total_exposure_usdc: Some("100".into()),
+            max_order_usdc: Some("10".into()),
+            account_snapshot: Some("runtime-verify-account/dashboard.json".into()),
+            account_snapshot_max_age_secs: 300,
+            activity_max_age_secs: 60,
+            allow_live_submit: true,
+            force_live_submit: false,
+            ignore_seen_tx: false,
+            activity_source_verified: false,
+            activity_under_budget: false,
+            activity_capability_detected: false,
+            positions_under_budget: false,
+            watch_bin: Some(watch.display().to_string()),
+            live_submit_bin: Some(submit.display().to_string()),
+            account_monitor_bin: Some(account_monitor.display().to_string()),
+        };
+
+        let lines = run_minmax_follow(&options).expect("strategy should succeed");
+        assert!(lines.iter().any(|line| line == "sell_inventory_decision=sell_inventory_capped"));
+        assert!(lines.iter().any(|line| line == "planned_open_usdc=0.250000"));
+        let args = fs::read_to_string(&forwarded).expect("forwarded args");
+        assert!(args.contains("0.250000"));
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }

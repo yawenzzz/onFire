@@ -504,7 +504,7 @@ bash scripts/run_rust_minmax_follow_live.sh --user <wallet>
 - `poll_transport_mode=proxy|direct_fallback|direct`
 - `watch_has_new_activity=true|false`
 - `account_snapshot_refresh_status=ok|failed|disabled:*`
-- `submit_status=skipped_no_new_activity|skipped_account_snapshot_refresh_failed|skipped_condition_unconfirmed_small_entry|skipped_condition_hedge_candidate|skipped_duplicate_tx|skipped_live_gate_blocked|...`
+- `submit_status=skipped_no_new_activity|skipped_account_snapshot_refresh_failed|skipped_condition_unconfirmed_small_entry|skipped_condition_hedge_candidate|skipped_sell_without_inventory|skipped_duplicate_tx|skipped_live_gate_blocked|...`
 
 其中 condition-aware 跟单规则现在是：
 
@@ -514,6 +514,15 @@ bash scripts/run_rust_minmax_follow_live.sh --user <wallet>
   - 同一事件下 opposite outcome 的历史资金明显更大，而当前这笔又很小，默认视为对冲/减仓信号，不新开反向跟单
 - `condition_follow_confirmed`
   - 同一事件、同一 outcome 已经有足够确认（单笔够大、累计够大，或连续多笔），才允许按 `planned_open_usdc` 跟单
+
+另外现在对 `SELL` 会先看我们自己的 snapshot inventory：
+
+- `sell_without_inventory`
+  - 当前 snapshot 里没有对应 `asset_id` 的正向库存，不跟这笔 `SELL`
+- `sell_inventory_capped`
+  - 有库存，但库存只够卖一部分，`planned_open_usdc` 会被压到可卖上限
+- `sell_inventory_ok`
+  - 库存足够，允许按当前 `planned_open_usdc` 继续走 submit
 
 如果你要真的持续 live submit，需要显式打开：
 
