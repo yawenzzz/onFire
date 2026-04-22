@@ -864,9 +864,15 @@ fn read_asset_inventory_net_size(snapshot_path: &Path, asset_id: &str) -> Result
 }
 
 fn submit_output_marks_seen(output: &str) -> bool {
-    output
+    let submitted = output
         .lines()
-        .any(|line| matches!(line.trim(), "live_submit_status=submitted"))
+        .any(|line| matches!(line.trim(), "live_submit_status=submitted"));
+    if !submitted {
+        return false;
+    }
+    !output
+        .lines()
+        .any(|line| matches!(line.trim(), "submit_success=false"))
 }
 
 fn sanitize_report_text(value: &str) -> String {
@@ -2054,6 +2060,9 @@ mod tests {
             "live_submit_status=preview_only\n"
         ));
         assert!(submit_output_marks_seen("live_submit_status=submitted\n"));
+        assert!(!submit_output_marks_seen(
+            "live_submit_status=submitted\nsubmit_success=false\n"
+        ));
         assert!(!submit_output_marks_seen(
             "live_gate_status=blocked:activity_source_over_budget\n"
         ));
