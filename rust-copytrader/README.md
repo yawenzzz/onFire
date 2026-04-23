@@ -215,6 +215,30 @@ cargo run --bin watch_copy_leader_activity -- --root .. --proxy http://127.0.0.1
 
 > 你已经不是“拿静态榜单”了，而是在盯一个真实 leader 的公开 activity。
 
+如果你已经有可用的 Polygon websocket endpoint，也可以用更低延迟的 WS watcher：
+
+```bash
+POLYGON_WSS_URL=wss://your-polygon-ws-endpoint \
+bash scripts/run_rust_watch_copy_leader_activity_ws.sh --user <wallet> --poll-count 1
+```
+
+它会先通过 `eth_subscribe` 盯目标 wallet 的 pending tx，再立即用 activity API enrichment，并把结果落到同样的位置：
+- `.omx/live-activity/<wallet>/latest-activity.json`
+- `.omx/live-activity/<wallet>/activity-events.jsonl`
+- `.omx/live-activity/<wallet>/seen-tx.txt`
+
+如果你想直接把 WS watcher 接进现有跟单链路，用这两个包装脚本：
+
+```bash
+POLYGON_WSS_URL=wss://your-polygon-ws-endpoint \
+bash scripts/run_rust_minmax_follow_live_ws.sh --user <wallet>
+```
+
+```bash
+POLYGON_WSS_URL=wss://your-polygon-ws-endpoint \
+bash scripts/run_rust_minmax_follow_live_submit_ws.sh --user <wallet>
+```
+
 ---
 
 ## 9. 第四步：跑到 live submit gate（默认安全）
