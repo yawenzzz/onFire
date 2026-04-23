@@ -357,7 +357,7 @@ fn main() -> ExitCode {
     match tokio_main(options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{error}");
+            eprintln!("{}", enrich_run_error(&error));
             ExitCode::from(1)
         }
     }
@@ -369,6 +369,18 @@ fn tokio_main(options: Options) -> Result<(), String> {
         .build()
         .map_err(|error| format!("failed to build tokio runtime: {error}"))?;
     runtime.block_on(run(options))
+}
+
+fn enrich_run_error(error: &str) -> String {
+    let mut message = error.to_string();
+    if error.contains("missing private key") || error.contains("missing field PRIVATE_KEY") {
+        message.push_str("
+fill latency logger needs follower auth to subscribe to the authenticated user websocket. Set PRIVATE_KEY or CLOB_PRIVATE_KEY plus CLOB_API_KEY, CLOB_SECRET, and CLOB_PASS_PHRASE in the repo .env/.env.local or process env.");
+    } else if error.contains("missing CLOB_SECRET") {
+        message.push_str("
+fill latency logger uses the follower account websocket and requires CLOB_API_KEY, CLOB_SECRET, CLOB_PASS_PHRASE, and the private key in local env.");
+    }
+    message
 }
 
 fn print_usage() {
@@ -953,7 +965,7 @@ fn format_root_error(error: RootEnvLoadError) -> String {
 mod tests {
     use super::{
         LatestActivityInfo, OrderSnapshot, SummaryContext, Tracker, TradeSnapshot,
-        render_human_line,
+        enrich_run_error, render_human_line,
     };
     use std::collections::BTreeSet;
     use std::path::PathBuf;
@@ -1058,5 +1070,19 @@ mod tests {
         assert!(line.contains("price_gap_bps=200.0000"));
         assert!(line.contains("shares=6.00"));
         assert!(line.contains("leader_tx=0xleader-tx"));
+    }
+
+    #[test]
+    fn enrich_run_error_explains_private_key_requirement() {
+        let message = enrich_run_error("missing private key");
+        assert!(message.contains("authenticated user websocket"));
+        assert!(message.contains("PRIVATE_KEY or CLOB_PRIVATE_KEY"));
+    }
+
+    #[test]
+    fn enrich_run_error_explains_clob_secret_requirement() {
+        let message = enrich_run_error("missing CLOB_SECRET for websocket auth");
+        assert!(message.contains("CLOB_API_KEY"));
+        assert!(message.contains("CLOB_SECRET"));
     }
 }

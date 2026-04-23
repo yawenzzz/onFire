@@ -17,7 +17,9 @@ class CopytradeFillLatencyScriptTests(unittest.TestCase):
     def test_fill_latency_logger_wrapper_targets_rust_bin(self) -> None:
         text = Path("scripts/run_rust_copytrade_fill_latency_logger.sh").read_text()
         self.assertIn("run_copytrader_fill_latency_logger", text)
-        self.assertIn('"$CARGO_BIN" run --bin run_copytrader_fill_latency_logger -- "$@"', text)
+        self.assertIn('args=(--root "$ROOT")', text)
+        self.assertIn('args=(--root "$ROOT" "${args[@]}")', text)
+        self.assertIn('"$CARGO_BIN" run --bin run_copytrader_fill_latency_logger -- "${args[@]}"', text)
 
     def test_live_submit_latency_wrapper_starts_logger_and_redirects_follow_logs(self) -> None:
         text = Path("scripts/run_rust_minmax_follow_live_submit_latency.sh").read_text()
