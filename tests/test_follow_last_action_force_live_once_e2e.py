@@ -1070,6 +1070,87 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             shutil.rmtree(state_root, ignore_errors=True)
             shutil.rmtree(activity_root, ignore_errors=True)
 
+    def test_force_live_once_processes_every_new_trade_in_same_poll_burst(self) -> None:
+        root = Path.cwd()
+        state_root = root / ".omx" / "force-live-follow" / WALLET
+        activity_root = root / ".omx" / "live-activity" / WALLET
+        log_dir = Path(tempfile.mkdtemp(prefix="force-live-once-multi-burst-"))
+        try:
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+            activity_root.mkdir(parents=True, exist_ok=True)
+
+            latest_activity = activity_root / "latest-activity.json"
+            latest_activity.write_text(
+                '[{"proxyWallet":"%s","timestamp":30,"type":"TRADE","asset":"asset-yes","conditionId":"cond-burst","outcome":"Yes","size":30.0,"usdcSize":15.0,"transactionHash":"0xtx3","price":0.5,"side":"BUY","slug":"market-a"},{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-yes","conditionId":"cond-burst","outcome":"Yes","size":20.0,"usdcSize":10.0,"transactionHash":"0xtx2","price":0.5,"side":"BUY","slug":"market-a"},{"proxyWallet":"%s","timestamp":10,"type":"TRADE","asset":"asset-yes","conditionId":"cond-burst","outcome":"Yes","size":10.0,"usdcSize":5.0,"transactionHash":"0xtx1","price":0.5,"side":"BUY","slug":"market-a"}]'
+                % (WALLET, WALLET, WALLET)
+            )
+
+            watch = log_dir / "watch.sh"
+            positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
+            submit = log_dir / "submit.sh"
+            submit_log = log_dir / "submit-args.txt"
+
+            self._make_exec(
+                watch,
+                "#!/usr/bin/env bash\nprintf 'watch_user=%s\\npoll_new_events=3\\nlatest_new_tx=0xtx3\\n'\n"
+                % WALLET,
+            )
+            self._make_exec(
+                submit,
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" >> %s\nprintf '%s\\n' '---' >> %s\nprintf 'live_submit_status=submitted\\n'\n"
+                % ("%s", submit_log, "%s", submit_log),
+            )
+            self._make_positions_gate_exec(
+                positions_gate,
+                status="skip_existing_event_position",
+                reason="wallet_target_outcome_position_exceeds_latest_trade_size",
+                should_follow=False,
+                target_size="60.000000",
+                other_size="0.000000",
+                total_size="60.000000",
+                response_count="1",
+                event_count="1",
+            )
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[],"open_orders":[]}}',
+            )
+
+            env = os.environ.copy()
+            env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
+            env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
+            env["POLYMARKET_CURL_PROXY"] = ""
+
+            completed = subprocess.run(
+                ["bash", "scripts/run_rust_follow_last_action_force_live_once.sh", "--user", WALLET],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            self.assertIn("poll_new_events=3", completed.stdout)
+            forwarded = submit_log.read_text()
+            self.assertEqual(forwarded.count("--latest-activity"), 3)
+            summary_paths = sorted((state_root / "runs").glob("*/summary.txt"))
+            self.assertEqual(len(summary_paths), 3)
+            summary_text = "\n".join(path.read_text() for path in summary_paths)
+            self.assertIn("latest_tx=0xtx1", summary_text)
+            self.assertIn("latest_tx=0xtx2", summary_text)
+            self.assertIn("latest_tx=0xtx3", summary_text)
+            self.assertIn("follow_trigger_reason=leader_new_open", summary_text)
+        finally:
+            shutil.rmtree(log_dir, ignore_errors=True)
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+
     def test_force_live_once_accepts_external_proxy_argument(self) -> None:
         root = Path.cwd()
         state_root = root / ".omx" / "force-live-follow" / WALLET

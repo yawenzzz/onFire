@@ -22,6 +22,9 @@ MIN_COMPATIBLE_SHARES="${MIN_COMPATIBLE_SHARES:-0.01}"
 FOLLOW_ORDER_TYPE="${FOLLOW_ORDER_TYPE:-GTC}"
 POSITIONS_RETRY_COUNT="${POSITIONS_RETRY_COUNT:-4}"
 POSITIONS_RETRY_DELAY_MS="${POSITIONS_RETRY_DELAY_MS:-750}"
+FORCE_FOLLOW_SKIP_WATCH="${FORCE_FOLLOW_SKIP_WATCH:-0}"
+FORCE_FOLLOW_SELECTED_TX="${FORCE_FOLLOW_SELECTED_TX:-}"
+FORCE_FOLLOW_OVERRIDE_NEW_OPEN="${FORCE_FOLLOW_OVERRIDE_NEW_OPEN:-0}"
 
 USER_WALLET=""
 PROXY_OVERRIDE=""
@@ -266,6 +269,79 @@ extract_snapshot_net_size_by_asset() {
   ' "$snapshot_path" "$asset_id" 2>/dev/null || true
 }
 
+extract_unseen_activity_plans() {
+  local latest_activity="$1"
+  local seen_before_path="$2"
+  [[ -f "$latest_activity" ]] || return 0
+
+  perl -MJSON::PP -e '
+    my ($path, $seen_path) = @ARGV;
+    my %seen_before;
+    if (defined $seen_path && -f $seen_path) {
+      open my $seen_fh, "<", $seen_path or exit 0;
+      while (my $line = <$seen_fh>) {
+        chomp $line;
+        next unless defined $line && $line ne "";
+        $seen_before{$line} = 1;
+      }
+      close $seen_fh;
+    }
+    local $/;
+    open my $fh, "<", $path or exit 0;
+    my $body = <$fh>;
+    my $decoded = eval { JSON::PP->new->decode($body) };
+    exit 0 if $@;
+    my @items =
+      ref($decoded) eq "ARRAY" ? @$decoded :
+      ref($decoded) eq "HASH"  ? ($decoded) :
+      ();
+    my @records;
+    my %event_has_prior_seen;
+    for my $item (@items) {
+      next unless ref($item) eq "HASH";
+      my $tx = $item->{transactionHash};
+      next unless defined $tx && $tx ne "";
+      my $timestamp = defined($item->{timestamp}) ? ($item->{timestamp} + 0) : 0;
+      my $type = defined($item->{type}) ? $item->{type} : "";
+      my $side = defined($item->{side}) ? $item->{side} : "";
+      my $event_key = $item->{conditionId};
+      $event_key = $item->{eventSlug} unless defined($event_key) && $event_key ne "";
+      $event_key = $item->{event_slug} unless defined($event_key) && $event_key ne "";
+      $event_key = $item->{slug} unless defined($event_key) && $event_key ne "";
+      $event_key = $item->{asset} unless defined($event_key) && $event_key ne "";
+      push @records, {
+        tx => $tx,
+        timestamp => $timestamp,
+        type => $type,
+        side => $side,
+        event_key => (defined($event_key) ? $event_key : ""),
+        seen_before => ($seen_before{$tx} ? 1 : 0),
+      };
+      if ($seen_before{$tx} && defined($event_key) && $event_key ne "") {
+        $event_has_prior_seen{$event_key} = 1;
+      }
+    }
+    @records = sort { $a->{timestamp} <=> $b->{timestamp} } @records;
+    for my $record (@records) {
+      next if $record->{seen_before};
+      my $override = (
+        uc($record->{type} // "") eq "TRADE"
+        && uc($record->{side} // "") eq "BUY"
+        && $record->{event_key} ne ""
+        && !$event_has_prior_seen{$record->{event_key}}
+      ) ? 1 : 0;
+      print join("\t",
+        $record->{tx},
+        $record->{timestamp},
+        $record->{type},
+        $record->{side},
+        $record->{event_key},
+        $override,
+      ), "\n";
+    }
+  ' "$latest_activity" "$seen_before_path" 2>/dev/null || true
+}
+
 now_unix_ms() {
   if command -v perl >/dev/null 2>&1; then
     perl -MTime::HiRes=time -e 'printf("%.0f\n", time()*1000)'
@@ -353,13 +429,28 @@ echo "account_snapshot_path=$ACCOUNT_SNAPSHOT_FILE"
 echo "run_dir=$RUN_DIR"
 echo
 
+SEEN_BEFORE_PATH="$RUN_DIR/seen.before.txt"
+if [[ -f "$WATCH_SEEN_TX_FILE" ]]; then
+  cp "$WATCH_SEEN_TX_FILE" "$SEEN_BEFORE_PATH"
+else
+  : > "$SEEN_BEFORE_PATH"
+fi
+
 WATCH_STARTED_AT_UNIX_MS="$(now_unix_ms)"
-set +e
-run_with_shell_fallback "$WATCH_BIN_DEFAULT" "${WATCH_ARGS[@]}" >"$WATCH_STDOUT" 2>"$WATCH_STDERR"
-WATCH_EXIT=$?
-set -e
-WATCH_FINISHED_AT_UNIX_MS="$(now_unix_ms)"
-WATCH_ELAPSED_MS="$((WATCH_FINISHED_AT_UNIX_MS - WATCH_STARTED_AT_UNIX_MS))"
+WATCH_EXIT=0
+WATCH_POLL_NEW_EVENTS=0
+if [[ "$FORCE_FOLLOW_SKIP_WATCH" == "1" ]]; then
+  WATCH_FINISHED_AT_UNIX_MS="${FORCE_FOLLOW_WATCH_FINISHED_AT_UNIX_MS:-$WATCH_STARTED_AT_UNIX_MS}"
+  WATCH_ELAPSED_MS="$((WATCH_FINISHED_AT_UNIX_MS - WATCH_STARTED_AT_UNIX_MS))"
+  WATCH_POLL_NEW_EVENTS="${FORCE_FOLLOW_WATCH_POLL_NEW_EVENTS:-1}"
+else
+  set +e
+  run_with_shell_fallback "$WATCH_BIN_DEFAULT" "${WATCH_ARGS[@]}" >"$WATCH_STDOUT" 2>"$WATCH_STDERR"
+  WATCH_EXIT=$?
+  set -e
+  WATCH_FINISHED_AT_UNIX_MS="$(now_unix_ms)"
+  WATCH_ELAPSED_MS="$((WATCH_FINISHED_AT_UNIX_MS - WATCH_STARTED_AT_UNIX_MS))"
+fi
 
 if [[ -f "$WATCH_STDOUT" ]]; then
   cat "$WATCH_STDOUT"
@@ -385,10 +476,51 @@ EOF_SUMMARY
   echo "using cached latest activity: $LATEST_ACTIVITY" >&2
 fi
 
-WATCH_POLL_NEW_EVENTS="$(extract_metric_value "$WATCH_STDOUT" "poll_new_events")"
-LATEST_TX="$(extract_metric_value "$WATCH_STDOUT" "latest_new_tx")"
-if [[ -z "$LATEST_TX" ]]; then
-  LATEST_TX="$(extract_latest_tx "$LATEST_ACTIVITY")"
+if [[ "$FORCE_FOLLOW_SKIP_WATCH" != "1" ]]; then
+  WATCH_POLL_NEW_EVENTS="$(extract_metric_value "$WATCH_STDOUT" "poll_new_events")"
+fi
+
+if [[ "$FORCE_FOLLOW_SKIP_WATCH" != "1" && "${WATCH_POLL_NEW_EVENTS:-0}" -gt 1 ]]; then
+  UNSEEN_ACTIVITY_PLANS=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    UNSEEN_ACTIVITY_PLANS+=("$line")
+  done <<EOF_UNSEEN
+$(extract_unseen_activity_plans "$LATEST_ACTIVITY" "$SEEN_BEFORE_PATH")
+EOF_UNSEEN
+  if [[ ${#UNSEEN_ACTIVITY_PLANS[@]} -gt 1 ]]; then
+    OVERALL_EXIT=0
+    CHILD_ARGS=(--user "$USER_WALLET" --follow-share-divisor "$FOLLOW_SHARE_DIVISOR")
+    if [[ -n "$PROXY_OVERRIDE" ]]; then
+      CHILD_ARGS+=(--proxy "$PROXY_OVERRIDE")
+    fi
+    for plan in "${UNSEEN_ACTIVITY_PLANS[@]}"; do
+      IFS=$'\t' read -r PLAN_TX PLAN_TS PLAN_TYPE PLAN_SIDE PLAN_EVENT_KEY PLAN_OVERRIDE <<<"$plan"
+      set +e
+      FORCE_FOLLOW_SKIP_WATCH=1 \
+      FORCE_FOLLOW_SELECTED_TX="$PLAN_TX" \
+      FORCE_FOLLOW_OVERRIDE_NEW_OPEN="$PLAN_OVERRIDE" \
+      FORCE_FOLLOW_WATCH_FINISHED_AT_UNIX_MS="$WATCH_FINISHED_AT_UNIX_MS" \
+      FORCE_FOLLOW_WATCH_POLL_NEW_EVENTS="$WATCH_POLL_NEW_EVENTS" \
+      bash "$0" "${CHILD_ARGS[@]}"
+      CHILD_EXIT=$?
+      set -e
+      if [[ "$CHILD_EXIT" -ne 0 ]]; then
+        OVERALL_EXIT="$CHILD_EXIT"
+        break
+      fi
+    done
+    exit "$OVERALL_EXIT"
+  fi
+fi
+
+if [[ -n "$FORCE_FOLLOW_SELECTED_TX" ]]; then
+  LATEST_TX="$FORCE_FOLLOW_SELECTED_TX"
+else
+  LATEST_TX="$(extract_metric_value "$WATCH_STDOUT" "latest_new_tx")"
+  if [[ -z "$LATEST_TX" ]]; then
+    LATEST_TX="$(extract_latest_tx "$LATEST_ACTIVITY")"
+  fi
 fi
 LATEST_ACTIVITY_TIMESTAMP="$(extract_event_field_by_tx "$LATEST_ACTIVITY" "$LATEST_TX" "timestamp")"
 if [[ -z "$LATEST_ACTIVITY_TIMESTAMP" ]]; then
@@ -542,6 +674,12 @@ if [[ "$LATEST_ACTIVITY_TYPE" == "TRADE" ]]; then
     FOLLOW_SHARES="$(divide_decimal "${LATEST_ACTIVITY_SIZE:-0}" "$FOLLOW_SHARE_DIVISOR")"
     FOLLOW_USDC="$(divide_decimal "${LATEST_ACTIVITY_USDC_SIZE:-0}" "$FOLLOW_SHARE_DIVISOR")"
   fi
+fi
+
+if [[ "$FORCE_FOLLOW_OVERRIDE_NEW_OPEN" == "1" ]]; then
+  LEADER_EVENT_SHOULD_FOLLOW="true"
+  LEADER_EVENT_OPEN_GATE_STATUS="batch_new_event_open"
+  LEADER_EVENT_OPEN_GATE_REASON="unseen_trade_batch_without_prior_event_history"
 fi
 
 if [[ "$LATEST_ACTIVITY_TYPE" == "TRADE" ]]; then
