@@ -51,6 +51,27 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             + "\n",
         )
 
+    def _make_account_snapshot_exec(self, path: Path, snapshot_json: str) -> None:
+        self._make_exec(
+            path,
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    'out=""',
+                    'while [ $# -gt 0 ]; do',
+                    '  if [ "$1" = "--output" ]; then out="$2"; shift 2; continue; fi',
+                    "  shift",
+                    "done",
+                    'if [ -z "$out" ]; then exit 2; fi',
+                    'mkdir -p "$(dirname "$out")"',
+                    "cat > \"$out\" <<'EOF_SNAPSHOT'",
+                    snapshot_json,
+                    "EOF_SNAPSHOT",
+                ]
+            )
+            + "\n",
+        )
+
     def test_force_live_once_uses_wrapper_bins_and_force_flags(self) -> None:
         wallet = WALLET.lower()
         root = Path.cwd()
@@ -70,6 +91,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             watch = log_dir / "watch.sh"
             positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
             submit = log_dir / "submit.sh"
             submit_log = log_dir / "submit-args.txt"
 
@@ -78,6 +101,10 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 "#!/usr/bin/env bash\nprintf 'watch_user=%s\\n'\n" % wallet,
             )
             self._make_positions_gate_exec(positions_gate)
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[],"open_orders":[]}}',
+            )
             self._make_exec(
                 submit,
                 "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nprintf 'live_submit_status=submitted\\n'\nprintf 'leader_price=0.50000000\\n'\nprintf 'follower_effective_price=0.50000000\\n'\nprintf 'price_gap_bps=0.0000\\n'\n"
@@ -87,6 +114,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
             env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
             env["IGNORE_SEEN_TX"] = "1"
@@ -155,6 +184,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             watch = log_dir / "watch.sh"
             positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
             submit = log_dir / "submit.sh"
             submit_log = log_dir / "submit-called.txt"
 
@@ -165,8 +196,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             )
             self._make_exec(
                 submit,
-                "#!/usr/bin/env bash\nprintf 'called\\n' >> %s\nprintf 'live_submit_status=submitted\\n'\n"
-                % submit_log,
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nprintf 'live_submit_status=submitted\\n'\n"
+                % ("%s", submit_log),
             )
             self._make_positions_gate_exec(
                 positions_gate,
@@ -179,10 +210,16 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 response_count="2",
                 event_count="2",
             )
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[{"asset_id":"asset-yes","net_size":"12.0","last_price":"0.5","estimated_equity":"6.0"}],"open_orders":[]}}',
+            )
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
             env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
 
@@ -232,6 +269,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             watch = log_dir / "watch.sh"
             positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
             submit = log_dir / "submit.sh"
             submit_log = log_dir / "submit-called.txt"
 
@@ -241,8 +280,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             )
             self._make_exec(
                 submit,
-                "#!/usr/bin/env bash\nprintf 'called\\n' >> %s\nprintf 'live_submit_status=submitted\\n'\n"
-                % submit_log,
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nprintf 'live_submit_status=submitted\\n'\n"
+                % ("%s", submit_log),
             )
             self._make_positions_gate_exec(
                 positions_gate,
@@ -255,10 +294,16 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 response_count="2",
                 event_count="2",
             )
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[{"asset_id":"asset-yes","net_size":"12.0","last_price":"0.5","estimated_equity":"6.0"}],"open_orders":[]}}',
+            )
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
             env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
             env["REQUIRE_NEW_ACTIVITY"] = "1"
@@ -304,6 +349,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             watch = log_dir / "watch.sh"
             positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
             submit = log_dir / "submit.sh"
             submit_log = log_dir / "submit-called.txt"
 
@@ -314,8 +361,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             )
             self._make_exec(
                 submit,
-                "#!/usr/bin/env bash\nprintf 'called\\n' >> %s\nprintf 'live_submit_status=submitted\\n'\n"
-                % submit_log,
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nprintf 'live_submit_status=submitted\\n'\n"
+                % ("%s", submit_log),
             )
             self._make_positions_gate_exec(
                 positions_gate,
@@ -328,10 +375,16 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 response_count="2",
                 event_count="2",
             )
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[{"asset_id":"asset-yes","net_size":"12.0","last_price":"0.5","estimated_equity":"6.0"}],"open_orders":[]}}',
+            )
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
             env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
 
@@ -344,21 +397,18 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 check=True,
             )
 
-            self.assertIn(
-                "current positions gate status=skip_existing_event_position",
-                completed.stdout,
-            )
-            self.assertFalse(submit_log.exists())
+            self.assertTrue(submit_log.exists())
             run_dir = next((root / ".omx" / "force-live-follow" / WALLET / "runs").iterdir())
             summary = (run_dir / "summary.txt").read_text()
-            self.assertIn("status=skip_existing_event_position", summary)
-            self.assertIn("leader_event_open_gate_status=skip_existing_event_position", summary)
+            self.assertIn("status=submit_completed", summary)
+            self.assertIn("follower_current_asset_held=true", summary)
+            self.assertIn("follow_trigger_reason=follower_holds_asset", summary)
         finally:
             shutil.rmtree(log_dir, ignore_errors=True)
             shutil.rmtree(state_root, ignore_errors=True)
             shutil.rmtree(activity_root, ignore_errors=True)
 
-    def test_force_live_once_skips_share_floor_when_scaled_follow_shares_too_small(self) -> None:
+    def test_force_live_once_floors_first_open_to_min_shares_when_scaled_follow_shares_too_small(self) -> None:
         root = Path.cwd()
         state_root = root / ".omx" / "force-live-follow" / WALLET
         activity_root = root / ".omx" / "live-activity" / WALLET
@@ -376,6 +426,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             watch = log_dir / "watch.sh"
             positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
             submit = log_dir / "submit.sh"
             submit_log = log_dir / "submit-called.txt"
 
@@ -386,18 +438,24 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             )
             self._make_exec(
                 submit,
-                "#!/usr/bin/env bash\nprintf 'called\\n' >> %s\nprintf 'live_submit_status=submitted\\n'\n"
-                % submit_log,
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nprintf 'live_submit_status=submitted\\n'\n"
+                % ("%s", submit_log),
             )
             self._make_positions_gate_exec(
                 positions_gate,
                 target_size="40.000000",
                 total_size="40.000000",
             )
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[],"open_orders":[]}}',
+            )
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
             env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
 
@@ -410,12 +468,171 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 check=True,
             )
 
-            self.assertIn("follow shares 4.000000 is below minimum 5", completed.stdout)
-            self.assertFalse(submit_log.exists())
+            self.assertIn("live_submit_status=submitted", completed.stdout)
+            self.assertTrue(submit_log.exists())
+            forwarded = submit_log.read_text()
+            self.assertIn("--override-usdc-size", forwarded)
+            self.assertIn("2.500000", forwarded)
             run_dir = next((root / ".omx" / "force-live-follow" / WALLET / "runs").iterdir())
             summary = (run_dir / "summary.txt").read_text()
-            self.assertIn("status=share_floor_skipped", summary)
+            self.assertIn("status=submit_completed", summary)
+            self.assertIn("follow_share_size=5", summary)
+            self.assertIn("follow_min_open_floor_applied=true", summary)
+        finally:
+            shutil.rmtree(log_dir, ignore_errors=True)
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+
+    def test_force_live_once_accepts_follow_share_divisor_override(self) -> None:
+        root = Path.cwd()
+        state_root = root / ".omx" / "force-live-follow" / WALLET
+        activity_root = root / ".omx" / "live-activity" / WALLET
+        log_dir = Path(tempfile.mkdtemp(prefix="force-live-once-divisor-override-"))
+        try:
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+            activity_root.mkdir(parents=True, exist_ok=True)
+
+            latest_activity = activity_root / "latest-activity.json"
+            latest_activity.write_text(
+                '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","conditionId":"cond-open","size":120.0,"usdcSize":60.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
+                % WALLET
+            )
+
+            watch = log_dir / "watch.sh"
+            positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
+            submit = log_dir / "submit.sh"
+            submit_log = log_dir / "submit-args.txt"
+
+            self._make_exec(
+                watch,
+                "#!/usr/bin/env bash\nprintf 'watch_user=%s\\npoll_new_events=1\\nlatest_new_tx=0xnew\\n'\n"
+                % WALLET,
+            )
+            self._make_exec(
+                submit,
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nprintf 'live_submit_status=submitted\\n'\n"
+                % ("%s", submit_log),
+            )
+            self._make_positions_gate_exec(positions_gate)
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[],"open_orders":[]}}',
+            )
+
+            env = os.environ.copy()
+            env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
+            env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
+            env["POLYMARKET_CURL_PROXY"] = ""
+
+            completed = subprocess.run(
+                [
+                    "bash",
+                    "scripts/run_rust_follow_last_action_force_live_once.sh",
+                    "--user",
+                    WALLET,
+                    "--follow-share-divisor",
+                    "20",
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            self.assertIn("follow_share_divisor=20", completed.stdout)
+            forwarded = submit_log.read_text()
+            self.assertIn("3.000000", forwarded)
+            run_dir = next((root / ".omx" / "force-live-follow" / WALLET / "runs").iterdir())
+            summary = (run_dir / "summary.txt").read_text()
+            self.assertIn("follow_share_divisor=20", summary)
+            self.assertIn("follow_share_size=6.000000", summary)
+            self.assertIn("follow_min_open_floor_applied=false", summary)
+        finally:
+            shutil.rmtree(log_dir, ignore_errors=True)
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+
+    def test_force_live_once_allows_add_on_below_five_shares_when_follower_already_holds_asset(self) -> None:
+        root = Path.cwd()
+        state_root = root / ".omx" / "force-live-follow" / WALLET
+        activity_root = root / ".omx" / "live-activity" / WALLET
+        log_dir = Path(tempfile.mkdtemp(prefix="force-live-once-add-on-small-"))
+        try:
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+            activity_root.mkdir(parents=True, exist_ok=True)
+
+            latest_activity = activity_root / "latest-activity.json"
+            latest_activity.write_text(
+                '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","conditionId":"cond-open","size":40.0,"usdcSize":20.0,"transactionHash":"0xadd","price":0.5,"side":"BUY","slug":"market-a"}]'
+                % WALLET
+            )
+
+            watch = log_dir / "watch.sh"
+            positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
+            submit = log_dir / "submit.sh"
+            submit_log = log_dir / "submit-args.txt"
+
+            self._make_exec(
+                watch,
+                "#!/usr/bin/env bash\nprintf 'watch_user=%s\\npoll_new_events=1\\nlatest_new_tx=0xadd\\n'\n"
+                % WALLET,
+            )
+            self._make_exec(
+                submit,
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nprintf 'live_submit_status=submitted\\n'\n"
+                % ("%s", submit_log),
+            )
+            self._make_positions_gate_exec(
+                positions_gate,
+                status="skip_existing_event_position",
+                reason="wallet_already_holds_other_outcome_in_event",
+                should_follow=False,
+                target_size="40.000000",
+                other_size="10.000000",
+                total_size="50.000000",
+                response_count="2",
+                event_count="2",
+            )
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[{"asset_id":"asset-1","net_size":"8.0","last_price":"0.5","estimated_equity":"4.0"}],"open_orders":[]}}',
+            )
+
+            env = os.environ.copy()
+            env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
+            env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
+            env["POLYMARKET_CURL_PROXY"] = ""
+
+            completed = subprocess.run(
+                ["bash", "scripts/run_rust_follow_last_action_force_live_once.sh", "--user", WALLET],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            self.assertIn("live_submit_status=submitted", completed.stdout)
+            forwarded = submit_log.read_text()
+            self.assertIn("2.000000", forwarded)
+            run_dir = next((root / ".omx" / "force-live-follow" / WALLET / "runs").iterdir())
+            summary = (run_dir / "summary.txt").read_text()
             self.assertIn("follow_share_size=4.000000", summary)
+            self.assertIn("follow_min_open_floor_applied=false", summary)
+            self.assertIn("follow_trigger_reason=follower_holds_asset", summary)
         finally:
             shutil.rmtree(log_dir, ignore_errors=True)
             shutil.rmtree(state_root, ignore_errors=True)
@@ -439,6 +656,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             watch = log_dir / "watch.sh"
             positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
             submit = log_dir / "submit.sh"
             submit_log = log_dir / "submit-args.txt"
             submit_activity = log_dir / "submit-latest-activity.json"
@@ -454,10 +673,16 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 % ("%s", submit_log, submit_activity),
             )
             self._make_positions_gate_exec(positions_gate)
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[],"open_orders":[]}}',
+            )
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
             env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
 
@@ -522,6 +747,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             watch = log_dir / "watch.sh"
             positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
             submit = log_dir / "submit.sh"
             submit_activity = log_dir / "submit-latest-activity.json"
 
@@ -540,10 +767,16 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 target_size="60.000000",
                 total_size="60.000000",
             )
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[],"open_orders":[]}}',
+            )
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
             env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
 
@@ -584,6 +817,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             watch = log_dir / "watch.sh"
             positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
             submit = log_dir / "submit.sh"
 
             self._make_exec(
@@ -596,10 +831,16 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 "#!/usr/bin/env bash\nprintf 'live_submit_status=submitted\\nsubmit_success=false\\n'\n",
             )
             self._make_positions_gate_exec(positions_gate)
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[{"asset_id":"asset-1","net_size":"15.0","last_price":"0.5","estimated_equity":"7.5"}],"open_orders":[]}}',
+            )
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
             env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
 
@@ -709,6 +950,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             watch = log_dir / "watch.sh"
             watch_args = log_dir / "watch-args.txt"
             positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
             submit = log_dir / "submit.sh"
 
             self._make_exec(
@@ -721,10 +964,16 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 "#!/usr/bin/env bash\nprintf 'live_submit_status=submitted\\n'\n",
             )
             self._make_positions_gate_exec(positions_gate)
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[],"open_orders":[]}}',
+            )
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
             env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
 

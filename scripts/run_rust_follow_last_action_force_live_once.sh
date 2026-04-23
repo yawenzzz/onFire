@@ -7,6 +7,8 @@ WATCH_BIN_DEFAULT="${WATCH_BIN_DEFAULT:-$ROOT/scripts/run_rust_watch_copy_leader
 LIVE_SUBMIT_BIN_DEFAULT="${LIVE_SUBMIT_BIN_DEFAULT:-$ROOT/scripts/run_rust_live_submit_gate.sh}"
 CTF_ACTION_BIN_DEFAULT="${CTF_ACTION_BIN_DEFAULT:-$ROOT/scripts/run_rust_ctf_action.sh}"
 POSITIONS_GATE_BIN_DEFAULT="${POSITIONS_GATE_BIN_DEFAULT:-$ROOT/scripts/run_rust_public_positions_gate.sh}"
+ACCOUNT_SNAPSHOT_BIN_DEFAULT="${ACCOUNT_SNAPSHOT_BIN_DEFAULT:-$ROOT/scripts/run_rust_show_account_info.sh}"
+ACCOUNT_SNAPSHOT_PATH="${ACCOUNT_SNAPSHOT_PATH:-runtime-verify-account/dashboard.json}"
 WATCH_LIMIT="${WATCH_LIMIT:-50}"
 WATCH_RETRY_COUNT="${WATCH_RETRY_COUNT:-3}"
 WATCH_RETRY_DELAY_MS="${WATCH_RETRY_DELAY_MS:-1000}"
@@ -22,6 +24,7 @@ POSITIONS_RETRY_DELAY_MS="${POSITIONS_RETRY_DELAY_MS:-750}"
 
 USER_WALLET=""
 PROXY_OVERRIDE=""
+FOLLOW_SHARE_DIVISOR_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,12 +36,20 @@ while [[ $# -gt 0 ]]; do
       PROXY_OVERRIDE="$2"
       shift 2
       ;;
+    --follow-share-divisor)
+      FOLLOW_SHARE_DIVISOR_OVERRIDE="$2"
+      shift 2
+      ;;
     *)
       echo "unknown argument: $1" >&2
       exit 2
       ;;
   esac
 done
+
+if [[ -n "$FOLLOW_SHARE_DIVISOR_OVERRIDE" ]]; then
+  FOLLOW_SHARE_DIVISOR="$FOLLOW_SHARE_DIVISOR_OVERRIDE"
+fi
 
 if [[ -z "$USER_WALLET" ]]; then
   echo "missing --user <wallet>" >&2
@@ -165,6 +176,17 @@ divide_decimal() {
   ' "$value" "$divisor"
 }
 
+scale_usdc_for_target_shares() {
+  local original_usdc="${1:-0}"
+  local original_shares="${2:-0}"
+  local target_shares="${3:-0}"
+  perl -e '
+    my ($original_usdc, $original_shares, $target_shares) = @ARGV;
+    exit 0 if ($original_shares + 0) <= 0;
+    printf("%.6f\n", (($original_usdc + 0) * ($target_shares + 0)) / ($original_shares + 0));
+  ' "$original_usdc" "$original_shares" "$target_shares"
+}
+
 decimal_lt() {
   local left="${1:-0}"
   local right="${2:-0}"
@@ -174,11 +196,63 @@ decimal_lt() {
   ' "$left" "$right"
 }
 
+decimal_gt() {
+  local left="${1:-0}"
+  local right="${2:-0}"
+  perl -e '
+    my ($left, $right) = @ARGV;
+    exit(($left + 0) > ($right + 0) ? 0 : 1);
+  ' "$left" "$right"
+}
+
 metric_from_positions_gate() {
   local key="$1"
   if [[ -f "$POSITIONS_STDOUT" ]]; then
     grep -m1 "^${key}=" "$POSITIONS_STDOUT" || true
   fi
+}
+
+resolve_under_root() {
+  local path="$1"
+  if [[ "$path" = /* ]]; then
+    printf '%s\n' "$path"
+  else
+    printf '%s/%s\n' "$ROOT" "$path"
+  fi
+}
+
+extract_snapshot_net_size_by_asset() {
+  local snapshot_path="$1"
+  local asset_id="$2"
+  [[ -f "$snapshot_path" ]] || return 0
+  [[ -n "$asset_id" ]] || return 0
+
+  perl -MJSON::PP -e '
+    my ($path, $asset_id) = @ARGV;
+    local $/;
+    open my $fh, "<", $path or exit 0;
+    my $body = <$fh>;
+    my $decoded = eval { JSON::PP->new->decode($body) };
+    exit 0 if $@;
+    my $snapshot =
+      ref($decoded) eq "HASH" && ref($decoded->{account_snapshot}) eq "HASH"
+        ? $decoded->{account_snapshot}
+        : $decoded;
+    my $positions = ref($snapshot) eq "HASH" ? $snapshot->{positions} : undef;
+    exit 0 unless ref($positions) eq "ARRAY";
+    my $sum = 0;
+    for my $position (@$positions) {
+      next unless ref($position) eq "HASH";
+      my $candidate = $position->{asset_id};
+      $candidate = $position->{asset} unless defined($candidate);
+      next unless defined($candidate) && "$candidate" eq $asset_id;
+      my $net_size = $position->{net_size};
+      $net_size = $position->{size} unless defined($net_size);
+      next unless defined $net_size;
+      $sum += ($net_size + 0);
+    }
+    printf("%.6f\n", $sum);
+  ' "$snapshot_path" "$asset_id" 2>/dev/null || true
 }
 
 now_unix_ms() {
@@ -200,12 +274,15 @@ WATCH_STDOUT="$RUN_DIR/watch.stdout.log"
 WATCH_STDERR="$RUN_DIR/watch.stderr.log"
 POSITIONS_STDOUT="$RUN_DIR/positions.stdout.log"
 POSITIONS_STDERR="$RUN_DIR/positions.stderr.log"
+ACCOUNT_SNAPSHOT_STDOUT="$RUN_DIR/account-snapshot.stdout.log"
+ACCOUNT_SNAPSHOT_STDERR="$RUN_DIR/account-snapshot.stderr.log"
 SUBMIT_STDOUT="$RUN_DIR/submit.stdout.log"
 SUBMIT_STDERR="$RUN_DIR/submit.stderr.log"
 SUMMARY="$RUN_DIR/summary.txt"
 LAST_SUBMITTED_TX_FILE="$STATE_ROOT/last-submitted-tx.txt"
 SELECTED_ACTIVITY="$RUN_DIR/latest-activity.selected.json"
 WATCH_SEEN_TX_FILE="$ROOT/.omx/live-activity/$USER_WALLET/seen-tx.txt"
+ACCOUNT_SNAPSHOT_FILE="$(resolve_under_root "$ACCOUNT_SNAPSHOT_PATH")"
 
 mkdir -p "$STATE_ROOT"
 mkdir -p "$RUN_DIR"
@@ -259,6 +336,8 @@ echo "follow_order_type=$FOLLOW_ORDER_TYPE"
 echo "positions_gate_bin=$POSITIONS_GATE_BIN_DEFAULT"
 echo "positions_retry_count=$POSITIONS_RETRY_COUNT"
 echo "positions_retry_delay_ms=$POSITIONS_RETRY_DELAY_MS"
+echo "account_snapshot_bin=$ACCOUNT_SNAPSHOT_BIN_DEFAULT"
+echo "account_snapshot_path=$ACCOUNT_SNAPSHOT_FILE"
 echo "run_dir=$RUN_DIR"
 echo
 
@@ -312,6 +391,7 @@ if [[ -z "$LATEST_ACTIVITY_TYPE" ]]; then
   LATEST_ACTIVITY_TYPE="TRADE"
 fi
 LATEST_ACTIVITY_SIDE="$(extract_event_field_by_tx "$LATEST_ACTIVITY" "$LATEST_TX" "side")"
+LATEST_ACTIVITY_ASSET="$(extract_event_field_by_tx "$LATEST_ACTIVITY" "$LATEST_TX" "asset")"
 LATEST_ACTIVITY_SIZE="$(extract_event_field_by_tx "$LATEST_ACTIVITY" "$LATEST_TX" "size")"
 LATEST_ACTIVITY_USDC_SIZE="$(extract_event_field_by_tx "$LATEST_ACTIVITY" "$LATEST_TX" "usdcSize")"
 SELECTED_ACTIVITY_JSON="$(extract_event_json_by_tx "$LATEST_ACTIVITY" "$LATEST_TX")"
@@ -395,6 +475,13 @@ LATEST_ACTIVITY_SIDE_UPPER="$(printf '%s' "${LATEST_ACTIVITY_SIDE:-}" | tr '[:lo
 LEADER_EVENT_SHOULD_FOLLOW=""
 LEADER_EVENT_OPEN_GATE_STATUS=""
 LEADER_EVENT_OPEN_GATE_REASON=""
+FOLLOWER_SNAPSHOT_EXIT="not_run"
+FOLLOWER_POSITION_CHECK_STATUS="not_run"
+FOLLOWER_CURRENT_ASSET_NET_SIZE=""
+FOLLOWER_CURRENT_ASSET_HELD="false"
+FOLLOW_TRIGGER_REASON=""
+FOLLOW_IS_FIRST_OPEN="false"
+FOLLOW_MIN_OPEN_FLOOR_APPLIED="false"
 
 if [[ "$LATEST_ACTIVITY_TYPE" == "TRADE" ]]; then
   set +e
@@ -416,17 +503,69 @@ if [[ "$LATEST_ACTIVITY_TYPE" == "TRADE" ]]; then
   fi
 
   if [[ "$POSITIONS_GATE_EXIT" -ne 0 ]]; then
-    echo "skipping because current positions gate failed (exit=$POSITIONS_GATE_EXIT)" >&2
-    cat > "$SUMMARY" <<EOF_SUMMARY
+    echo "current positions gate failed (exit=$POSITIONS_GATE_EXIT); continuing with follower-held-position check" >&2
+    LEADER_EVENT_SHOULD_FOLLOW="false"
+    LEADER_EVENT_OPEN_GATE_STATUS="positions_gate_failed"
+    LEADER_EVENT_OPEN_GATE_REASON="current_positions_gate_failed"
+  else
+    LEADER_EVENT_SHOULD_FOLLOW="$(extract_metric_value "$POSITIONS_STDOUT" "leader_event_should_follow")"
+    LEADER_EVENT_OPEN_GATE_STATUS="$(extract_metric_value "$POSITIONS_STDOUT" "leader_event_open_gate_status")"
+    LEADER_EVENT_OPEN_GATE_REASON="$(extract_metric_value "$POSITIONS_STDOUT" "leader_event_open_gate_reason")"
+  fi
+  set +e
+  bash "$ACCOUNT_SNAPSHOT_BIN_DEFAULT" --output "$ACCOUNT_SNAPSHOT_PATH" >"$ACCOUNT_SNAPSHOT_STDOUT" 2>"$ACCOUNT_SNAPSHOT_STDERR"
+  FOLLOWER_SNAPSHOT_EXIT=$?
+  set -e
+  if [[ "$FOLLOWER_SNAPSHOT_EXIT" -eq 0 ]]; then
+    FOLLOWER_POSITION_CHECK_STATUS="ok"
+    FOLLOWER_CURRENT_ASSET_NET_SIZE="$(extract_snapshot_net_size_by_asset "$ACCOUNT_SNAPSHOT_FILE" "$LATEST_ACTIVITY_ASSET")"
+  else
+    FOLLOWER_POSITION_CHECK_STATUS="refresh_failed"
+  fi
+  if [[ -n "$FOLLOWER_CURRENT_ASSET_NET_SIZE" ]] && decimal_gt "$FOLLOWER_CURRENT_ASSET_NET_SIZE" "0"; then
+    FOLLOWER_CURRENT_ASSET_HELD="true"
+  fi
+  if [[ -n "$LATEST_ACTIVITY_SIZE" ]]; then
+    FOLLOW_SHARES="$(divide_decimal "${LATEST_ACTIVITY_SIZE:-0}" "$FOLLOW_SHARE_DIVISOR")"
+    FOLLOW_USDC="$(divide_decimal "${LATEST_ACTIVITY_USDC_SIZE:-0}" "$FOLLOW_SHARE_DIVISOR")"
+  fi
+fi
+
+if [[ "$LATEST_ACTIVITY_TYPE" == "TRADE" ]]; then
+  if [[ "$LEADER_EVENT_SHOULD_FOLLOW" == "true" ]]; then
+    FOLLOW_TRIGGER_REASON="leader_new_open"
+  fi
+  if [[ "$FOLLOWER_CURRENT_ASSET_HELD" == "true" ]]; then
+    if [[ -n "$FOLLOW_TRIGGER_REASON" ]]; then
+      FOLLOW_TRIGGER_REASON="${FOLLOW_TRIGGER_REASON}+follower_holds_asset"
+    else
+      FOLLOW_TRIGGER_REASON="follower_holds_asset"
+    fi
+  fi
+  if [[ "$LEADER_EVENT_SHOULD_FOLLOW" == "true" && "$FOLLOWER_CURRENT_ASSET_HELD" != "true" ]]; then
+    FOLLOW_IS_FIRST_OPEN="true"
+  fi
+  if [[ "$FOLLOW_IS_FIRST_OPEN" == "true" && -n "$FOLLOW_SHARES" ]] && decimal_lt "$FOLLOW_SHARES" "$MIN_OPEN_SHARES"; then
+    FOLLOW_SHARES="$MIN_OPEN_SHARES"
+    FOLLOW_USDC="$(scale_usdc_for_target_shares "${LATEST_ACTIVITY_USDC_SIZE:-0}" "${LATEST_ACTIVITY_SIZE:-0}" "$MIN_OPEN_SHARES")"
+    FOLLOW_MIN_OPEN_FLOOR_APPLIED="true"
+  fi
+fi
+
+if [[ "$LATEST_ACTIVITY_TYPE" == "TRADE" && -z "$FOLLOW_TRIGGER_REASON" ]]; then
+  echo "skipping because leader/follower gates did not allow follow (leader_status=$LEADER_EVENT_OPEN_GATE_STATUS follower_held=$FOLLOWER_CURRENT_ASSET_HELD)"
+  cat > "$SUMMARY" <<EOF_SUMMARY
 user=$USER_WALLET
 watch_exit=$WATCH_EXIT
 positions_gate_exit=$POSITIONS_GATE_EXIT
+follower_snapshot_exit=$FOLLOWER_SNAPSHOT_EXIT
 submit_exit=not_run
 latest_tx=$LATEST_TX
 latest_activity_timestamp=$LATEST_ACTIVITY_TIMESTAMP
 latest_activity_price=$LATEST_ACTIVITY_PRICE
 latest_activity_type=$LATEST_ACTIVITY_TYPE
 latest_activity_side=$LATEST_ACTIVITY_SIDE
+latest_activity_asset=$LATEST_ACTIVITY_ASSET
 latest_activity_size=$LATEST_ACTIVITY_SIZE
 latest_activity_usdc_size=$LATEST_ACTIVITY_USDC_SIZE
 watch_started_at_unix_ms=$WATCH_STARTED_AT_UNIX_MS
@@ -435,46 +574,12 @@ watch_elapsed_ms=$WATCH_ELAPSED_MS
 leader_to_watch_finished_ms=$LEADER_TO_WATCH_FINISHED_MS
 follow_share_divisor=$FOLLOW_SHARE_DIVISOR
 min_open_shares=$MIN_OPEN_SHARES
-latest_activity=$LATEST_ACTIVITY
-selected_latest_activity=$SELECTED_ACTIVITY
-selected_leader_env=$SELECTED_ENV
-watch_stdout_log=$WATCH_STDOUT
-watch_stderr_log=$WATCH_STDERR
-positions_stdout_log=$POSITIONS_STDOUT
-positions_stderr_log=$POSITIONS_STDERR
-submit_stdout_log=$SUBMIT_STDOUT
-submit_stderr_log=$SUBMIT_STDERR
-run_dir=$RUN_DIR
-status=positions_gate_failed
-EOF_SUMMARY
-    exit 0
-  fi
-
-  LEADER_EVENT_SHOULD_FOLLOW="$(extract_metric_value "$POSITIONS_STDOUT" "leader_event_should_follow")"
-  LEADER_EVENT_OPEN_GATE_STATUS="$(extract_metric_value "$POSITIONS_STDOUT" "leader_event_open_gate_status")"
-  LEADER_EVENT_OPEN_GATE_REASON="$(extract_metric_value "$POSITIONS_STDOUT" "leader_event_open_gate_reason")"
-fi
-
-if [[ "$LATEST_ACTIVITY_TYPE" == "TRADE" && "$LEADER_EVENT_SHOULD_FOLLOW" != "true" ]]; then
-  echo "skipping because current positions gate status=$LEADER_EVENT_OPEN_GATE_STATUS reason=$LEADER_EVENT_OPEN_GATE_REASON"
-  cat > "$SUMMARY" <<EOF_SUMMARY
-user=$USER_WALLET
-watch_exit=$WATCH_EXIT
-positions_gate_exit=0
-submit_exit=not_run
-latest_tx=$LATEST_TX
-latest_activity_timestamp=$LATEST_ACTIVITY_TIMESTAMP
-latest_activity_price=$LATEST_ACTIVITY_PRICE
-latest_activity_type=$LATEST_ACTIVITY_TYPE
-latest_activity_side=$LATEST_ACTIVITY_SIDE
-latest_activity_size=$LATEST_ACTIVITY_SIZE
-latest_activity_usdc_size=$LATEST_ACTIVITY_USDC_SIZE
-watch_started_at_unix_ms=$WATCH_STARTED_AT_UNIX_MS
-watch_finished_at_unix_ms=$WATCH_FINISHED_AT_UNIX_MS
-watch_elapsed_ms=$WATCH_ELAPSED_MS
-leader_to_watch_finished_ms=$LEADER_TO_WATCH_FINISHED_MS
-follow_share_divisor=$FOLLOW_SHARE_DIVISOR
-min_open_shares=$MIN_OPEN_SHARES
+follower_position_check_status=$FOLLOWER_POSITION_CHECK_STATUS
+follower_current_asset_net_size=$FOLLOWER_CURRENT_ASSET_NET_SIZE
+follower_current_asset_held=$FOLLOWER_CURRENT_ASSET_HELD
+follow_is_first_open=$FOLLOW_IS_FIRST_OPEN
+follow_min_open_floor_applied=$FOLLOW_MIN_OPEN_FLOOR_APPLIED
+follow_trigger_reason=
 $(metric_from_positions_gate positions_query_status)
 $(metric_from_positions_gate positions_retry_attempts)
 $(metric_from_positions_gate current_positions_response_count)
@@ -488,66 +593,17 @@ $(metric_from_positions_gate leader_event_should_follow)
 latest_activity=$LATEST_ACTIVITY
 selected_latest_activity=$SELECTED_ACTIVITY
 selected_leader_env=$SELECTED_ENV
+account_snapshot_path=$ACCOUNT_SNAPSHOT_FILE
 watch_stdout_log=$WATCH_STDOUT
 watch_stderr_log=$WATCH_STDERR
 positions_stdout_log=$POSITIONS_STDOUT
 positions_stderr_log=$POSITIONS_STDERR
+account_snapshot_stdout_log=$ACCOUNT_SNAPSHOT_STDOUT
+account_snapshot_stderr_log=$ACCOUNT_SNAPSHOT_STDERR
 submit_stdout_log=$SUBMIT_STDOUT
 submit_stderr_log=$SUBMIT_STDERR
 run_dir=$RUN_DIR
-status=${LEADER_EVENT_OPEN_GATE_STATUS:-positions_gate_skipped}
-EOF_SUMMARY
-  exit 0
-fi
-
-if [[ "$LATEST_ACTIVITY_TYPE" == "TRADE" && "$LATEST_ACTIVITY_SIDE_UPPER" == "BUY" ]]; then
-  FOLLOW_SHARES="$(divide_decimal "${LATEST_ACTIVITY_SIZE:-0}" "$FOLLOW_SHARE_DIVISOR")"
-  FOLLOW_USDC="$(divide_decimal "${LATEST_ACTIVITY_USDC_SIZE:-0}" "$FOLLOW_SHARE_DIVISOR")"
-fi
-
-if [[ -n "$FOLLOW_SHARES" ]] && decimal_lt "$FOLLOW_SHARES" "$MIN_OPEN_SHARES"; then
-  echo "skipping because follow shares $FOLLOW_SHARES is below minimum $MIN_OPEN_SHARES"
-  cat > "$SUMMARY" <<EOF_SUMMARY
-user=$USER_WALLET
-watch_exit=$WATCH_EXIT
-positions_gate_exit=0
-submit_exit=not_run
-latest_tx=$LATEST_TX
-latest_activity_timestamp=$LATEST_ACTIVITY_TIMESTAMP
-latest_activity_price=$LATEST_ACTIVITY_PRICE
-latest_activity_type=$LATEST_ACTIVITY_TYPE
-latest_activity_side=$LATEST_ACTIVITY_SIDE
-latest_activity_size=$LATEST_ACTIVITY_SIZE
-latest_activity_usdc_size=$LATEST_ACTIVITY_USDC_SIZE
-watch_started_at_unix_ms=$WATCH_STARTED_AT_UNIX_MS
-watch_finished_at_unix_ms=$WATCH_FINISHED_AT_UNIX_MS
-watch_elapsed_ms=$WATCH_ELAPSED_MS
-leader_to_watch_finished_ms=$LEADER_TO_WATCH_FINISHED_MS
-follow_share_divisor=$FOLLOW_SHARE_DIVISOR
-follow_share_size=$FOLLOW_SHARES
-follow_usdc_size=$FOLLOW_USDC
-min_open_shares=$MIN_OPEN_SHARES
-$(metric_from_positions_gate positions_query_status)
-$(metric_from_positions_gate positions_retry_attempts)
-$(metric_from_positions_gate current_positions_response_count)
-$(metric_from_positions_gate current_event_position_count)
-$(metric_from_positions_gate current_event_target_asset_size)
-$(metric_from_positions_gate current_event_other_asset_size)
-$(metric_from_positions_gate current_event_total_size)
-$(metric_from_positions_gate leader_event_open_gate_status)
-$(metric_from_positions_gate leader_event_open_gate_reason)
-$(metric_from_positions_gate leader_event_should_follow)
-latest_activity=$LATEST_ACTIVITY
-selected_latest_activity=$SELECTED_ACTIVITY
-selected_leader_env=$SELECTED_ENV
-watch_stdout_log=$WATCH_STDOUT
-watch_stderr_log=$WATCH_STDERR
-positions_stdout_log=$POSITIONS_STDOUT
-positions_stderr_log=$POSITIONS_STDERR
-submit_stdout_log=$SUBMIT_STDOUT
-submit_stderr_log=$SUBMIT_STDERR
-run_dir=$RUN_DIR
-status=share_floor_skipped
+status=no_follow_condition_matched
 EOF_SUMMARY
   exit 0
 fi
@@ -639,6 +695,7 @@ latest_activity_timestamp=$LATEST_ACTIVITY_TIMESTAMP
 latest_activity_price=$LATEST_ACTIVITY_PRICE
 latest_activity_type=$LATEST_ACTIVITY_TYPE
 latest_activity_side=$LATEST_ACTIVITY_SIDE
+latest_activity_asset=$LATEST_ACTIVITY_ASSET
 latest_activity_size=$LATEST_ACTIVITY_SIZE
 latest_activity_usdc_size=$LATEST_ACTIVITY_USDC_SIZE
 watch_started_at_unix_ms=$WATCH_STARTED_AT_UNIX_MS
@@ -649,6 +706,13 @@ follow_share_divisor=$FOLLOW_SHARE_DIVISOR
 follow_share_size=$FOLLOW_SHARES
 follow_usdc_size=$FOLLOW_USDC
 min_open_shares=$MIN_OPEN_SHARES
+follower_snapshot_exit=$FOLLOWER_SNAPSHOT_EXIT
+follower_position_check_status=$FOLLOWER_POSITION_CHECK_STATUS
+follower_current_asset_net_size=$FOLLOWER_CURRENT_ASSET_NET_SIZE
+follower_current_asset_held=$FOLLOWER_CURRENT_ASSET_HELD
+follow_is_first_open=$FOLLOW_IS_FIRST_OPEN
+follow_min_open_floor_applied=$FOLLOW_MIN_OPEN_FLOOR_APPLIED
+follow_trigger_reason=$FOLLOW_TRIGGER_REASON
 $(metric_from_positions_gate positions_query_status)
 $(metric_from_positions_gate positions_retry_attempts)
 $(metric_from_positions_gate current_positions_response_count)
@@ -662,10 +726,13 @@ $(metric_from_positions_gate leader_event_should_follow)
 latest_activity=$LATEST_ACTIVITY
 selected_latest_activity=$SELECTED_ACTIVITY
 selected_leader_env=$SELECTED_ENV
+account_snapshot_path=$ACCOUNT_SNAPSHOT_FILE
 watch_stdout_log=$WATCH_STDOUT
 watch_stderr_log=$WATCH_STDERR
 positions_stdout_log=$POSITIONS_STDOUT
 positions_stderr_log=$POSITIONS_STDERR
+account_snapshot_stdout_log=$ACCOUNT_SNAPSHOT_STDOUT
+account_snapshot_stderr_log=$ACCOUNT_SNAPSHOT_STDERR
 submit_stdout_log=$SUBMIT_STDOUT
 submit_stderr_log=$SUBMIT_STDERR
 $(metric_from_submit gate_started_at_unix_ms)
