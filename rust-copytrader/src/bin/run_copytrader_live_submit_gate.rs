@@ -1,3 +1,4 @@
+use polymarket_client_sdk::auth::state::State as SdkAuthState;
 use polymarket_client_sdk::auth::{Credentials as SdkCredentials, LocalSigner, Signer as _, Uuid};
 use polymarket_client_sdk::clob::types::{
     Amount as SdkAmount, OrderType as SdkOrderType, Side as SdkSide,
@@ -5,7 +6,7 @@ use polymarket_client_sdk::clob::types::{
     SignedOrder as SdkSignedOrder,
 };
 use polymarket_client_sdk::clob::{Client as SdkClobClient, Config as SdkClobConfig};
-use polymarket_client_sdk::types::{Address as SdkAddress, Decimal as SdkDecimal};
+use polymarket_client_sdk::types::{Address as SdkAddress, Decimal as SdkDecimal, U256 as SdkU256};
 use polymarket_client_sdk::{POLYGON, derive_proxy_wallet, derive_safe_wallet};
 use rust_copytrader::adapters::http_submit::OrderType;
 use rust_copytrader::adapters::signing::{AuthMaterial, UnsignedOrderPayload};
@@ -865,9 +866,15 @@ async fn preview_live_order_with_sdk_async(
                     .limit_order()
                     .token_id(token_id)
                     .side(plan.side.clone())
-                    .price(sdk_price_amount(plan.price.ok_or_else(|| {
-                        "missing limit price for sdk preview".to_string()
-                    })?)?)
+                    .price(
+                        sdk_limit_price_amount(
+                            &client,
+                            token_id,
+                            plan.price
+                                .ok_or_else(|| "missing limit price for sdk preview".to_string())?,
+                        )
+                        .await?,
+                    )
                     .size(sdk_share_amount(*size).map_err(|error| {
                         format!("invalid share amount for sdk preview: {error}")
                     })?)
@@ -1002,9 +1009,15 @@ async fn submit_live_order_with_sdk_async(
             .limit_order()
             .token_id(token_id)
             .side(plan.side.clone())
-            .price(sdk_price_amount(plan.price.ok_or_else(|| {
-                "missing limit price for sdk submit".to_string()
-            })?)?)
+            .price(
+                sdk_limit_price_amount(
+                    &client,
+                    token_id,
+                    plan.price
+                        .ok_or_else(|| "missing limit price for sdk submit".to_string())?,
+                )
+                .await?,
+            )
             .size(
                 sdk_share_amount(*size)
                     .map_err(|error| format!("invalid share amount for sdk submit: {error}"))?,
@@ -1391,8 +1404,37 @@ fn sdk_price_amount(value: f64) -> Result<SdkDecimal, String> {
     if !value.is_finite() || value <= 0.0 {
         return Err(format!("invalid positive order price: {value}"));
     }
-    SdkDecimal::from_str(&format!("{value:.8}"))
-        .map_err(|error| format!("invalid order price {value:.8}: {error}"))
+    let mut normalized = format!("{value:.8}");
+    while normalized.contains('.') && normalized.ends_with('0') {
+        normalized.pop();
+    }
+    if normalized.ends_with('.') {
+        normalized.pop();
+    }
+    SdkDecimal::from_str(&normalized)
+        .map_err(|error| format!("invalid order price {normalized}: {error}"))
+}
+
+fn quantize_price_to_scale(value: f64, scale: u32) -> Result<f64, String> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(format!("invalid positive order price: {value}"));
+    }
+    let factor = 10_f64.powi(scale as i32);
+    Ok((value * factor).floor() / factor)
+}
+
+async fn sdk_limit_price_amount<S: SdkAuthState>(
+    client: &SdkClobClient<S>,
+    token_id: SdkU256,
+    value: f64,
+) -> Result<SdkDecimal, String> {
+    let tick_size = client
+        .tick_size(token_id)
+        .await
+        .map_err(|error| format!("failed to fetch tick size for {token_id}: {error}"))?;
+    let decimals = tick_size.minimum_tick_size.as_decimal().scale();
+    let quantized = quantize_price_to_scale(value, decimals)?;
+    sdk_price_amount(quantized)
 }
 
 fn sdk_usdc_amount(value: f64) -> Result<SdkDecimal, String> {
@@ -1879,7 +1921,7 @@ mod tests {
         LatestActivity, Options, OrderType, PreparedOrderDraft, SdkAmountPlan, SdkExecutionStyle,
         UnsignedOrderPayload, auth_material_with_signer_fallback, decimal_to_fixed_6,
         effective_funder_address, evaluate_risk_gate, parse_args, read_latest_activity,
-        read_selected_leader_wallet, sdk_order_build_plan, sdk_share_amount,
+        read_selected_leader_wallet, sdk_order_build_plan, sdk_price_amount, sdk_share_amount,
         sdk_submit_error_retryable, unsigned_order_from_activity,
     };
     use std::fs;
@@ -2156,6 +2198,12 @@ mod tests {
     fn sdk_share_amount_truncates_to_market_lot_precision() {
         let amount = sdk_share_amount(3.456789).expect("share amount");
         assert_eq!(amount.to_string(), "3.45");
+    }
+
+    #[test]
+    fn sdk_price_amount_trims_trailing_zero_precision() {
+        let amount = sdk_price_amount(0.008).expect("price amount");
+        assert_eq!(amount.to_string(), "0.008");
     }
 
     #[test]
