@@ -222,6 +222,8 @@ POLYGON_WSS_URL=wss://your-polygon-ws-endpoint \
 bash scripts/run_rust_watch_copy_leader_activity_ws.sh --user <wallet> --poll-count 1
 ```
 
+如果你已经把 `POLYGON_WSS_URL` 写在仓库根目录的 `.env` 里，这个 WS watcher 现在也会自动读取，不要求你先手动 `export`。
+
 它会先通过 `eth_subscribe` 盯目标 wallet 的 pending tx，再立即用 activity API enrichment，并把结果落到同样的位置：
 - `.omx/live-activity/<wallet>/latest-activity.json`
 - `.omx/live-activity/<wallet>/activity-events.jsonl`

@@ -177,7 +177,8 @@ async fn watch_activity_ws(options: &Options) -> Result<Vec<String>, String> {
     }
     let ws_url = options
         .ws_url
-        .as_deref()
+        .clone()
+        .or_else(|| repo_env_value(&root, "POLYGON_WSS_URL"))
         .ok_or_else(|| "missing --ws-url or POLYGON_WSS_URL".to_string())?;
 
     let state_root = root
@@ -193,7 +194,7 @@ async fn watch_activity_ws(options: &Options) -> Result<Vec<String>, String> {
     let mut seen = read_seen_txs(&seen_path)
         .map_err(|error| format!("failed to read {}: {error}", seen_path.display()))?;
 
-    let (mut ws, _) = connect_async(ws_url)
+    let (mut ws, _) = connect_async(&ws_url)
         .await
         .map_err(|error| format!("failed to connect websocket {ws_url}: {error}"))?;
     ws.send(Message::Text(
@@ -508,6 +509,28 @@ fn selected_leader_from_root(root: &Path) -> Option<String> {
     })
 }
 
+fn repo_env_value(root: &Path, key: &str) -> Option<String> {
+    let mut env_map = BTreeMap::new();
+    for path in [root.join(".env.local"), root.join(".env")] {
+        let Ok(body) = fs::read_to_string(path) else {
+            continue;
+        };
+        for line in body.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((candidate_key, candidate_value)) = line.split_once('=') {
+                env_map.insert(
+                    candidate_key.trim().to_string(),
+                    candidate_value.trim().to_string(),
+                );
+            }
+        }
+    }
+    env_map.get(key).cloned()
+}
+
 fn read_seen_txs(path: &Path) -> io::Result<BTreeSet<String>> {
     if !path.exists() {
         return Ok(BTreeSet::new());
@@ -584,7 +607,7 @@ fn escape_json(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Options, matched_activity_from_body, parse_args, watch_activity_ws};
+    use super::{Options, matched_activity_from_body, parse_args, repo_env_value, watch_activity_ws};
     use futures::{SinkExt, StreamExt};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -643,6 +666,17 @@ mod tests {
         assert_eq!(matched.timestamp, "123");
         assert_eq!(matched.side.as_deref(), Some("BUY"));
         assert_eq!(matched.slug.as_deref(), Some("slug-1"));
+    }
+
+    #[test]
+    fn repo_env_value_prefers_root_env_files() {
+        let root = unique_temp_dir("repo-env");
+        fs::create_dir_all(&root).expect("dir created");
+        fs::write(root.join(".env.local"), "POLYGON_WSS_URL=wss://local.example\n").expect("env local");
+        fs::write(root.join(".env"), "POLYGON_WSS_URL=wss://root.example\n").expect("env");
+
+        let value = repo_env_value(&root, "POLYGON_WSS_URL").expect("value");
+        assert_eq!(value, "wss://root.example");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -717,5 +751,23 @@ mod tests {
             .expect("seen exists");
         assert!(seen.contains("0xtarget"));
         server.await.expect("server task");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn watch_activity_ws_reads_ws_url_from_root_env() {
+        let root = unique_temp_dir("ws-root-env");
+        fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
+        fs::write(root.join(".env"), "POLYGON_WSS_URL=wss://example.invalid/ws\n").expect("env");
+
+        let error = watch_activity_ws(&Options {
+            root: root.display().to_string(),
+            user: Some(WALLET.into()),
+            ws_url: None,
+            event_wait_ms: 10,
+            ..Options::default()
+        })
+        .await
+        .expect_err("should fail to connect example.invalid");
+        assert!(error.contains("example.invalid"));
     }
 }
