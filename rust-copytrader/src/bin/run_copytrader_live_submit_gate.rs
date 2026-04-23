@@ -1,5 +1,6 @@
 use polymarket_client_sdk::auth::state::State as SdkAuthState;
 use polymarket_client_sdk::auth::{Credentials as SdkCredentials, LocalSigner, Signer as _, Uuid};
+use polymarket_client_sdk::clob::types::request::OrderBookSummaryRequest;
 use polymarket_client_sdk::clob::types::{
     Amount as SdkAmount, OrderType as SdkOrderType, Side as SdkSide,
     SignableOrder as SdkSignableOrder, SignatureType as SdkSignatureType,
@@ -91,6 +92,12 @@ struct PreparedOrderDraft {
     unsigned: UnsignedOrderPayload,
     effective_size: f64,
     effective_usdc_size: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct LimitOrderConstraints {
+    min_order_size: f64,
+    tick_size_scale: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,7 +306,29 @@ fn run_live_submit_gate(options: &Options) -> Result<Vec<String>, String> {
     let latest = read_latest_activity(&latest_activity_path)?;
     let execution_config = ExecutionAdapterConfig::from_root(&root).map_err(format_root_error)?;
     let material = auth_material_with_signer_fallback(&root)?;
-    let draft = unsigned_order_from_activity(&latest, options)?;
+    let sdk_base_url = execution_config
+        .submit
+        .base_url()
+        .unwrap_or("https://clob.polymarket.com");
+    let preliminary_draft = unsigned_order_from_activity(&latest, options)?;
+    let token_id = latest
+        .asset
+        .parse()
+        .map_err(|error| format!("invalid activity asset token id {}: {error}", latest.asset))?;
+    let limit_constraints = if matches!(
+        sdk_execution_style(options.order_type),
+        SdkExecutionStyle::Limit
+    ) {
+        Some(fetch_limit_order_constraints(sdk_base_url, token_id)?)
+    } else {
+        None
+    };
+    let draft = adjust_draft_for_limit_constraints(
+        &latest,
+        options,
+        &preliminary_draft,
+        limit_constraints.as_ref(),
+    )?;
     let risk = evaluate_risk_gate(&root, options, draft.effective_usdc_size)?;
     let activity_age_secs = current_unix_secs()?.saturating_sub(latest.timestamp);
 
@@ -425,6 +454,28 @@ fn run_live_submit_gate(options: &Options) -> Result<Vec<String>, String> {
         ),
         format!("order_size={:.6}", draft.effective_size),
         format!("order_usdc_size={:.6}", draft.effective_usdc_size),
+        format!(
+            "limit_min_order_size={}",
+            limit_constraints
+                .as_ref()
+                .map(|constraints| format!("{:.6}", constraints.min_order_size))
+                .unwrap_or_default()
+        ),
+        format!(
+            "limit_tick_size_scale={}",
+            limit_constraints
+                .as_ref()
+                .map(|constraints| constraints.tick_size_scale.to_string())
+                .unwrap_or_default()
+        ),
+        format!(
+            "order_size_clamped_to_min={}",
+            limit_constraints
+                .as_ref()
+                .is_some_and(|constraints| draft.effective_size + 1e-9
+                    >= constraints.min_order_size
+                    && preliminary_draft.effective_size + 1e-9 < constraints.min_order_size)
+        ),
         format!("unsigned_maker_amount={}", draft.unsigned.maker_amount),
         format!("unsigned_taker_amount={}", draft.unsigned.taker_amount),
         format!("gate_activity_source_verified={activity_source_verified}"),
@@ -534,10 +585,6 @@ fn run_live_submit_gate(options: &Options) -> Result<Vec<String>, String> {
         return Ok(lines);
     }
 
-    let sdk_base_url = execution_config
-        .submit
-        .base_url()
-        .unwrap_or("https://clob.polymarket.com");
     let result = submit_live_order_with_sdk(sdk_base_url, &material, &latest, &draft, options)?;
 
     lines.push("live_submit_status=submitted".to_string());
@@ -593,6 +640,15 @@ fn unsigned_order_from_activity(
     } else {
         (original_usdc_size, original_size)
     };
+    prepared_order_draft_from_effective(latest, options, effective_size, effective_usdc_size)
+}
+
+fn prepared_order_draft_from_effective(
+    latest: &LatestActivity,
+    options: &Options,
+    effective_size: f64,
+    effective_usdc_size: f64,
+) -> Result<PreparedOrderDraft, String> {
     let size = fixed_6_from_f64(effective_size)?;
     let usdc_size = fixed_6_from_f64(effective_usdc_size)?;
     let side = latest.side.to_uppercase();
@@ -616,6 +672,26 @@ fn unsigned_order_from_activity(
         effective_size,
         effective_usdc_size,
     })
+}
+
+fn adjust_draft_for_limit_constraints(
+    latest: &LatestActivity,
+    options: &Options,
+    draft: &PreparedOrderDraft,
+    constraints: Option<&LimitOrderConstraints>,
+) -> Result<PreparedOrderDraft, String> {
+    let Some(constraints) = constraints else {
+        return Ok(draft.clone());
+    };
+    if draft.effective_size + 1e-9 >= constraints.min_order_size {
+        return Ok(draft.clone());
+    }
+    if draft.effective_size <= 0.0 {
+        return Err("cannot clamp limit order size when effective size <= 0".to_string());
+    }
+    let ratio = constraints.min_order_size / draft.effective_size;
+    let adjusted_usdc = draft.effective_usdc_size * ratio;
+    prepared_order_draft_from_effective(latest, options, constraints.min_order_size, adjusted_usdc)
 }
 
 fn parse_decimal_value(value: &str) -> Result<f64, String> {
@@ -1428,13 +1504,54 @@ async fn sdk_limit_price_amount<S: SdkAuthState>(
     token_id: SdkU256,
     value: f64,
 ) -> Result<SdkDecimal, String> {
-    let tick_size = client
-        .tick_size(token_id)
-        .await
-        .map_err(|error| format!("failed to fetch tick size for {token_id}: {error}"))?;
-    let decimals = tick_size.minimum_tick_size.as_decimal().scale();
-    let quantized = quantize_price_to_scale(value, decimals)?;
+    let constraints = fetch_limit_order_constraints_for_client(client, token_id).await?;
+    let quantized = quantize_price_to_scale(value, constraints.tick_size_scale)?;
     sdk_price_amount(quantized)
+}
+
+async fn fetch_limit_order_constraints_for_client<S: SdkAuthState>(
+    client: &SdkClobClient<S>,
+    token_id: SdkU256,
+) -> Result<LimitOrderConstraints, String> {
+    let request = OrderBookSummaryRequest::builder()
+        .token_id(token_id)
+        .build();
+    let response = client
+        .order_book(&request)
+        .await
+        .map_err(|error| format!("failed to fetch order book for {token_id}: {error}"))?;
+    let min_order_size = response
+        .min_order_size
+        .to_string()
+        .parse::<f64>()
+        .map_err(|error| {
+            format!(
+                "invalid min_order_size {}: {error}",
+                response.min_order_size
+            )
+        })?;
+    Ok(LimitOrderConstraints {
+        min_order_size,
+        tick_size_scale: response.tick_size.as_decimal().scale(),
+    })
+}
+
+fn fetch_limit_order_constraints(
+    base_url: &str,
+    token_id: SdkU256,
+) -> Result<LimitOrderConstraints, String> {
+    let runtime = TokioRuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("failed to build tokio runtime for order book lookup: {error}"))?;
+    runtime.block_on(async {
+        let client = SdkClobClient::new(
+            base_url,
+            SdkClobConfig::builder().use_server_time(true).build(),
+        )
+        .map_err(|error| format!("failed to build sdk client for order book lookup: {error}"))?;
+        fetch_limit_order_constraints_for_client(&client, token_id).await
+    })
 }
 
 fn sdk_usdc_amount(value: f64) -> Result<SdkDecimal, String> {
@@ -1918,11 +2035,12 @@ fn format_root_error(error: RootEnvLoadError) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        LatestActivity, Options, OrderType, PreparedOrderDraft, SdkAmountPlan, SdkExecutionStyle,
-        UnsignedOrderPayload, auth_material_with_signer_fallback, decimal_to_fixed_6,
-        effective_funder_address, evaluate_risk_gate, parse_args, quantize_price_to_scale,
-        read_latest_activity, read_selected_leader_wallet, sdk_order_build_plan, sdk_price_amount,
-        sdk_share_amount, sdk_submit_error_retryable, unsigned_order_from_activity,
+        LatestActivity, LimitOrderConstraints, Options, OrderType, PreparedOrderDraft,
+        SdkAmountPlan, SdkExecutionStyle, UnsignedOrderPayload, adjust_draft_for_limit_constraints,
+        auth_material_with_signer_fallback, decimal_to_fixed_6, effective_funder_address,
+        evaluate_risk_gate, parse_args, quantize_price_to_scale, read_latest_activity,
+        read_selected_leader_wallet, sdk_order_build_plan, sdk_price_amount, sdk_share_amount,
+        sdk_submit_error_retryable, unsigned_order_from_activity,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -2210,6 +2328,41 @@ mod tests {
     fn quantize_price_to_scale_truncates_to_tick_precision() {
         let quantized = quantize_price_to_scale(0.96300008, 3).expect("quantized");
         assert!((quantized - 0.963).abs() < 0.0000001);
+    }
+
+    #[test]
+    fn adjust_draft_for_limit_constraints_clamps_small_limit_size() {
+        let latest = LatestActivity {
+            wallet: Some("0x11084005d88A0840b5F38F8731CCa9152BbD99F7".into()),
+            tx: "0xabc".into(),
+            timestamp: 1_776_303_488,
+            price: Some(0.4),
+            side: "BUY".into(),
+            slug: Some("market-a".into()),
+            asset: "asset-1".into(),
+            size: "0.08".into(),
+            usdc_size: "0.032".into(),
+        };
+        let options = Options {
+            order_type: OrderType::Gtc,
+            ..Options::default()
+        };
+        let draft = unsigned_order_from_activity(&latest, &options).expect("draft");
+        let adjusted = adjust_draft_for_limit_constraints(
+            &latest,
+            &options,
+            &draft,
+            Some(&LimitOrderConstraints {
+                min_order_size: 5.0,
+                tick_size_scale: 3,
+            }),
+        )
+        .expect("adjusted");
+
+        assert_eq!(adjusted.effective_size, 5.0);
+        assert_eq!(adjusted.effective_usdc_size, 2.0);
+        assert_eq!(adjusted.unsigned.maker_amount, "2000000");
+        assert_eq!(adjusted.unsigned.taker_amount, "5000000");
     }
 
     #[test]
