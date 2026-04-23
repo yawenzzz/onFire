@@ -213,6 +213,16 @@ metric_from_positions_gate() {
   fi
 }
 
+run_with_shell_fallback() {
+  local program="$1"
+  shift
+  if [[ -x "$program" ]]; then
+    "$program" "$@"
+  else
+    bash "$program" "$@"
+  fi
+}
+
 resolve_under_root() {
   local path="$1"
   if [[ "$path" = /* ]]; then
@@ -345,7 +355,7 @@ echo
 
 WATCH_STARTED_AT_UNIX_MS="$(now_unix_ms)"
 set +e
-"$WATCH_BIN_DEFAULT" "${WATCH_ARGS[@]}" >"$WATCH_STDOUT" 2>"$WATCH_STDERR"
+run_with_shell_fallback "$WATCH_BIN_DEFAULT" "${WATCH_ARGS[@]}" >"$WATCH_STDOUT" 2>"$WATCH_STDERR"
 WATCH_EXIT=$?
 set -e
 WATCH_FINISHED_AT_UNIX_MS="$(now_unix_ms)"
@@ -488,7 +498,7 @@ FOLLOW_MIN_COMPATIBLE_FLOOR_APPLIED="false"
 
 if [[ "$LATEST_ACTIVITY_TYPE" == "TRADE" ]]; then
   set +e
-  "$POSITIONS_GATE_BIN_DEFAULT" \
+  run_with_shell_fallback "$POSITIONS_GATE_BIN_DEFAULT" \
     --user "$USER_WALLET" \
     --latest-activity "$SELECTED_ACTIVITY" \
     --positions-limit 500 \
@@ -516,7 +526,7 @@ if [[ "$LATEST_ACTIVITY_TYPE" == "TRADE" ]]; then
     LEADER_EVENT_OPEN_GATE_REASON="$(extract_metric_value "$POSITIONS_STDOUT" "leader_event_open_gate_reason")"
   fi
   set +e
-  bash "$ACCOUNT_SNAPSHOT_BIN_DEFAULT" --output "$ACCOUNT_SNAPSHOT_PATH" >"$ACCOUNT_SNAPSHOT_STDOUT" 2>"$ACCOUNT_SNAPSHOT_STDERR"
+  run_with_shell_fallback "$ACCOUNT_SNAPSHOT_BIN_DEFAULT" --output "$ACCOUNT_SNAPSHOT_PATH" >"$ACCOUNT_SNAPSHOT_STDOUT" 2>"$ACCOUNT_SNAPSHOT_STDERR"
   FOLLOWER_SNAPSHOT_EXIT=$?
   set -e
   if [[ "$FOLLOWER_SNAPSHOT_EXIT" -eq 0 ]]; then
@@ -638,7 +648,7 @@ else
 fi
 
 set +e
-"$ACTION_BIN" "${ACTION_ARGS[@]}" >"$SUBMIT_STDOUT" 2>"$SUBMIT_STDERR"
+run_with_shell_fallback "$ACTION_BIN" "${ACTION_ARGS[@]}" >"$SUBMIT_STDOUT" 2>"$SUBMIT_STDERR"
 SUBMIT_EXIT=$?
 set -e
 

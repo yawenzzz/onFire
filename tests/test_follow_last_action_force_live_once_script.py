@@ -20,6 +20,7 @@ class FollowLastActionForceLiveOnceScriptTests(unittest.TestCase):
         self.assertIn('MIN_COMPATIBLE_SHARES="${MIN_COMPATIBLE_SHARES:-0.01}"', text)
         self.assertIn('POSITIONS_GATE_BIN_DEFAULT="${POSITIONS_GATE_BIN_DEFAULT:-$ROOT/scripts/run_rust_public_positions_gate.sh}"', text)
         self.assertIn('ACCOUNT_SNAPSHOT_BIN_DEFAULT="${ACCOUNT_SNAPSHOT_BIN_DEFAULT:-$ROOT/scripts/run_rust_show_account_info.sh}"', text)
+        self.assertIn("run_with_shell_fallback()", text)
         self.assertIn("leader_event_open_gate_status", text)
         self.assertIn("follower_current_asset_held", text)
         self.assertIn("follow_trigger_reason", text)

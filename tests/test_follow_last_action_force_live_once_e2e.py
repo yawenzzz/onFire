@@ -15,6 +15,9 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
         path.write_text(content)
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
+    def _write_non_exec(self, path: Path, content: str) -> None:
+        path.write_text(content)
+
     def _make_positions_gate_exec(
         self,
         path: Path,
@@ -1007,6 +1010,61 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             self.assertIn("latest_activity_type=MERGE", summary)
             self.assertIn("ctf_action_type=MERGE", summary)
             self.assertIn("ctf_action_status=submitted", summary)
+        finally:
+            shutil.rmtree(log_dir, ignore_errors=True)
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+
+    def test_force_live_once_can_invoke_non_executable_ctf_shell_wrapper(self) -> None:
+        root = Path.cwd()
+        state_root = root / ".omx" / "force-live-follow" / WALLET
+        activity_root = root / ".omx" / "live-activity" / WALLET
+        log_dir = Path(tempfile.mkdtemp(prefix="force-live-once-merge-noexec-"))
+        try:
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+            activity_root.mkdir(parents=True, exist_ok=True)
+
+            latest_activity = activity_root / "latest-activity.json"
+            latest_activity.write_text(
+                '[{"proxyWallet":"%s","timestamp":20,"type":"MERGE","conditionId":"0x1111111111111111111111111111111111111111111111111111111111111111","usdcSize":1.5,"transactionHash":"0xmerge","outcome":"No","slug":"market-a"}]'
+                % WALLET
+            )
+
+            watch = log_dir / "watch.sh"
+            ctf = log_dir / "ctf.sh"
+            ctf_args = log_dir / "ctf-args.txt"
+
+            self._make_exec(
+                watch,
+                "#!/usr/bin/env bash\nprintf 'watch_user=%s\\npoll_new_events=1\\nlatest_new_tx=0xmerge\\n'\n"
+                % WALLET,
+            )
+            self._write_non_exec(
+                ctf,
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nprintf 'ctf_action_type=MERGE\\n'\nprintf 'ctf_action_status=submitted\\n'\n"
+                % ("%s", ctf_args),
+            )
+
+            env = os.environ.copy()
+            env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["CTF_ACTION_BIN_DEFAULT"] = str(ctf)
+            env["POLYMARKET_CURL_PROXY"] = ""
+
+            completed = subprocess.run(
+                ["bash", "scripts/run_rust_follow_last_action_force_live_once.sh", "--user", WALLET],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            self.assertIn("ctf_action_type=MERGE", completed.stdout)
+            self.assertTrue(ctf_args.exists())
+            forwarded = ctf_args.read_text()
+            self.assertIn("--latest-activity", forwarded)
+            self.assertIn("--allow-live-submit", forwarded)
         finally:
             shutil.rmtree(log_dir, ignore_errors=True)
             shutil.rmtree(state_root, ignore_errors=True)
