@@ -171,7 +171,9 @@ async fn watch_activity_ws(options: &Options) -> Result<Vec<String>, String> {
         .user
         .clone()
         .or_else(|| selected_leader_from_root(&root))
-        .ok_or_else(|| "missing --user and no .omx/discovery/selected-leader.env found".to_string())?;
+        .ok_or_else(|| {
+            "missing --user and no .omx/discovery/selected-leader.env found".to_string()
+        })?;
     if !is_valid_evm_wallet(&user) {
         return Err(format!("invalid watch user wallet: {user}"));
     }
@@ -249,8 +251,7 @@ async fn watch_activity_ws(options: &Options) -> Result<Vec<String>, String> {
                     parse_transaction_response(&payload, &request_map)
                 {
                     request_map.remove(&response_id);
-                    if from_address.eq_ignore_ascii_case(&wallet_lower)
-                        && !seen.contains(&tx_hash)
+                    if from_address.eq_ignore_ascii_case(&wallet_lower) && !seen.contains(&tx_hash)
                     {
                         let activity = wait_for_activity_tx(options, &user, &tx_hash)?;
                         seen.insert(tx_hash.clone());
@@ -270,7 +271,9 @@ async fn watch_activity_ws(options: &Options) -> Result<Vec<String>, String> {
                                 opt_json(activity.slug.as_deref())
                             ),
                         )
-                        .map_err(|error| format!("failed to append {}: {error}", log_path.display()))?;
+                        .map_err(|error| {
+                            format!("failed to append {}: {error}", log_path.display())
+                        })?;
                         matched.push(activity);
                     }
                     continue;
@@ -283,7 +286,7 @@ async fn watch_activity_ws(options: &Options) -> Result<Vec<String>, String> {
             }
             Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
             Message::Close(_) => {
-                return Err("websocket closed before a matching transaction arrived".to_string())
+                return Err("websocket closed before a matching transaction arrived".to_string());
             }
         }
     }
@@ -316,7 +319,9 @@ async fn watch_activity_ws(options: &Options) -> Result<Vec<String>, String> {
 }
 
 async fn wait_for_subscription_id(
-    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     event_wait_ms: u64,
 ) -> Result<String, String> {
     loop {
@@ -347,7 +352,10 @@ fn parse_subscription_tx_hash(payload: &Value, subscription_id: &str) -> Option<
     if params.get("subscription").and_then(Value::as_str) != Some(subscription_id) {
         return None;
     }
-    params.get("result").and_then(Value::as_str).map(ToString::to_string)
+    params
+        .get("result")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
 }
 
 fn parse_transaction_response(
@@ -607,7 +615,9 @@ fn escape_json(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Options, matched_activity_from_body, parse_args, repo_env_value, watch_activity_ws};
+    use super::{
+        Options, matched_activity_from_body, parse_args, repo_env_value, watch_activity_ws,
+    };
     use futures::{SinkExt, StreamExt};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -672,7 +682,11 @@ mod tests {
     fn repo_env_value_prefers_root_env_files() {
         let root = unique_temp_dir("repo-env");
         fs::create_dir_all(&root).expect("dir created");
-        fs::write(root.join(".env.local"), "POLYGON_WSS_URL=wss://local.example\n").expect("env local");
+        fs::write(
+            root.join(".env.local"),
+            "POLYGON_WSS_URL=wss://local.example\n",
+        )
+        .expect("env local");
         fs::write(root.join(".env"), "POLYGON_WSS_URL=wss://root.example\n").expect("env");
 
         let value = repo_env_value(&root, "POLYGON_WSS_URL").expect("value");
@@ -744,11 +758,14 @@ mod tests {
         assert!(lines.iter().any(|line| line == "poll_transport_mode=ws"));
         assert!(lines.iter().any(|line| line == "latest_new_tx=0xtarget"));
         assert!(lines.iter().any(|line| line == "latest_new_side=BUY"));
-        let latest = fs::read_to_string(root.join(format!(".omx/live-activity/{WALLET}/latest-activity.json")))
-            .expect("latest exists");
+        let latest = fs::read_to_string(
+            root.join(format!(".omx/live-activity/{WALLET}/latest-activity.json")),
+        )
+        .expect("latest exists");
         assert!(latest.contains("0xtarget"));
-        let seen = fs::read_to_string(root.join(format!(".omx/live-activity/{WALLET}/seen-tx.txt")))
-            .expect("seen exists");
+        let seen =
+            fs::read_to_string(root.join(format!(".omx/live-activity/{WALLET}/seen-tx.txt")))
+                .expect("seen exists");
         assert!(seen.contains("0xtarget"));
         server.await.expect("server task");
     }
@@ -757,7 +774,11 @@ mod tests {
     async fn watch_activity_ws_reads_ws_url_from_root_env() {
         let root = unique_temp_dir("ws-root-env");
         fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
-        fs::write(root.join(".env"), "POLYGON_WSS_URL=wss://example.invalid/ws\n").expect("env");
+        fs::write(
+            root.join(".env"),
+            "POLYGON_WSS_URL=wss://example.invalid/ws\n",
+        )
+        .expect("env");
 
         let error = watch_activity_ws(&Options {
             root: root.display().to_string(),

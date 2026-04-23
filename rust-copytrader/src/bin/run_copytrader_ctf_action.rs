@@ -1,10 +1,10 @@
 use alloy::providers::ProviderBuilder;
 use alloy::signers::Signer as _;
 use alloy::signers::local::PrivateKeySigner;
+use polymarket_client_sdk::POLYGON;
 use polymarket_client_sdk::ctf::Client as CtfClient;
 use polymarket_client_sdk::ctf::types::{MergePositionsRequest, SplitPositionRequest};
 use polymarket_client_sdk::types::{Address as SdkAddress, B256, U256};
-use polymarket_client_sdk::POLYGON;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -162,7 +162,10 @@ fn run_ctf_action(options: &Options) -> Result<Vec<String>, String> {
         format!("latest_activity_path={}", latest_activity_path.display()),
         format!("auth_env_source={}", auth_env_source(&root)),
         format!("auth_signer_address={signer_address}"),
-        format!("activity_wallet={}", latest.wallet.as_deref().unwrap_or("unknown")),
+        format!(
+            "activity_wallet={}",
+            latest.wallet.as_deref().unwrap_or("unknown")
+        ),
         format!("activity_tx={}", latest.tx),
         format!("activity_timestamp={}", latest.timestamp),
         format!("activity_type={action_type}"),
@@ -171,7 +174,10 @@ fn run_ctf_action(options: &Options) -> Result<Vec<String>, String> {
             "activity_outcome={}",
             latest.outcome.as_deref().unwrap_or("unknown")
         ),
-        format!("activity_slug={}", latest.slug.as_deref().unwrap_or("unknown")),
+        format!(
+            "activity_slug={}",
+            latest.slug.as_deref().unwrap_or("unknown")
+        ),
         format!("action_usdc_size={action_usdc_size}"),
         format!("action_amount_6={action_amount}"),
         format!("ctf_action_type={action_type}"),
@@ -212,7 +218,10 @@ fn run_ctf_action(options: &Options) -> Result<Vec<String>, String> {
                     .split_position(&request)
                     .await
                     .map_err(|error| format!("failed to split position: {error}"))?;
-                Ok::<_, String>((response.transaction_hash.to_string(), response.block_number.to_string()))
+                Ok::<_, String>((
+                    response.transaction_hash.to_string(),
+                    response.block_number.to_string(),
+                ))
             }
             "MERGE" => {
                 let request = MergePositionsRequest::for_binary_market(
@@ -224,7 +233,10 @@ fn run_ctf_action(options: &Options) -> Result<Vec<String>, String> {
                     .merge_positions(&request)
                     .await
                     .map_err(|error| format!("failed to merge positions: {error}"))?;
-                Ok::<_, String>((response.transaction_hash.to_string(), response.block_number.to_string()))
+                Ok::<_, String>((
+                    response.transaction_hash.to_string(),
+                    response.block_number.to_string(),
+                ))
             }
             _ => unreachable!(),
         }
@@ -257,8 +269,12 @@ fn read_selected_leader_wallet(path: &Path) -> Result<String, String> {
 fn read_latest_activity(path: &Path) -> Result<LatestActivity, String> {
     let body = fs::read_to_string(path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    let object = first_json_object(&body)
-        .ok_or_else(|| format!("failed to parse latest activity JSON from {}", path.display()))?;
+    let object = first_json_object(&body).ok_or_else(|| {
+        format!(
+            "failed to parse latest activity JSON from {}",
+            path.display()
+        )
+    })?;
     Ok(LatestActivity {
         wallet: extract_field_value(&object, "proxyWallet")
             .or_else(|| extract_field_value(&object, "wallet")),
@@ -268,8 +284,7 @@ fn read_latest_activity(path: &Path) -> Result<LatestActivity, String> {
             .ok_or_else(|| "missing timestamp in latest activity".to_string())?
             .parse::<u64>()
             .map_err(|error| format!("invalid timestamp: {error}"))?,
-        activity_type: extract_field_value(&object, "type")
-            .unwrap_or_else(|| "TRADE".to_string()),
+        activity_type: extract_field_value(&object, "type").unwrap_or_else(|| "TRADE".to_string()),
         condition_id: extract_field_value(&object, "conditionId"),
         outcome: extract_field_value(&object, "outcome"),
         slug: extract_field_value(&object, "slug"),
@@ -490,7 +505,11 @@ mod tests {
         })
         .expect("preview");
         assert!(lines.iter().any(|line| line == "ctf_action_type=SPLIT"));
-        assert!(lines.iter().any(|line| line == "ctf_action_status=preview_only"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "ctf_action_status=preview_only")
+        );
         assert!(lines.iter().any(|line| line == "action_usdc_size=0.5"));
     }
 }

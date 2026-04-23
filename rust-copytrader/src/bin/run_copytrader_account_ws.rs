@@ -60,7 +60,9 @@ async fn main() -> ExitCode {
 }
 
 fn print_usage() {
-    println!("usage: run_copytrader_account_ws [--root <path>] [--json] [--max-events <n>] [--output <path>]");
+    println!(
+        "usage: run_copytrader_account_ws [--root <path>] [--json] [--max-events <n>] [--output <path>]"
+    );
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -99,8 +101,8 @@ async fn run(options: &Options) -> Result<(), String> {
     let material = auth_material_with_signer_fallback(&root)?;
     let credentials = sdk_credentials_from_material(&material)?
         .ok_or_else(|| "missing CLOB_SECRET for websocket auth".to_string())?;
-    let effective_funder = effective_funder_address(&material)?
-        .unwrap_or_else(|| material.poly_address.clone());
+    let effective_funder =
+        effective_funder_address(&material)?.unwrap_or_else(|| material.poly_address.clone());
     let address = SdkAddress::from_str(&effective_funder)
         .map_err(|error| format!("invalid websocket auth address: {error}"))?;
     let client = WsClient::default()
@@ -114,7 +116,11 @@ async fn run(options: &Options) -> Result<(), String> {
 
     let output_path = options.output.as_ref().map(|path| {
         let path = PathBuf::from(path);
-        if path.is_absolute() { path } else { root.join(path) }
+        if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        }
     });
 
     let mut seen = 0usize;
@@ -176,7 +182,10 @@ async fn run(options: &Options) -> Result<(), String> {
             serde_json::to_string_pretty(&payload)
                 .map_err(|error| format!("failed to render websocket payload json: {error}"))?
         } else {
-            payload["event"]["type"].as_str().unwrap_or("other").to_string()
+            payload["event"]["type"]
+                .as_str()
+                .unwrap_or("other")
+                .to_string()
         };
 
         if let Some(path) = &output_path {
@@ -220,8 +229,14 @@ fn render_ws_payload(
     }))
 }
 
-fn sdk_credentials_from_material(material: &AuthMaterial) -> Result<Option<SdkCredentials>, String> {
-    let Some(secret) = material.api_secret.clone().filter(|value| !value.trim().is_empty()) else {
+fn sdk_credentials_from_material(
+    material: &AuthMaterial,
+) -> Result<Option<SdkCredentials>, String> {
+    let Some(secret) = material
+        .api_secret
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    else {
         return Ok(None);
     };
     let api_key = Uuid::parse_str(&material.api_key)
@@ -263,13 +278,18 @@ fn effective_funder_address(material: &AuthMaterial) -> Result<Option<String>, S
     {
         return Ok(Some(funder.to_string()));
     }
-    let signer = SdkAddress::from_str(&material.poly_address)
-        .map_err(|error| format!("invalid signer address for effective funder derivation: {error}"))?;
+    let signer = SdkAddress::from_str(&material.poly_address).map_err(|error| {
+        format!("invalid signer address for effective funder derivation: {error}")
+    })?;
     let derived = match material.signature_type {
         0 => None,
         1 => derive_proxy_wallet(signer, POLYGON),
         2 => derive_safe_wallet(signer, POLYGON),
-        other => return Err(format!("unsupported SIGNATURE_TYPE for effective funder derivation: {other}")),
+        other => {
+            return Err(format!(
+                "unsupported SIGNATURE_TYPE for effective funder derivation: {other}"
+            ));
+        }
     };
     Ok(derived.map(|address| address.to_string()))
 }

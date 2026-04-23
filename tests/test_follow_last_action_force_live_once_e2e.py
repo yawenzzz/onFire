@@ -15,6 +15,42 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
         path.write_text(content)
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
+    def _make_positions_gate_exec(
+        self,
+        path: Path,
+        *,
+        status: str = "follow_new_open",
+        reason: str = "current_position_matches_latest_trade_size",
+        should_follow: bool = True,
+        target_size: str = "60.000000",
+        other_size: str = "0.000000",
+        total_size: str | None = None,
+        response_count: str = "1",
+        event_count: str = "1",
+    ) -> None:
+        if total_size is None:
+            total_size = target_size
+        self._make_exec(
+            path,
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "printf 'mode=public-positions-gate\\n'",
+                    "printf 'positions_query_status=ok\\n'",
+                    "printf 'positions_retry_attempts=1\\n'",
+                    f"printf 'current_positions_response_count={response_count}\\n'",
+                    f"printf 'current_event_position_count={event_count}\\n'",
+                    f"printf 'current_event_target_asset_size={target_size}\\n'",
+                    f"printf 'current_event_other_asset_size={other_size}\\n'",
+                    f"printf 'current_event_total_size={total_size}\\n'",
+                    f"printf 'leader_event_open_gate_status={status}\\n'",
+                    f"printf 'leader_event_open_gate_reason={reason}\\n'",
+                    f"printf 'leader_event_should_follow={'true' if should_follow else 'false'}\\n'",
+                ]
+            )
+            + "\n",
+        )
+
     def test_force_live_once_uses_wrapper_bins_and_force_flags(self) -> None:
         wallet = WALLET.lower()
         root = Path.cwd()
@@ -28,11 +64,12 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             latest_activity = activity_root / "latest-activity.json"
             latest_activity.write_text(
-                '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","size":2.0,"usdcSize":1.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
+                '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","conditionId":"cond-open","size":60.0,"usdcSize":30.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
                 % wallet
             )
 
             watch = log_dir / "watch.sh"
+            positions_gate = log_dir / "positions-gate.sh"
             submit = log_dir / "submit.sh"
             submit_log = log_dir / "submit-args.txt"
 
@@ -40,6 +77,7 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 watch,
                 "#!/usr/bin/env bash\nprintf 'watch_user=%s\\n'\n" % wallet,
             )
+            self._make_positions_gate_exec(positions_gate)
             self._make_exec(
                 submit,
                 "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nprintf 'live_submit_status=submitted\\n'\nprintf 'leader_price=0.50000000\\n'\nprintf 'follower_effective_price=0.50000000\\n'\nprintf 'price_gap_bps=0.0000\\n'\n"
@@ -48,6 +86,7 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
             env["IGNORE_SEEN_TX"] = "1"
@@ -75,6 +114,9 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             self.assertIn("--allow-live-submit", forwarded)
             self.assertIn("--force-live-submit", forwarded)
             self.assertIn("--override-usdc-size", forwarded)
+            self.assertIn("3.000000", forwarded)
+            self.assertIn("--order-type", forwarded)
+            self.assertIn("GTC", forwarded)
             runs_dir = root / ".omx" / "force-live-follow" / wallet / "runs"
             self.assertTrue(runs_dir.exists())
             run_dirs = list(runs_dir.iterdir())
@@ -112,6 +154,7 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             (state_root / "last-submitted-tx.txt").write_text("0xdup\n")
 
             watch = log_dir / "watch.sh"
+            positions_gate = log_dir / "positions-gate.sh"
             submit = log_dir / "submit.sh"
             submit_log = log_dir / "submit-called.txt"
 
@@ -125,9 +168,21 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 "#!/usr/bin/env bash\nprintf 'called\\n' >> %s\nprintf 'live_submit_status=submitted\\n'\n"
                 % submit_log,
             )
+            self._make_positions_gate_exec(
+                positions_gate,
+                status="skip_existing_event_position",
+                reason="wallet_already_holds_other_outcome_in_event",
+                should_follow=False,
+                target_size="60.000000",
+                other_size="20.000000",
+                total_size="80.000000",
+                response_count="2",
+                event_count="2",
+            )
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
 
@@ -176,6 +231,7 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             )
 
             watch = log_dir / "watch.sh"
+            positions_gate = log_dir / "positions-gate.sh"
             submit = log_dir / "submit.sh"
             submit_log = log_dir / "submit-called.txt"
 
@@ -188,9 +244,21 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 "#!/usr/bin/env bash\nprintf 'called\\n' >> %s\nprintf 'live_submit_status=submitted\\n'\n"
                 % submit_log,
             )
+            self._make_positions_gate_exec(
+                positions_gate,
+                status="skip_existing_event_position",
+                reason="wallet_already_holds_other_outcome_in_event",
+                should_follow=False,
+                target_size="60.000000",
+                other_size="20.000000",
+                total_size="80.000000",
+                response_count="2",
+                event_count="2",
+            )
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
             env["REQUIRE_NEW_ACTIVITY"] = "1"
@@ -218,6 +286,141 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             shutil.rmtree(state_root, ignore_errors=True)
             shutil.rmtree(activity_root, ignore_errors=True)
 
+    def test_force_live_once_skips_existing_event_position_before_new_buy(self) -> None:
+        root = Path.cwd()
+        state_root = root / ".omx" / "force-live-follow" / WALLET
+        activity_root = root / ".omx" / "live-activity" / WALLET
+        log_dir = Path(tempfile.mkdtemp(prefix="force-live-once-existing-event-"))
+        try:
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+            activity_root.mkdir(parents=True, exist_ok=True)
+
+            latest_activity = activity_root / "latest-activity.json"
+            latest_activity.write_text(
+                '[{"proxyWallet":"%s","timestamp":10,"type":"TRADE","asset":"asset-no","conditionId":"cond-1","outcome":"No","size":20.0,"usdcSize":10.0,"transactionHash":"0xold","price":0.5,"side":"BUY","slug":"market-a"},{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-yes","conditionId":"cond-1","outcome":"Yes","size":60.0,"usdcSize":30.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
+                % (WALLET, WALLET)
+            )
+
+            watch = log_dir / "watch.sh"
+            positions_gate = log_dir / "positions-gate.sh"
+            submit = log_dir / "submit.sh"
+            submit_log = log_dir / "submit-called.txt"
+
+            self._make_exec(
+                watch,
+                "#!/usr/bin/env bash\nprintf 'watch_user=%s\\npoll_new_events=1\\nlatest_new_tx=0xnew\\n'\n"
+                % WALLET,
+            )
+            self._make_exec(
+                submit,
+                "#!/usr/bin/env bash\nprintf 'called\\n' >> %s\nprintf 'live_submit_status=submitted\\n'\n"
+                % submit_log,
+            )
+            self._make_positions_gate_exec(
+                positions_gate,
+                status="skip_existing_event_position",
+                reason="wallet_already_holds_other_outcome_in_event",
+                should_follow=False,
+                target_size="60.000000",
+                other_size="20.000000",
+                total_size="80.000000",
+                response_count="2",
+                event_count="2",
+            )
+
+            env = os.environ.copy()
+            env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
+            env["POLYMARKET_CURL_PROXY"] = ""
+
+            completed = subprocess.run(
+                ["bash", "scripts/run_rust_follow_last_action_force_live_once.sh", "--user", WALLET],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            self.assertIn(
+                "current positions gate status=skip_existing_event_position",
+                completed.stdout,
+            )
+            self.assertFalse(submit_log.exists())
+            run_dir = next((root / ".omx" / "force-live-follow" / WALLET / "runs").iterdir())
+            summary = (run_dir / "summary.txt").read_text()
+            self.assertIn("status=skip_existing_event_position", summary)
+            self.assertIn("leader_event_open_gate_status=skip_existing_event_position", summary)
+        finally:
+            shutil.rmtree(log_dir, ignore_errors=True)
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+
+    def test_force_live_once_skips_share_floor_when_scaled_follow_shares_too_small(self) -> None:
+        root = Path.cwd()
+        state_root = root / ".omx" / "force-live-follow" / WALLET
+        activity_root = root / ".omx" / "live-activity" / WALLET
+        log_dir = Path(tempfile.mkdtemp(prefix="force-live-once-share-floor-"))
+        try:
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+            activity_root.mkdir(parents=True, exist_ok=True)
+
+            latest_activity = activity_root / "latest-activity.json"
+            latest_activity.write_text(
+                '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","conditionId":"cond-small","size":40.0,"usdcSize":20.0,"transactionHash":"0xsmall","price":0.5,"side":"BUY","slug":"market-small"}]'
+                % WALLET
+            )
+
+            watch = log_dir / "watch.sh"
+            positions_gate = log_dir / "positions-gate.sh"
+            submit = log_dir / "submit.sh"
+            submit_log = log_dir / "submit-called.txt"
+
+            self._make_exec(
+                watch,
+                "#!/usr/bin/env bash\nprintf 'watch_user=%s\\npoll_new_events=1\\nlatest_new_tx=0xsmall\\n'\n"
+                % WALLET,
+            )
+            self._make_exec(
+                submit,
+                "#!/usr/bin/env bash\nprintf 'called\\n' >> %s\nprintf 'live_submit_status=submitted\\n'\n"
+                % submit_log,
+            )
+            self._make_positions_gate_exec(
+                positions_gate,
+                target_size="40.000000",
+                total_size="40.000000",
+            )
+
+            env = os.environ.copy()
+            env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
+            env["POLYMARKET_CURL_PROXY"] = ""
+
+            completed = subprocess.run(
+                ["bash", "scripts/run_rust_follow_last_action_force_live_once.sh", "--user", WALLET],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            self.assertIn("follow shares 4.000000 is below minimum 5", completed.stdout)
+            self.assertFalse(submit_log.exists())
+            run_dir = next((root / ".omx" / "force-live-follow" / WALLET / "runs").iterdir())
+            summary = (run_dir / "summary.txt").read_text()
+            self.assertIn("status=share_floor_skipped", summary)
+            self.assertIn("follow_share_size=4.000000", summary)
+        finally:
+            shutil.rmtree(log_dir, ignore_errors=True)
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+
     def test_force_live_once_prefers_watch_latest_new_tx_over_first_json_tx(self) -> None:
         root = Path.cwd()
         state_root = root / ".omx" / "force-live-follow" / WALLET
@@ -230,11 +433,12 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             latest_activity = activity_root / "latest-activity.json"
             latest_activity.write_text(
-                '[{"proxyWallet":"%s","timestamp":10,"type":"TRADE","asset":"asset-1","size":2.0,"usdcSize":1.0,"transactionHash":"0xold","price":0.5,"side":"BUY","slug":"market-a"},{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","size":2.0,"usdcSize":1.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
+                '[{"proxyWallet":"%s","timestamp":10,"type":"TRADE","asset":"asset-old","conditionId":"cond-old","size":20.0,"usdcSize":10.0,"transactionHash":"0xold","price":0.5,"side":"BUY","slug":"market-b"},{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","conditionId":"cond-new","size":60.0,"usdcSize":30.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
                 % (WALLET, WALLET)
             )
 
             watch = log_dir / "watch.sh"
+            positions_gate = log_dir / "positions-gate.sh"
             submit = log_dir / "submit.sh"
             submit_log = log_dir / "submit-args.txt"
             submit_activity = log_dir / "submit-latest-activity.json"
@@ -249,9 +453,11 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nlatest=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--latest-activity\" ]; then latest=\"$2\"; shift 2; continue; fi\n  shift\n done\ncat \"$latest\" > %s\nprintf 'live_submit_status=submitted\\n'\nprintf 'leader_price=0.50000000\\n'\nprintf 'follower_effective_price=0.50000000\\n'\nprintf 'price_gap_bps=0.0000\\n'\n"
                 % ("%s", submit_log, submit_activity),
             )
+            self._make_positions_gate_exec(positions_gate)
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
 
@@ -310,11 +516,12 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             latest_activity = activity_root / "latest-activity.json"
             latest_activity.write_text(
-                '[{"proxyWallet":"%s","timestamp":10,"type":"TRADE","asset":"asset-old","size":2.0,"usdcSize":1.0,"transactionHash":"0xold","price":0.1,"side":"BUY","slug":"market-a"},{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-new","size":2.0,"usdcSize":1.0,"transactionHash":"0xnew","price":0.9,"side":"BUY","slug":"market-a"}]'
+                '[{"proxyWallet":"%s","timestamp":10,"type":"TRADE","asset":"asset-old","conditionId":"cond-old","size":20.0,"usdcSize":2.0,"transactionHash":"0xold","price":0.1,"side":"BUY","slug":"market-b"},{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-new","conditionId":"cond-new","size":60.0,"usdcSize":54.0,"transactionHash":"0xnew","price":0.9,"side":"BUY","slug":"market-a"}]'
                 % (WALLET, WALLET)
             )
 
             watch = log_dir / "watch.sh"
+            positions_gate = log_dir / "positions-gate.sh"
             submit = log_dir / "submit.sh"
             submit_activity = log_dir / "submit-latest-activity.json"
 
@@ -328,9 +535,15 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 "#!/usr/bin/env bash\nlatest=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--latest-activity\" ]; then latest=\"$2\"; shift 2; continue; fi\n  shift\n done\ncat \"$latest\" > %s\nprintf 'live_submit_status=submitted\\n'\nprintf 'leader_price=0.90000000\\n'\nprintf 'follower_effective_price=0.90000000\\n'\nprintf 'price_gap_bps=0.0000\\n'\n"
                 % submit_activity,
             )
+            self._make_positions_gate_exec(
+                positions_gate,
+                target_size="60.000000",
+                total_size="60.000000",
+            )
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
 
@@ -364,12 +577,13 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             latest_activity = activity_root / "latest-activity.json"
             latest_activity.write_text(
-                '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","size":2.0,"usdcSize":1.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
+                '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","conditionId":"cond-open","size":60.0,"usdcSize":30.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
                 % WALLET
             )
             (activity_root / "seen-tx.txt").write_text("0xnew\n")
 
             watch = log_dir / "watch.sh"
+            positions_gate = log_dir / "positions-gate.sh"
             submit = log_dir / "submit.sh"
 
             self._make_exec(
@@ -381,9 +595,11 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 submit,
                 "#!/usr/bin/env bash\nprintf 'live_submit_status=submitted\\nsubmit_success=false\\n'\n",
             )
+            self._make_positions_gate_exec(positions_gate)
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
 
@@ -486,12 +702,13 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
 
             latest_activity = activity_root / "latest-activity.json"
             latest_activity.write_text(
-                '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","size":2.0,"usdcSize":1.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
+                '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","conditionId":"cond-open","size":60.0,"usdcSize":30.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
                 % WALLET
             )
 
             watch = log_dir / "watch.sh"
             watch_args = log_dir / "watch-args.txt"
+            positions_gate = log_dir / "positions-gate.sh"
             submit = log_dir / "submit.sh"
 
             self._make_exec(
@@ -503,9 +720,11 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 submit,
                 "#!/usr/bin/env bash\nprintf 'live_submit_status=submitted\\n'\n",
             )
+            self._make_positions_gate_exec(positions_gate)
 
             env = os.environ.copy()
             env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
             env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
             env["POLYMARKET_CURL_PROXY"] = ""
 

@@ -3,7 +3,7 @@ use polymarket_client_sdk::clob::types::request::{
     BalanceAllowanceRequest, OrdersRequest, TradesRequest, UpdateBalanceAllowanceRequest,
 };
 use polymarket_client_sdk::clob::types::{
-    AssetType, SignatureType as SdkSignatureType, Side as SdkSide, TradeStatusType,
+    AssetType, Side as SdkSide, SignatureType as SdkSignatureType, TradeStatusType,
 };
 use polymarket_client_sdk::clob::{Client as SdkClobClient, Config as SdkClobConfig};
 use polymarket_client_sdk::data::Client as SdkDataClient;
@@ -137,7 +137,11 @@ async fn run(options: &Options) -> Result<(), String> {
     let root = PathBuf::from(&options.root);
     let output_path = options.output.as_ref().map(|path| {
         let path = PathBuf::from(path);
-        if path.is_absolute() { path } else { root.join(path) }
+        if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        }
     });
 
     let mut iteration = 0usize;
@@ -194,7 +198,11 @@ async fn build_snapshot(root: &Path) -> Result<Value, String> {
     if signature_type != SdkSignatureType::Eoa {
         auth_builder = auth_builder.signature_type(signature_type);
     }
-    if let Some(funder) = material.funder.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(funder) = material
+        .funder
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         auth_builder = auth_builder.funder(
             SdkAddress::from_str(funder)
                 .map_err(|error| format!("invalid FUNDER_ADDRESS: {error}"))?,
@@ -326,7 +334,9 @@ async fn build_snapshot(root: &Path) -> Result<Value, String> {
     render_account_monitor_payload(root, &material, effective_funder, account_snapshot)
 }
 
-fn derive_positions(trades: &[polymarket_client_sdk::clob::types::response::TradeResponse]) -> Vec<Value> {
+fn derive_positions(
+    trades: &[polymarket_client_sdk::clob::types::response::TradeResponse],
+) -> Vec<Value> {
     let mut by_asset = BTreeMap::<String, (SdkDecimal, SdkDecimal)>::new();
     for trade in trades {
         let entry = by_asset
@@ -337,8 +347,10 @@ fn derive_positions(trades: &[polymarket_client_sdk::clob::types::response::Trad
             SdkSide::Sell => entry.0 -= trade.size,
             _ => {}
         }
-        if matches!(trade.status, TradeStatusType::Matched | TradeStatusType::Mined | TradeStatusType::Confirmed)
-        {
+        if matches!(
+            trade.status,
+            TradeStatusType::Matched | TradeStatusType::Mined | TradeStatusType::Confirmed
+        ) {
             entry.1 = trade.price;
         }
     }
@@ -373,15 +385,18 @@ async fn fetch_data_parity(user: SdkAddress) -> DataParitySnapshot {
 
     let activities_result = client.activity(&activities_request).await;
 
-    let closed_positions_result = client
-        .closed_positions(&closed_positions_request)
-        .await;
+    let closed_positions_result = client.closed_positions(&closed_positions_request).await;
 
     let value_result = client.value(&value_request).await;
 
     let activities = activities_result
         .as_ref()
-        .map(|records| records.iter().map(render_activity_record).collect::<Vec<_>>())
+        .map(|records| {
+            records
+                .iter()
+                .map(render_activity_record)
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     let cash_history = activities_result
         .as_ref()
@@ -404,12 +419,7 @@ async fn fetch_data_parity(user: SdkAddress) -> DataParitySnapshot {
         .unwrap_or_default();
     let public_value_records = value_result
         .as_ref()
-        .map(|records| {
-            records
-                .iter()
-                .map(render_value_record)
-                .collect::<Vec<_>>()
-        })
+        .map(|records| records.iter().map(render_value_record).collect::<Vec<_>>())
         .unwrap_or_default();
 
     let activity_status = activities_result
@@ -425,19 +435,17 @@ async fn fetch_data_parity(user: SdkAddress) -> DataParitySnapshot {
         .map(|_| "ok".to_string())
         .unwrap_or_else(|error| format!("error:{error}"));
 
-    let public_data_status = if activities_result.is_ok()
-        && closed_positions_result.is_ok()
-        && value_result.is_ok()
-    {
-        "ok".to_string()
-    } else if activities_result.is_err()
-        && closed_positions_result.is_err()
-        && value_result.is_err()
-    {
-        "error".to_string()
-    } else {
-        "partial".to_string()
-    };
+    let public_data_status =
+        if activities_result.is_ok() && closed_positions_result.is_ok() && value_result.is_ok() {
+            "ok".to_string()
+        } else if activities_result.is_err()
+            && closed_positions_result.is_err()
+            && value_result.is_err()
+        {
+            "error".to_string()
+        } else {
+            "partial".to_string()
+        };
 
     DataParitySnapshot {
         public_data_status,
@@ -525,15 +533,48 @@ fn render_summary(snapshot: &Value) -> String {
     let account = &snapshot["account_snapshot"];
     [
         format!("mode={}", status["mode"].as_str().unwrap_or("unknown")),
-        format!("auth_env_source={}", status["auth_env_source"].as_str().unwrap_or("")),
-        format!("signer_address={}", status["signer_address"].as_str().unwrap_or("")),
-        format!("effective_funder_address={}", status["effective_funder_address"].as_str().unwrap_or("")),
-        format!("balance={}", account["balances"]["balance"].as_str().unwrap_or("0")),
-        format!("open_orders_count={}", account["open_orders_count"].as_u64().unwrap_or(0)),
-        format!("recent_trades_count={}", account["recent_trades_count"].as_u64().unwrap_or(0)),
-        format!("open_position_count={}", account["pnl_summary"]["open_position_count"].as_u64().unwrap_or(0)),
-        format!("estimated_equity={}", account["pnl_summary"]["estimated_equity"].as_str().unwrap_or("0")),
-        format!("estimated_total_pnl={}", account["pnl_summary"]["estimated_total_pnl"].as_str().unwrap_or("0")),
+        format!(
+            "auth_env_source={}",
+            status["auth_env_source"].as_str().unwrap_or("")
+        ),
+        format!(
+            "signer_address={}",
+            status["signer_address"].as_str().unwrap_or("")
+        ),
+        format!(
+            "effective_funder_address={}",
+            status["effective_funder_address"].as_str().unwrap_or("")
+        ),
+        format!(
+            "balance={}",
+            account["balances"]["balance"].as_str().unwrap_or("0")
+        ),
+        format!(
+            "open_orders_count={}",
+            account["open_orders_count"].as_u64().unwrap_or(0)
+        ),
+        format!(
+            "recent_trades_count={}",
+            account["recent_trades_count"].as_u64().unwrap_or(0)
+        ),
+        format!(
+            "open_position_count={}",
+            account["pnl_summary"]["open_position_count"]
+                .as_u64()
+                .unwrap_or(0)
+        ),
+        format!(
+            "estimated_equity={}",
+            account["pnl_summary"]["estimated_equity"]
+                .as_str()
+                .unwrap_or("0")
+        ),
+        format!(
+            "estimated_total_pnl={}",
+            account["pnl_summary"]["estimated_total_pnl"]
+                .as_str()
+                .unwrap_or("0")
+        ),
     ]
     .join("\n")
 }
@@ -567,8 +608,14 @@ fn auth_material_with_signer_fallback(root: &Path) -> Result<AuthMaterial, Strin
     }
 }
 
-fn sdk_credentials_from_material(material: &AuthMaterial) -> Result<Option<SdkCredentials>, String> {
-    let Some(secret) = material.api_secret.clone().filter(|value| !value.trim().is_empty()) else {
+fn sdk_credentials_from_material(
+    material: &AuthMaterial,
+) -> Result<Option<SdkCredentials>, String> {
+    let Some(secret) = material
+        .api_secret
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    else {
         return Ok(None);
     };
     let api_key = Uuid::parse_str(&material.api_key)
@@ -598,14 +645,19 @@ fn effective_funder_address(material: &AuthMaterial) -> Result<Option<String>, S
         return Ok(Some(funder.to_string()));
     }
 
-    let signer = SdkAddress::from_str(&material.poly_address)
-        .map_err(|error| format!("invalid signer address for effective funder derivation: {error}"))?;
+    let signer = SdkAddress::from_str(&material.poly_address).map_err(|error| {
+        format!("invalid signer address for effective funder derivation: {error}")
+    })?;
 
     let derived = match material.signature_type {
         0 => None,
         1 => derive_proxy_wallet(signer, POLYGON),
         2 => derive_safe_wallet(signer, POLYGON),
-        other => return Err(format!("unsupported SIGNATURE_TYPE for effective funder derivation: {other}")),
+        other => {
+            return Err(format!(
+                "unsupported SIGNATURE_TYPE for effective funder derivation: {other}"
+            ));
+        }
     };
 
     Ok(derived.map(|address| address.to_string()))
@@ -672,7 +724,9 @@ mod tests {
     use polymarket_client_sdk::data::types::response::{
         Activity as DataActivity, ClosedPosition as DataClosedPosition, Value as DataValueResponse,
     };
-    use polymarket_client_sdk::types::{Address as SdkAddress, B256, Decimal as SdkDecimal, U256, Utc};
+    use polymarket_client_sdk::types::{
+        Address as SdkAddress, B256, Decimal as SdkDecimal, U256, Utc,
+    };
     use rust_copytrader::adapters::signing::AuthMaterial;
     use serde_json::json;
     use std::path::Path;
@@ -680,13 +734,25 @@ mod tests {
 
     fn sample_activity(activity_type: DataActivityType) -> DataActivity {
         DataActivity::builder()
-            .proxy_wallet(SdkAddress::from_str("0x0bdc847347571342e1563971e8ba206c8b03e345").unwrap())
+            .proxy_wallet(
+                SdkAddress::from_str("0x0bdc847347571342e1563971e8ba206c8b03e345").unwrap(),
+            )
             .timestamp(1_714_000_000)
-            .condition_id(B256::from_str("0x1111111111111111111111111111111111111111111111111111111111111111").unwrap())
+            .condition_id(
+                B256::from_str(
+                    "0x1111111111111111111111111111111111111111111111111111111111111111",
+                )
+                .unwrap(),
+            )
             .activity_type(activity_type)
             .size(SdkDecimal::from_str("1.5").unwrap())
             .usdc_size(SdkDecimal::from_str("2.5").unwrap())
-            .transaction_hash(B256::from_str("0x2222222222222222222222222222222222222222222222222222222222222222").unwrap())
+            .transaction_hash(
+                B256::from_str(
+                    "0x2222222222222222222222222222222222222222222222222222222222222222",
+                )
+                .unwrap(),
+            )
             .price(SdkDecimal::from_str("0.55").unwrap())
             .asset(U256::from(42))
             .side(DataSide::Buy)
@@ -702,7 +768,10 @@ mod tests {
     fn render_activity_record_contains_expected_schema_fields() {
         let rendered = render_activity_record(&sample_activity(DataActivityType::Trade));
         assert_eq!(rendered["activity_type"], "TRADE");
-        assert_eq!(rendered["transaction_hash"], "0x2222222222222222222222222222222222222222222222222222222222222222");
+        assert_eq!(
+            rendered["transaction_hash"],
+            "0x2222222222222222222222222222222222222222222222222222222222222222"
+        );
         assert_eq!(rendered["usdc_size"], "2.5");
         assert_eq!(rendered["slug"], "market-slug");
         assert_eq!(rendered["side"], "BUY");
@@ -710,17 +779,30 @@ mod tests {
 
     #[test]
     fn cash_history_filters_non_trade_activity_types() {
-        assert!(!is_cash_history_activity(&sample_activity(DataActivityType::Trade)));
-        assert!(is_cash_history_activity(&sample_activity(DataActivityType::Redeem)));
-        assert!(is_cash_history_activity(&sample_activity(DataActivityType::Reward)));
+        assert!(!is_cash_history_activity(&sample_activity(
+            DataActivityType::Trade
+        )));
+        assert!(is_cash_history_activity(&sample_activity(
+            DataActivityType::Redeem
+        )));
+        assert!(is_cash_history_activity(&sample_activity(
+            DataActivityType::Reward
+        )));
     }
 
     #[test]
     fn render_closed_position_record_contains_expected_schema_fields() {
         let position = DataClosedPosition::builder()
-            .proxy_wallet(SdkAddress::from_str("0x0bdc847347571342e1563971e8ba206c8b03e345").unwrap())
+            .proxy_wallet(
+                SdkAddress::from_str("0x0bdc847347571342e1563971e8ba206c8b03e345").unwrap(),
+            )
             .asset(U256::from(7))
-            .condition_id(B256::from_str("0x3333333333333333333333333333333333333333333333333333333333333333").unwrap())
+            .condition_id(
+                B256::from_str(
+                    "0x3333333333333333333333333333333333333333333333333333333333333333",
+                )
+                .unwrap(),
+            )
             .avg_price(SdkDecimal::from_str("0.42").unwrap())
             .total_bought(SdkDecimal::from_str("10").unwrap())
             .realized_pnl(SdkDecimal::from_str("1.2").unwrap())

@@ -477,7 +477,7 @@ bash scripts/run_rust_minmax_follow_live.sh \
 - `--max-total-exposure-usdc 100`
 - `--max-order-usdc 10`
 - `--account-snapshot runtime-verify-account/dashboard.json`
-- Rust 跟单循环内每轮自动用 `run_rust_show_account_info.sh` 刷新 `runtime-verify-account/dashboard.json`
+- Rust 跟单循环会在**需要 submit 的轮次**自动用 `run_rust_show_account_info.sh` 刷新 `runtime-verify-account/dashboard.json`
 - 如果 watch 本轮返回 `poll_new_events=0`，会直接 `submit_status=skipped_no_new_activity`
 - 进程失败时默认自动重启（最多 20 次，每次间隔 5 秒）
 - **不会默认 `--allow-live-submit`**
@@ -529,7 +529,7 @@ bash scripts/run_rust_minmax_follow_live.sh --user <wallet>
 
 - `poll_transport_mode=proxy|direct_fallback|direct`
 - `watch_has_new_activity=true|false`
-- `account_snapshot_refresh_status=ok|failed|disabled:*`
+- `account_snapshot_refresh_status=ok|failed|disabled:*|skipped_no_new_activity`
 - `submit_status=skipped_no_new_activity|skipped_account_snapshot_refresh_failed|skipped_condition_unconfirmed_small_entry|skipped_condition_hedge_candidate|skipped_sell_without_inventory|skipped_duplicate_tx|skipped_live_gate_blocked|...`
 
 其中 condition-aware 跟单规则现在是：

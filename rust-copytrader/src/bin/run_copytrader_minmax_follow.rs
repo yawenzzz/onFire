@@ -336,9 +336,15 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
         let history = history_min_max(&activities);
         let run_id = now_nanos()?;
         let report_path = state_root.join(format!("run-{}-{run_id}.txt", index));
-        let selected_latest_activity_path =
-            state_root.join(format!("run-{}-{run_id}.selected-latest-activity.json", index));
-        write_selected_activity_file(&latest_activity_path, &selected_latest_activity_path, &latest.tx)?;
+        let selected_latest_activity_path = state_root.join(format!(
+            "run-{}-{run_id}.selected-latest-activity.json",
+            index
+        ));
+        write_selected_activity_file(
+            &latest_activity_path,
+            &selected_latest_activity_path,
+            &latest.tx,
+        )?;
 
         let mut lines = vec![
             "strategy=minmax_activity_v1".to_string(),
@@ -420,8 +426,9 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
         }));
         let poll_new_events = extract_metric_usize(&lines, "poll_new_events");
         let latest_new_timestamp = extract_metric_u64(&lines, "latest_new_timestamp");
-        let latest_new_age_secs = latest_new_timestamp
-            .map(|timestamp| watch_finished_at_unix_ms.saturating_sub(timestamp.saturating_mul(1000)) / 1000);
+        let latest_new_age_secs = latest_new_timestamp.map(|timestamp| {
+            watch_finished_at_unix_ms.saturating_sub(timestamp.saturating_mul(1000)) / 1000
+        });
         lines.push(format!(
             "watch_has_new_activity={}",
             poll_new_events.is_some_and(|count| count > 0)
@@ -438,6 +445,25 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
                 .map(|value| value <= options.activity_max_age_secs)
                 .unwrap_or(false)
         ));
+        let no_new_activity = !options.force_live_submit && poll_new_events == Some(0);
+        if no_new_activity {
+            lines.push("account_snapshot_refresh_status=skipped_no_new_activity".to_string());
+            lines.push("sell_inventory_decision=skipped_no_new_activity".to_string());
+            lines.push("sell_inventory_reason=no_new_activity".to_string());
+            lines.push("sell_inventory_should_follow=false".to_string());
+            lines.push("planned_open_usdc=0.000000".to_string());
+            lines.push("submit_status=skipped_no_new_activity".to_string());
+            lines.push(format!("report_path={}", report_path.display()));
+            persist_iteration_report(&state_root, &report_path, &lines)?;
+            if !options.forever && index + 1 >= loop_total {
+                break lines;
+            }
+            index = index.saturating_add(1);
+            if options.loop_interval_ms > 0 {
+                thread::sleep(Duration::from_millis(options.loop_interval_ms));
+            }
+            continue;
+        }
         let refresh_lines = run_account_snapshot_refresh(&root, options);
         let refresh_ok = refresh_lines
             .iter()
@@ -479,14 +505,7 @@ fn run_minmax_follow(options: &Options) -> Result<Vec<String>, String> {
         ));
         lines.push(format!("planned_open_usdc={open_usdc:.6}"));
 
-        if !options.force_live_submit && poll_new_events == Some(0) {
-            lines.push("submit_status=skipped_no_new_activity".to_string());
-            lines.push(format!("report_path={}", report_path.display()));
-            persist_iteration_report(&state_root, &report_path, &lines)?;
-            if !options.forever && index + 1 >= loop_total {
-                break lines;
-            }
-        } else if !options.force_live_submit
+        if !options.force_live_submit
             && poll_new_events.is_some_and(|count| count > 0)
             && latest_new_age_secs.is_some_and(|age| age > options.activity_max_age_secs)
         {
@@ -672,8 +691,12 @@ fn write_selected_activity_file(
         fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
     }
-    fs::write(selected_activity_path, format!("{selected}\n"))
-        .map_err(|error| format!("failed to write {}: {error}", selected_activity_path.display()))
+    fs::write(selected_activity_path, format!("{selected}\n")).map_err(|error| {
+        format!(
+            "failed to write {}: {error}",
+            selected_activity_path.display()
+        )
+    })
 }
 
 fn run_account_snapshot_refresh(root: &Path, options: &Options) -> Vec<String> {
@@ -685,7 +708,11 @@ fn run_post_submit_account_snapshot_refresh(root: &Path, options: &Options) -> V
 }
 
 fn run_snapshot_refresh_with_prefix(root: &Path, options: &Options, prefix: &str) -> Vec<String> {
-    let Some(snapshot_path) = options.account_snapshot.as_deref().filter(|value| !value.is_empty()) else {
+    let Some(snapshot_path) = options
+        .account_snapshot
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    else {
         return vec![format!("{prefix}_status=disabled:no_snapshot_path")];
     };
     let Some(account_monitor_bin) = options
@@ -751,7 +778,11 @@ fn evaluate_sell_inventory(
         });
     }
 
-    let Some(snapshot_path) = options.account_snapshot.as_deref().filter(|value| !value.is_empty()) else {
+    let Some(snapshot_path) = options
+        .account_snapshot
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    else {
         return Ok(SellInventoryDecision {
             inventory_net_size: None,
             sellable_usdc: None,
@@ -824,7 +855,10 @@ fn evaluate_sell_inventory(
     })
 }
 
-fn read_asset_inventory_net_size(snapshot_path: &Path, asset_id: &str) -> Result<Option<f64>, String> {
+fn read_asset_inventory_net_size(
+    snapshot_path: &Path,
+    asset_id: &str,
+) -> Result<Option<f64>, String> {
     let body = fs::read_to_string(snapshot_path)
         .map_err(|error| format!("failed to read {}: {error}", snapshot_path.display()))?;
     let snapshot: Value = serde_json::from_str(&body)
@@ -854,7 +888,12 @@ fn read_asset_inventory_net_size(snapshot_path: &Path, asset_id: &str) -> Result
                     .map(ToString::to_string)
                     .unwrap_or_else(|| value.to_string())
             })
-            .ok_or_else(|| format!("missing net_size for asset {asset_id} in {}", snapshot_path.display()))?
+            .ok_or_else(|| {
+                format!(
+                    "missing net_size for asset {asset_id} in {}",
+                    snapshot_path.display()
+                )
+            })?
             .parse::<f64>()
             .map_err(|error| format!("invalid net_size for asset {asset_id}: {error}"))?;
         return Ok(Some(net_size));
@@ -911,7 +950,8 @@ fn submit_output_contains_prefix(output: &str, prefix: &str) -> bool {
 
 fn extract_metric_string(lines: &[String], key: &str) -> Option<String> {
     let prefix = format!("{key}=");
-    lines.iter()
+    lines
+        .iter()
         .find_map(|line| line.strip_prefix(&prefix).map(ToString::to_string))
 }
 
@@ -933,7 +973,9 @@ fn latest_trade_for_watch<'a>(
     latest_new_tx: Option<&str>,
 ) -> Result<&'a SizedActivity, String> {
     if let Some(latest_new_tx) = latest_new_tx
-        && let Some(activity) = activities.iter().find(|activity| activity.tx == latest_new_tx)
+        && let Some(activity) = activities
+            .iter()
+            .find(|activity| activity.tx == latest_new_tx)
     {
         return Ok(activity);
     }
@@ -1483,7 +1525,8 @@ mod tests {
             usdc_size: 3.5,
         }];
 
-        let decision = decide_condition_sizing(&activities, &activities[0], 10.0, &Options::default());
+        let decision =
+            decide_condition_sizing(&activities, &activities[0], 10.0, &Options::default());
         assert!(!decision.should_follow);
         assert_eq!(decision.decision_tag, "condition_unconfirmed_small_entry");
     }
@@ -1515,7 +1558,8 @@ mod tests {
             },
         ];
 
-        let decision = decide_condition_sizing(&activities, &activities[1], 10.0, &Options::default());
+        let decision =
+            decide_condition_sizing(&activities, &activities[1], 10.0, &Options::default());
         assert!(!decision.should_follow);
         assert_eq!(decision.decision_tag, "condition_hedge_candidate");
         assert!(decision.opposite_outcome_sum_usdc > decision.same_outcome_sum_usdc);
@@ -1548,7 +1592,8 @@ mod tests {
             ..Options::default()
         };
 
-        let decision = evaluate_sell_inventory(&root, &options, &latest, true, 1.0).expect("decision");
+        let decision =
+            evaluate_sell_inventory(&root, &options, &latest, true, 1.0).expect("decision");
         assert!(!decision.should_follow);
         assert_eq!(decision.decision_tag, "sell_without_inventory");
 
@@ -1582,7 +1627,8 @@ mod tests {
             ..Options::default()
         };
 
-        let decision = evaluate_sell_inventory(&root, &options, &latest, true, 1.0).expect("decision");
+        let decision =
+            evaluate_sell_inventory(&root, &options, &latest, true, 1.0).expect("decision");
         assert!(decision.should_follow);
         assert_eq!(decision.decision_tag, "sell_inventory_capped");
         assert_eq!(decision.adjusted_open_usdc, 0.5);
@@ -1759,9 +1805,20 @@ mod tests {
 
         let lines = run_minmax_follow(&options).expect("strategy should succeed");
         assert!(lines.iter().any(|line| line == "latest_tx=0xhedge"));
-        assert!(lines.iter().any(|line| line == "condition_decision=condition_hedge_candidate"));
-        assert!(lines.iter().any(|line| line == "submit_status=skipped_condition_hedge_candidate"));
-        assert!(!forwarded.exists(), "submit should not be invoked for hedge candidate");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "condition_decision=condition_hedge_candidate")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "submit_status=skipped_condition_hedge_candidate")
+        );
+        assert!(
+            !forwarded.exists(),
+            "submit should not be invoked for hedge candidate"
+        );
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
@@ -1831,9 +1888,20 @@ mod tests {
         };
 
         let lines = run_minmax_follow(&options).expect("strategy should succeed");
-        assert!(lines.iter().any(|line| line == "sell_inventory_decision=sell_without_inventory"));
-        assert!(lines.iter().any(|line| line == "submit_status=skipped_sell_without_inventory"));
-        assert!(!forwarded.exists(), "submit should not be invoked when no sell inventory");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "sell_inventory_decision=sell_without_inventory")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "submit_status=skipped_sell_without_inventory")
+        );
+        assert!(
+            !forwarded.exists(),
+            "submit should not be invoked when no sell inventory"
+        );
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
@@ -1903,8 +1971,16 @@ mod tests {
         };
 
         let lines = run_minmax_follow(&options).expect("strategy should succeed");
-        assert!(lines.iter().any(|line| line == "sell_inventory_decision=sell_inventory_capped"));
-        assert!(lines.iter().any(|line| line == "planned_open_usdc=0.250000"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "sell_inventory_decision=sell_inventory_capped")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "planned_open_usdc=0.250000")
+        );
         let args = fs::read_to_string(&forwarded).expect("forwarded args");
         assert!(args.contains("0.250000"));
 
@@ -2223,10 +2299,30 @@ mod tests {
         };
 
         let lines = run_minmax_follow(&options).expect("strategy should succeed");
-        assert!(lines.iter().any(|line| line == "watch_has_new_activity=false"));
-        assert!(lines.iter().any(|line| line == "account_snapshot_refresh_status=ok"));
-        assert!(lines.iter().any(|line| line == "submit_status=skipped_no_new_activity"));
-        assert!(!forwarded.exists(), "submit should not be invoked when no new activity");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "watch_has_new_activity=false")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "account_snapshot_refresh_status=skipped_no_new_activity")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "sell_inventory_decision=skipped_no_new_activity")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "submit_status=skipped_no_new_activity")
+        );
+        assert!(
+            !forwarded.exists(),
+            "submit should not be invoked when no new activity"
+        );
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }
@@ -2296,13 +2392,20 @@ mod tests {
         };
 
         let lines = run_minmax_follow(&options).expect("strategy should succeed");
-        assert!(lines.iter().any(|line| line == "account_snapshot_refresh_status=failed"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "account_snapshot_refresh_status=failed")
+        );
         assert!(
             lines
                 .iter()
                 .any(|line| line == "submit_status=skipped_account_snapshot_refresh_failed")
         );
-        assert!(!forwarded.exists(), "submit should not be invoked when refresh failed");
+        assert!(
+            !forwarded.exists(),
+            "submit should not be invoked when refresh failed"
+        );
 
         fs::remove_dir_all(root).expect("temp dir removed");
     }

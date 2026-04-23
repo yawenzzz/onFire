@@ -92,6 +92,26 @@ struct PreparedOrderDraft {
     effective_usdc_size: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SdkExecutionStyle {
+    Limit,
+    Market,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum SdkAmountPlan {
+    Shares(f64),
+    Usdc(f64),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SdkOrderBuildPlan {
+    side: SdkSide,
+    execution_style: SdkExecutionStyle,
+    price: Option<f64>,
+    amount: SdkAmountPlan,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ExposureSnapshot {
     path: PathBuf,
@@ -394,6 +414,13 @@ fn run_live_submit_gate(options: &Options) -> Result<Vec<String>, String> {
                 .price
                 .map(|value| format!("{value:.8}"))
                 .unwrap_or_default()
+        ),
+        format!(
+            "order_execution_style={}",
+            match sdk_execution_style(options.order_type) {
+                SdkExecutionStyle::Limit => "limit",
+                SdkExecutionStyle::Market => "market",
+            }
         ),
         format!("order_size={:.6}", draft.effective_size),
         format!("order_usdc_size={:.6}", draft.effective_usdc_size),
@@ -829,40 +856,58 @@ async fn preview_live_order_with_sdk_async(
         .asset
         .parse()
         .map_err(|error| format!("invalid activity asset token id {}: {error}", latest.asset))?;
-    let side = sdk_side_from_activity(&latest.side)?;
+    let plan = sdk_order_build_plan(latest, draft, options.order_type)?;
     let order_type = sdk_order_type(options.order_type);
-    let signable_order = match side {
-        SdkSide::Buy => client
-            .market_order()
-            .token_id(token_id)
-            .amount(
-                SdkAmount::usdc(sdk_usdc_amount(draft.effective_usdc_size)?)
+    let signable_order =
+        match (&plan.execution_style, &plan.amount) {
+            (SdkExecutionStyle::Limit, SdkAmountPlan::Shares(size)) => {
+                client
+                    .limit_order()
+                    .token_id(token_id)
+                    .side(plan.side.clone())
+                    .price(sdk_price_amount(plan.price.ok_or_else(|| {
+                        "missing limit price for sdk preview".to_string()
+                    })?)?)
+                    .size(sdk_share_amount(*size).map_err(|error| {
+                        format!("invalid share amount for sdk preview: {error}")
+                    })?)
+                    .order_type(order_type.clone())
+                    .build()
+                    .await
+                    .map_err(|error| format!("sdk limit order preview build failed: {error}"))?
+            }
+            (SdkExecutionStyle::Market, SdkAmountPlan::Usdc(usdc_size)) => client
+                .market_order()
+                .token_id(token_id)
+                .amount(
+                    SdkAmount::usdc(sdk_usdc_amount(*usdc_size).map_err(|error| {
+                        format!("invalid usdc amount for sdk preview: {error}")
+                    })?)
                     .map_err(|error| format!("invalid usdc amount for sdk preview: {error}"))?,
-            )
-            .side(SdkSide::Buy)
-            .order_type(order_type.clone())
-            .build()
-            .await
-            .map_err(|error| format!("sdk market order preview build failed: {error}"))?,
-        SdkSide::Sell => client
-            .market_order()
-            .token_id(token_id)
-            .amount(
-                SdkAmount::shares(sdk_share_amount(draft.effective_size)?)
+                )
+                .side(plan.side.clone())
+                .order_type(order_type.clone())
+                .build()
+                .await
+                .map_err(|error| format!("sdk market order preview build failed: {error}"))?,
+            (SdkExecutionStyle::Market, SdkAmountPlan::Shares(size)) => client
+                .market_order()
+                .token_id(token_id)
+                .amount(
+                    SdkAmount::shares(sdk_share_amount(*size).map_err(|error| {
+                        format!("invalid share amount for sdk preview: {error}")
+                    })?)
                     .map_err(|error| format!("invalid share amount for sdk preview: {error}"))?,
-            )
-            .side(SdkSide::Sell)
-            .order_type(order_type.clone())
-            .build()
-            .await
-            .map_err(|error| format!("sdk market order preview build failed: {error}"))?,
-        _ => {
-            return Err(format!(
-                "unsupported activity side for sdk preview: {}",
-                latest.side
-            ));
-        }
-    };
+                )
+                .side(plan.side.clone())
+                .order_type(order_type.clone())
+                .build()
+                .await
+                .map_err(|error| format!("sdk market order preview build failed: {error}"))?,
+            (SdkExecutionStyle::Limit, SdkAmountPlan::Usdc(_)) => {
+                return Err("limit order preview requires share sizing".to_string());
+            }
+        };
     let order_built_at_unix_ms = current_unix_ms()?;
     let follower_effective_price = effective_price_from_signable_order(&signable_order)?;
     let signed_order = client
@@ -871,10 +916,9 @@ async fn preview_live_order_with_sdk_async(
         .map_err(|error| format!("sdk preview sign failed: {error}"))?;
     let payload_ready_at_unix_ms = current_unix_ms()?;
 
-    let amount_label = match side {
-        SdkSide::Buy => format!("usdc={:.6}", draft.effective_usdc_size),
-        SdkSide::Sell => format!("shares={:.6}", draft.effective_size),
-        _ => unreachable!(),
+    let amount_label = match plan.amount {
+        SdkAmountPlan::Usdc(value) => format!("usdc={value:.6}"),
+        SdkAmountPlan::Shares(value) => format!("shares={value:.6}"),
     };
     let mut metric_lines = build_latency_and_price_lines(
         latest,
@@ -951,44 +995,56 @@ async fn submit_live_order_with_sdk_async(
         .asset
         .parse()
         .map_err(|error| format!("invalid activity asset token id {}: {error}", latest.asset))?;
-    let side = sdk_side_from_activity(&latest.side)?;
+    let plan = sdk_order_build_plan(latest, draft, options.order_type)?;
     let order_type = sdk_order_type(options.order_type);
-    let signable_order = match side {
-        SdkSide::Buy => client
-            .market_order()
+    let signable_order = match (&plan.execution_style, &plan.amount) {
+        (SdkExecutionStyle::Limit, SdkAmountPlan::Shares(size)) => client
+            .limit_order()
             .token_id(token_id)
-            .amount(
-                SdkAmount::usdc(sdk_usdc_amount(draft.effective_usdc_size)?)
-                    .map_err(|error| format!("invalid usdc amount for sdk submit: {error}"))?,
-            )
-            .side(SdkSide::Buy)
-            .order_type(order_type)
-            .build()
-            .await
-            .map_err(|error| format!("sdk market order build failed: {error}"))?,
-        SdkSide::Sell => client
-            .market_order()
-            .token_id(token_id)
-            .amount(
-                SdkAmount::shares(sdk_share_amount(draft.effective_size)?)
+            .side(plan.side.clone())
+            .price(sdk_price_amount(plan.price.ok_or_else(|| {
+                "missing limit price for sdk submit".to_string()
+            })?)?)
+            .size(
+                sdk_share_amount(*size)
                     .map_err(|error| format!("invalid share amount for sdk submit: {error}"))?,
             )
-            .side(SdkSide::Sell)
-            .order_type(order_type)
+            .order_type(order_type.clone())
+            .build()
+            .await
+            .map_err(|error| format!("sdk limit order build failed: {error}"))?,
+        (SdkExecutionStyle::Market, SdkAmountPlan::Usdc(usdc_size)) => client
+            .market_order()
+            .token_id(token_id)
+            .amount(
+                SdkAmount::usdc(
+                    sdk_usdc_amount(*usdc_size)
+                        .map_err(|error| format!("invalid usdc amount for sdk submit: {error}"))?,
+                )
+                .map_err(|error| format!("invalid usdc amount for sdk submit: {error}"))?,
+            )
+            .side(plan.side.clone())
+            .order_type(order_type.clone())
             .build()
             .await
             .map_err(|error| format!("sdk market order build failed: {error}"))?,
-        SdkSide::Unknown => {
-            return Err(format!(
-                "unsupported activity side for sdk submit: {}",
-                latest.side
-            ));
-        }
-        _ => {
-            return Err(format!(
-                "unsupported activity side for sdk submit: {}",
-                latest.side
-            ));
+        (SdkExecutionStyle::Market, SdkAmountPlan::Shares(size)) => client
+            .market_order()
+            .token_id(token_id)
+            .amount(
+                SdkAmount::shares(
+                    sdk_share_amount(*size)
+                        .map_err(|error| format!("invalid share amount for sdk submit: {error}"))?,
+                )
+                .map_err(|error| format!("invalid share amount for sdk submit: {error}"))?,
+            )
+            .side(plan.side.clone())
+            .order_type(order_type.clone())
+            .build()
+            .await
+            .map_err(|error| format!("sdk market order build failed: {error}"))?,
+        (SdkExecutionStyle::Limit, SdkAmountPlan::Usdc(_)) => {
+            return Err("limit order submit requires share sizing".to_string());
         }
     };
     let order_built_at_unix_ms = current_unix_ms()?;
@@ -1079,6 +1135,51 @@ fn sdk_side_from_activity(side: &str) -> Result<SdkSide, String> {
     }
 }
 
+fn sdk_execution_style(order_type: OrderType) -> SdkExecutionStyle {
+    match order_type {
+        OrderType::Gtc | OrderType::Gtd => SdkExecutionStyle::Limit,
+        OrderType::Fok | OrderType::Fak => SdkExecutionStyle::Market,
+    }
+}
+
+fn sdk_order_build_plan(
+    latest: &LatestActivity,
+    draft: &PreparedOrderDraft,
+    order_type: OrderType,
+) -> Result<SdkOrderBuildPlan, String> {
+    let side = sdk_side_from_activity(&latest.side)?;
+    match sdk_execution_style(order_type) {
+        SdkExecutionStyle::Limit => Ok(SdkOrderBuildPlan {
+            side,
+            execution_style: SdkExecutionStyle::Limit,
+            price: Some(
+                latest
+                    .price
+                    .ok_or_else(|| "missing activity price for limit order".to_string())?,
+            ),
+            amount: SdkAmountPlan::Shares(draft.effective_size),
+        }),
+        SdkExecutionStyle::Market => {
+            let amount = match side {
+                SdkSide::Buy => SdkAmountPlan::Usdc(draft.effective_usdc_size),
+                SdkSide::Sell => SdkAmountPlan::Shares(draft.effective_size),
+                _ => {
+                    return Err(format!(
+                        "unsupported activity side for sdk submit: {}",
+                        latest.side
+                    ));
+                }
+            };
+            Ok(SdkOrderBuildPlan {
+                side,
+                execution_style: SdkExecutionStyle::Market,
+                price: None,
+                amount,
+            })
+        }
+    }
+}
+
 fn sdk_submit_error_retryable(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     lower.contains("425 too early")
@@ -1100,9 +1201,7 @@ fn build_latency_and_price_lines(
 ) -> Vec<String> {
     let leader_ts_ms = latest.timestamp.saturating_mul(1000);
     let mut lines = vec![
-        format!(
-            "payload_build_started_at_unix_ms={payload_build_started_at_unix_ms}"
-        ),
+        format!("payload_build_started_at_unix_ms={payload_build_started_at_unix_ms}"),
         format!("follower_effective_price={follower_effective_price:.8}"),
     ];
 
@@ -1286,6 +1385,14 @@ fn sdk_order_type(order_type: OrderType) -> SdkOrderType {
         OrderType::Fok => SdkOrderType::FOK,
         OrderType::Fak => SdkOrderType::FAK,
     }
+}
+
+fn sdk_price_amount(value: f64) -> Result<SdkDecimal, String> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(format!("invalid positive order price: {value}"));
+    }
+    SdkDecimal::from_str(&format!("{value:.8}"))
+        .map_err(|error| format!("invalid order price {value:.8}: {error}"))
 }
 
 fn sdk_usdc_amount(value: f64) -> Result<SdkDecimal, String> {
@@ -1769,10 +1876,11 @@ fn format_root_error(error: RootEnvLoadError) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        LatestActivity, Options, auth_material_with_signer_fallback, decimal_to_fixed_6,
+        LatestActivity, Options, OrderType, PreparedOrderDraft, SdkAmountPlan, SdkExecutionStyle,
+        UnsignedOrderPayload, auth_material_with_signer_fallback, decimal_to_fixed_6,
         effective_funder_address, evaluate_risk_gate, parse_args, read_latest_activity,
-        read_selected_leader_wallet, sdk_share_amount, sdk_submit_error_retryable,
-        unsigned_order_from_activity,
+        read_selected_leader_wallet, sdk_order_build_plan, sdk_share_amount,
+        sdk_submit_error_retryable, unsigned_order_from_activity,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -1784,6 +1892,26 @@ mod tests {
             .expect("time")
             .as_nanos();
         std::env::temp_dir().join(format!("run-copytrader-live-submit-gate-{name}-{suffix}"))
+    }
+
+    fn sample_prepared_order_draft(
+        effective_size: f64,
+        effective_usdc_size: f64,
+    ) -> PreparedOrderDraft {
+        PreparedOrderDraft {
+            unsigned: UnsignedOrderPayload {
+                taker: "0x0000000000000000000000000000000000000000".into(),
+                token_id: "asset-1".into(),
+                maker_amount: "5000000".into(),
+                taker_amount: "10000000".into(),
+                side: "BUY".into(),
+                expiration: "1776303788".into(),
+                nonce: "1776303488".into(),
+                fee_rate_bps: "30".into(),
+            },
+            effective_size,
+            effective_usdc_size,
+        }
     }
 
     #[test]
@@ -1896,6 +2024,79 @@ mod tests {
         assert_eq!(draft.unsigned.maker_amount, "2500000");
         assert_eq!(draft.unsigned.taker_amount, "5000000");
         assert_eq!(draft.effective_usdc_size, 2.5);
+    }
+
+    #[test]
+    fn sdk_order_build_plan_uses_limit_shares_for_gtc_buy() {
+        let latest = LatestActivity {
+            wallet: Some("0x11084005d88A0840b5F38F8731CCa9152BbD99F7".into()),
+            tx: "0xabc".into(),
+            timestamp: 1_776_303_488,
+            price: Some(0.42),
+            side: "BUY".into(),
+            slug: Some("market-a".into()),
+            asset: "asset-1".into(),
+            size: "80".into(),
+            usdc_size: "33.6".into(),
+        };
+        let plan = sdk_order_build_plan(
+            &latest,
+            &sample_prepared_order_draft(8.0, 3.36),
+            OrderType::Gtc,
+        )
+        .expect("gtc plan");
+
+        assert_eq!(plan.execution_style, SdkExecutionStyle::Limit);
+        assert_eq!(plan.amount, SdkAmountPlan::Shares(8.0));
+        assert_eq!(plan.price, Some(0.42));
+    }
+
+    #[test]
+    fn sdk_order_build_plan_uses_market_usdc_for_fak_buy() {
+        let latest = LatestActivity {
+            wallet: Some("0x11084005d88A0840b5F38F8731CCa9152BbD99F7".into()),
+            tx: "0xabc".into(),
+            timestamp: 1_776_303_488,
+            price: Some(0.42),
+            side: "BUY".into(),
+            slug: Some("market-a".into()),
+            asset: "asset-1".into(),
+            size: "80".into(),
+            usdc_size: "33.6".into(),
+        };
+        let plan = sdk_order_build_plan(
+            &latest,
+            &sample_prepared_order_draft(8.0, 3.36),
+            OrderType::Fak,
+        )
+        .expect("fak plan");
+
+        assert_eq!(plan.execution_style, SdkExecutionStyle::Market);
+        assert_eq!(plan.amount, SdkAmountPlan::Usdc(3.36));
+        assert_eq!(plan.price, None);
+    }
+
+    #[test]
+    fn sdk_order_build_plan_requires_price_for_limit_orders() {
+        let latest = LatestActivity {
+            wallet: Some("0x11084005d88A0840b5F38F8731CCa9152BbD99F7".into()),
+            tx: "0xabc".into(),
+            timestamp: 1_776_303_488,
+            price: None,
+            side: "BUY".into(),
+            slug: Some("market-a".into()),
+            asset: "asset-1".into(),
+            size: "80".into(),
+            usdc_size: "33.6".into(),
+        };
+        let error = sdk_order_build_plan(
+            &latest,
+            &sample_prepared_order_draft(8.0, 3.36),
+            OrderType::Gtc,
+        )
+        .expect_err("missing price should fail");
+
+        assert!(error.contains("missing activity price for limit order"));
     }
 
     #[test]
