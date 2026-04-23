@@ -367,6 +367,7 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
                 '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","size":2.0,"usdcSize":1.0,"transactionHash":"0xnew","price":0.5,"side":"BUY","slug":"market-a"}]'
                 % WALLET
             )
+            (activity_root / "seen-tx.txt").write_text("0xnew\n")
 
             watch = log_dir / "watch.sh"
             submit = log_dir / "submit.sh"
@@ -396,6 +397,8 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             )
 
             self.assertFalse((state_root / "last-submitted-tx.txt").exists())
+            seen_after = (activity_root / "seen-tx.txt").read_text()
+            self.assertNotIn("0xnew", seen_after)
         finally:
             shutil.rmtree(log_dir, ignore_errors=True)
             shutil.rmtree(state_root, ignore_errors=True)

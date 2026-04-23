@@ -1986,6 +1986,81 @@ mod tests {
     }
 
     #[test]
+    fn run_minmax_follow_does_not_mark_seen_when_submit_reports_success_false() {
+        let root = unique_temp_dir("submit-success-false-no-seen");
+        fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");
+        let selected_env = root.join(".omx/discovery/selected-leader.env");
+        fs::write(
+            &selected_env,
+            format!("COPYTRADER_DISCOVERY_WALLET={WALLET}\nCOPYTRADER_LEADER_WALLET={WALLET}\n"),
+        )
+        .expect("env written");
+
+        let watch = root.join("watch_copy_leader_activity");
+        write_executable(
+            &watch,
+            &format!(
+                "#!/bin/sh\nmkdir -p '{root}/.omx/live-activity/{wallet}'\ncat > '{root}/.omx/live-activity/{wallet}/latest-activity.json' <<'JSON'\n[\n{{\"proxyWallet\":\"{wallet}\",\"timestamp\":20,\"type\":\"TRADE\",\"asset\":\"asset-1\",\"size\":20.0,\"usdcSize\":10.0,\"transactionHash\":\"0xnew\",\"price\":0.5,\"side\":\"BUY\",\"slug\":\"market-a\"}}\n]\nJSON\nprintf 'watch_user={wallet}\\npoll_transport_mode=direct\\npoll_new_events=1\\nlatest_new_tx=0xnew\\n'\n",
+                root = root.display(),
+                wallet = WALLET
+            ),
+        );
+        let submit = root.join("run_copytrader_live_submit_gate");
+        let submit_calls = root.join("submit-calls.txt");
+        write_executable(
+            &submit,
+            &format!(
+                "#!/bin/sh\nprintf 'called\\n' >> '{submit_calls}'\nprintf 'live_submit_status=submitted\\nsubmit_success=false\\n'\n",
+                submit_calls = submit_calls.display()
+            ),
+        );
+        let account_monitor = root.join("run_copytrader_account_monitor");
+        write_executable(
+            &account_monitor,
+            "#!/bin/sh\nout=''\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--output\" ]; then out=\"$2\"; shift 2; continue; fi\n  shift\n done\nmkdir -p \"$(dirname \"$out\")\"\nprintf '{\"account_snapshot\":{\"positions\":[],\"open_orders\":[]}}' > \"$out\"\n",
+        );
+
+        let options = Options {
+            root: root.display().to_string(),
+            user: Some(WALLET.into()),
+            selected_leader_env: Some(selected_env.display().to_string()),
+            proxy: None,
+            watch_limit: 10,
+            loop_count: 1,
+            forever: false,
+            loop_interval_ms: 0,
+            min_open_usdc: 0.1,
+            max_open_usdc: 10.0,
+            flat_score: 50,
+            max_total_exposure_usdc: Some("100".into()),
+            max_order_usdc: Some("10".into()),
+            account_snapshot: Some("runtime-verify-account/dashboard.json".into()),
+            account_snapshot_max_age_secs: 300,
+            activity_max_age_secs: 60,
+            allow_live_submit: true,
+            force_live_submit: false,
+            ignore_seen_tx: false,
+            activity_source_verified: false,
+            activity_under_budget: false,
+            activity_capability_detected: false,
+            positions_under_budget: false,
+            watch_bin: Some(watch.display().to_string()),
+            live_submit_bin: Some(submit.display().to_string()),
+            account_monitor_bin: Some(account_monitor.display().to_string()),
+        };
+
+        run_minmax_follow(&options).expect("first run should succeed");
+        run_minmax_follow(&options).expect("second run should succeed");
+
+        let calls = fs::read_to_string(&submit_calls).expect("submit calls");
+        assert_eq!(calls.lines().count(), 2);
+        let seen_path = root.join(format!(".omx/minmax-follow/{WALLET}/submitted-tx.txt"));
+        assert!(!seen_path.exists(), "seen file should not be written");
+
+        fs::remove_dir_all(root).expect("temp dir removed");
+    }
+
+    #[test]
     fn run_minmax_follow_does_not_forward_manual_gate_override_flags() {
         let root = unique_temp_dir("no-manual-gate-forward");
         fs::create_dir_all(root.join(".omx/discovery")).expect("dir created");

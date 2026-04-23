@@ -169,6 +169,7 @@ SUBMIT_STDERR="$RUN_DIR/submit.stderr.log"
 SUMMARY="$RUN_DIR/summary.txt"
 LAST_SUBMITTED_TX_FILE="$STATE_ROOT/last-submitted-tx.txt"
 SELECTED_ACTIVITY="$RUN_DIR/latest-activity.selected.json"
+WATCH_SEEN_TX_FILE="$ROOT/.omx/live-activity/$USER_WALLET/seen-tx.txt"
 
 mkdir -p "$STATE_ROOT"
 mkdir -p "$RUN_DIR"
@@ -378,8 +379,26 @@ submit_marks_seen() {
   return 1
 }
 
+remove_watch_seen_tx() {
+  local tx="$1"
+  [[ -n "$tx" ]] || return 0
+  [[ -f "$WATCH_SEEN_TX_FILE" ]] || return 0
+  perl -e '
+    my ($path, $tx) = @ARGV;
+    open my $fh, "<", $path or exit 0;
+    my @lines = grep { defined($_) && $_ ne "" } map { chomp; $_ } <$fh>;
+    close $fh;
+    @lines = grep { $_ ne $tx } @lines;
+    open my $out, ">", $path or exit 1;
+    for my $line (@lines) { print {$out} "$line\n" if length $line; }
+    close $out;
+  ' "$WATCH_SEEN_TX_FILE" "$tx" 2>/dev/null || true
+}
+
 if [[ "$SUBMIT_EXIT" -eq 0 && -n "$LATEST_TX" ]] && submit_marks_seen; then
   printf '%s\n' "$LATEST_TX" > "$LAST_SUBMITTED_TX_FILE"
+elif [[ -n "$LATEST_TX" ]]; then
+  remove_watch_seen_tx "$LATEST_TX"
 fi
 
 metric_from_submit() {
