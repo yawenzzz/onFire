@@ -1920,9 +1920,9 @@ mod tests {
     use super::{
         LatestActivity, Options, OrderType, PreparedOrderDraft, SdkAmountPlan, SdkExecutionStyle,
         UnsignedOrderPayload, auth_material_with_signer_fallback, decimal_to_fixed_6,
-        effective_funder_address, evaluate_risk_gate, parse_args, read_latest_activity,
-        read_selected_leader_wallet, sdk_order_build_plan, sdk_price_amount, sdk_share_amount,
-        sdk_submit_error_retryable, unsigned_order_from_activity,
+        effective_funder_address, evaluate_risk_gate, parse_args, quantize_price_to_scale,
+        read_latest_activity, read_selected_leader_wallet, sdk_order_build_plan, sdk_price_amount,
+        sdk_share_amount, sdk_submit_error_retryable, unsigned_order_from_activity,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -2204,6 +2204,12 @@ mod tests {
     fn sdk_price_amount_trims_trailing_zero_precision() {
         let amount = sdk_price_amount(0.008).expect("price amount");
         assert_eq!(amount.to_string(), "0.008");
+    }
+
+    #[test]
+    fn quantize_price_to_scale_truncates_to_tick_precision() {
+        let quantized = quantize_price_to_scale(0.96300008, 3).expect("quantized");
+        assert!((quantized - 0.963).abs() < 0.0000001);
     }
 
     #[test]
