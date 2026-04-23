@@ -7,7 +7,7 @@ use polymarket_client_sdk::types::Address as SdkAddress;
 use polymarket_client_sdk::{POLYGON, derive_proxy_wallet, derive_safe_wallet};
 use rust_copytrader::adapters::signing::AuthMaterial;
 use rust_copytrader::config::{RootEnvLoadError, is_valid_evm_wallet};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -108,6 +108,7 @@ struct LatencyRecord {
     slug: Option<String>,
     outcome: Option<String>,
     fill_timestamp_source: &'static str,
+    correlation_source: &'static str,
     summary_path: PathBuf,
     run_dir: PathBuf,
     trader_side: Option<String>,
@@ -281,6 +282,26 @@ impl Tracker {
             return Ok(None);
         }
 
+        let correlation_source = if pending.summary.trade_ids.contains(&trade.id) {
+            "trade_id"
+        } else if pending
+            .summary
+            .order_id
+            .as_deref()
+            .is_some_and(|order_id| trade.order_ids.contains(order_id))
+        {
+            "order_id"
+        } else if pending
+            .summary
+            .transaction_hashes
+            .iter()
+            .any(|tx_hash| trade.transaction_hash.as_deref() == Some(tx_hash.as_str()))
+        {
+            "tx_hash"
+        } else {
+            return Ok(None);
+        };
+
         let leader_price = pending
             .summary
             .leader_price
@@ -331,6 +352,7 @@ impl Tracker {
                 .clone()
                 .or_else(|| trade.outcome.clone()),
             fill_timestamp_source: trade.fill_timestamp_source,
+            correlation_source,
             summary_path: pending.summary.summary_path.clone(),
             run_dir: pending.summary.run_dir.clone(),
             trader_side: trade.trader_side.clone(),
@@ -447,11 +469,14 @@ async fn run(options: Options) -> Result<(), String> {
         .log_dir
         .as_ref()
         .map(PathBuf::from)
-        .unwrap_or_else(|| root.join(".omx").join("fill-latency").join(&leader_key));
+        .unwrap_or_else(|| {
+            root.join("logs")
+                .join("copytrade-fill-latency")
+                .join(&leader_key)
+        });
     fs::create_dir_all(&log_dir)
         .map_err(|error| format!("failed to create {}: {error}", log_dir.display()))?;
     let fills_log_path = log_dir.join("fills.log");
-    let fills_jsonl_path = log_dir.join("fills.jsonl");
 
     let material = auth_material_with_signer_fallback(&root)?;
     let credentials = sdk_credentials_from_material(&material)?
@@ -473,10 +498,9 @@ async fn run(options: Options) -> Result<(), String> {
     tracker.seed_existing(existing_summary_paths(&summary_root)?);
 
     println!(
-        "fill_latency_logger_ready user={} fills_log={} fills_jsonl={} summary_root={}",
+        "[info]: fill latency logger started user={} log={} summary_root={}",
         options.user,
         fills_log_path.display(),
-        fills_jsonl_path.display(),
         summary_root.display()
     );
 
@@ -491,7 +515,7 @@ async fn run(options: Options) -> Result<(), String> {
                 for summary in summaries {
                     let records = tracker.ingest_summary(summary)?;
                     for record in records {
-                        emit_record(&record, &fills_log_path, &fills_jsonl_path)?;
+                        emit_record(&record, &fills_log_path)?;
                     }
                 }
             }
@@ -502,13 +526,13 @@ async fn run(options: Options) -> Result<(), String> {
                     WsMessage::Trade(trade) => {
                         let records = tracker.ingest_trade(trade_snapshot_from_ws(&trade)?)?;
                         for record in records {
-                            emit_record(&record, &fills_log_path, &fills_jsonl_path)?;
+                            emit_record(&record, &fills_log_path)?;
                         }
                     }
                     WsMessage::Order(order) => {
                         let records = tracker.ingest_order(order_snapshot_from_ws(&order))?;
                         for record in records {
-                            emit_record(&record, &fills_log_path, &fills_jsonl_path)?;
+                            emit_record(&record, &fills_log_path)?;
                         }
                     }
                     _ => {}
@@ -603,6 +627,13 @@ fn read_summary_context(path: &Path) -> Result<Option<SummaryContext>, String> {
         })?;
     let trade_ids = split_csv(values.get("submit_trade_ids").map(String::as_str));
     let transaction_hashes = split_csv(values.get("submit_transaction_hashes").map(String::as_str));
+    let order_id = values
+        .get("submit_order_id")
+        .cloned()
+        .filter(|value| !value.is_empty());
+    if order_id.is_none() && trade_ids.is_empty() && transaction_hashes.is_empty() {
+        return Ok(None);
+    }
 
     Ok(Some(SummaryContext {
         summary_path: path.to_path_buf(),
@@ -618,10 +649,7 @@ fn read_summary_context(path: &Path) -> Result<Option<SummaryContext>, String> {
             .get("follow_share_size")
             .cloned()
             .or_else(|| values.get("order_size").cloned()),
-        order_id: values
-            .get("submit_order_id")
-            .cloned()
-            .filter(|value| !value.is_empty()),
+        order_id,
         trade_ids,
         transaction_hashes,
         latest_activity,
@@ -736,24 +764,20 @@ fn render_trader_side(side: &TraderSide) -> String {
     format!("{side:?}")
 }
 
-fn emit_record(
-    record: &LatencyRecord,
-    fills_log_path: &Path,
-    fills_jsonl_path: &Path,
-) -> Result<(), String> {
+fn emit_record(record: &LatencyRecord, fills_log_path: &Path) -> Result<(), String> {
     let line = render_human_line(record);
     println!("{line}");
-    append_line(fills_log_path, &line)?;
-    append_line(fills_jsonl_path, &render_json_line(record))?;
-    Ok(())
+    append_line(fills_log_path, &line)
 }
 
 fn render_human_line(record: &LatencyRecord) -> String {
     let mut parts = vec![
-        "fill".to_string(),
+        "[info]:".to_string(),
         format!("latency_ms={}", record.latency_ms),
         format!("leader_ts_ms={}", record.leader_timestamp_ms),
         format!("fill_ts_ms={}", record.fill_timestamp_ms),
+        format!("fill_ts_source={}", record.fill_timestamp_source),
+        format!("corr={}", record.correlation_source),
         format!(
             "leader_price={}",
             render_optional_price(record.leader_price)
@@ -792,35 +816,6 @@ fn render_optional_price(value: Option<f64>) -> String {
 
 fn render_optional_bps(value: Option<f64>) -> String {
     value.map(|value| format!("{value:.4}")).unwrap_or_default()
-}
-
-fn render_json_line(record: &LatencyRecord) -> String {
-    json!({
-        "kind": "fill",
-        "leader_wallet": record.leader_wallet,
-        "leader_tx": record.leader_tx,
-        "leader_timestamp_ms": record.leader_timestamp_ms,
-        "fill_timestamp_ms": record.fill_timestamp_ms,
-        "fill_timestamp_source": record.fill_timestamp_source,
-        "latency_ms": record.latency_ms,
-        "leader_price": record.leader_price,
-        "fill_price": record.fill_price,
-        "price_gap": record.price_gap,
-        "price_gap_bps": record.price_gap_bps,
-        "shares": record.shares,
-        "requested_follow_shares": record.requested_follow_shares,
-        "order_id": record.order_id,
-        "trade_id": record.trade_id,
-        "transaction_hash": record.transaction_hash,
-        "asset_id": record.asset_id,
-        "market_id": record.market_id,
-        "slug": record.slug,
-        "outcome": record.outcome,
-        "summary_path": record.summary_path.display().to_string(),
-        "run_dir": record.run_dir.display().to_string(),
-        "trader_side": record.trader_side,
-    })
-    .to_string()
 }
 
 fn append_line(path: &Path, line: &str) -> Result<(), String> {
@@ -1066,7 +1061,7 @@ mod tests {
             .ingest_trade(sample_trade())
             .expect("trade ingested");
         let line = render_human_line(&records[0]);
-        assert!(line.starts_with("fill latency_ms=1250"));
+        assert!(line.starts_with("[info]: latency_ms=1250"));
         assert!(line.contains("price_gap_bps=200.0000"));
         assert!(line.contains("shares=6.00"));
         assert!(line.contains("leader_tx=0xleader-tx"));

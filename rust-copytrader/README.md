@@ -14,7 +14,7 @@
 # 1) 连续跟单（实时提交）
 bash scripts/run_rust_minmax_follow_live_submit.sh --user <leader_wallet>
 
-# 2) 连续跟单 + 真实成交延时日志
+# 2) 单独启动真实成交延时日志监听（单独终端运行）
 bash scripts/run_rust_minmax_follow_live_submit_latency.sh --user <leader_wallet>
 
 # 3) 单次强制处理 leader 最新动作
@@ -25,7 +25,12 @@ bash scripts/run_rust_follow_last_action_force_live_once.sh --user <leader_walle
 
 ## 1. 目录与输出
 
-运行产物主要在仓库根目录 `.omx/` 下：
+运行产物分两类：
+
+- `.omx/`：内部运行状态、leader activity、submit summary
+- `logs/`：给人直接看的持久化日志
+
+具体来说：
 
 - `.omx/live-activity/<leader_wallet>/`
   - `latest-activity.json`：leader 最新动作
@@ -36,10 +41,8 @@ bash scripts/run_rust_follow_last_action_force_live_once.sh --user <leader_walle
   - `watch.stdout.log` / `submit.stdout.log`
 - `.omx/live-submit/`
   - live submit gate 报告
-- `.omx/fill-latency/<leader_wallet>/`
-  - `.omx/fill-latency/<leader_wallet>/fills.log`：简洁实时成交日志
-  - `.omx/fill-latency/<leader_wallet>/fills.jsonl`：结构化成交日志
-  - `follow.stdout.log` / `follow.stderr.log`
+- `logs/copytrade-fill-latency/<leader_wallet>/`
+  - `logs/copytrade-fill-latency/<leader_wallet>/fills.log`：简洁实时成交日志
 - `.omx/account-monitor/`
   - 账户监控输出
 
@@ -130,18 +133,22 @@ bash scripts/run_rust_minmax_follow_live_submit.sh --user <leader_wallet>
 4. `< 5 shares` 直接跳过
 5. BUY 跟单走 `GTC limit order`
 
-### 3.4 连续跟单 + 实时成交延时日志
+### 3.4 单独跑真实成交延时日志
 
 ```bash
+# 终端 1：主跟单脚本
+bash scripts/run_rust_minmax_follow_live_submit.sh --user <leader_wallet>
+
+# 终端 2：单独的延时统计/logger
 bash scripts/run_rust_minmax_follow_live_submit_latency.sh --user <leader_wallet>
 ```
 
-这是当前最推荐的实盘观察入口。它会同时：
+这条 latency 脚本**不会帮你启动主跟单**，它只做延时/成交统计：
 
-- 跑连续跟单
 - 监听 follower 自己账户 websocket 成交事件
-- 实时输出简洁日志
-- 落文件到 `.omx/fill-latency/<leader_wallet>/`
+- 读取 `.omx/force-live-follow/<leader_wallet>/runs/*/summary.txt` 做精确关联
+- 实时输出 `[info]: ...` 风格的简洁日志
+- 落文件到 `logs/copytrade-fill-latency/<leader_wallet>/fills.log`
 
 注意：这条脚本里的 **fill latency logger 会登录 follower 自己的 authenticated websocket**，所以除了 `--user <leader_wallet>` 之外，还必须在本地 `.env` / `.env.local` 或进程环境里提供 follower 账户的：
 
@@ -150,10 +157,15 @@ bash scripts/run_rust_minmax_follow_live_submit_latency.sh --user <leader_wallet
 - `CLOB_SECRET`
 - `CLOB_PASS_PHRASE`
 
+为了避免“看起来像假的”数据，logger 现在只会在 summary 里存在可核对的 `submit_order_id` / `submit_trade_ids` / `submit_transaction_hashes` 时才记一条 fill；而且每条日志会明确写出：
+
+- `fill_ts_source=matchtime|timestamp|last_update`
+- `corr=trade_id|order_id|tx_hash`
+
 日志形态示例：
 
 ```text
-fill latency_ms=1234 leader_ts_ms=... fill_ts_ms=... leader_price=0.50000000 fill_price=0.50100000 price_gap_bps=20.0000 shares=6.00 requested_shares=6.00 leader_tx=0x... trade_id=...
+[info]: latency_ms=1234 leader_ts_ms=... fill_ts_ms=... fill_ts_source=matchtime corr=order_id leader_price=0.50000000 fill_price=0.50100000 price_gap_bps=20.0000 shares=6.00 requested_shares=6.00 leader_tx=0x... trade_id=...
 ```
 
 ---
@@ -193,8 +205,8 @@ fill latency_ms=1234 leader_ts_ms=... fill_ts_ms=... leader_price=0.50000000 fil
 | 脚本 | 用途 | 常见用法 |
 | --- | --- | --- |
 | `scripts/run_rust_copytrade_latency_report.sh` | 读取现有 summary，输出 submit 路延时报告 | `bash scripts/run_rust_copytrade_latency_report.sh --user <leader_wallet> --source force-live` |
-| `scripts/run_rust_copytrade_fill_latency_logger.sh` | 单独启动 follower 成交 websocket logger | `bash scripts/run_rust_copytrade_fill_latency_logger.sh --user <leader_wallet>` |
-| `scripts/run_rust_minmax_follow_live_submit_latency.sh` | 连续跟单 + 真实成交延时日志的一体化入口 | `bash scripts/run_rust_minmax_follow_live_submit_latency.sh --user <leader_wallet>` |
+| `scripts/run_rust_copytrade_fill_latency_logger.sh` | 低层 Rust logger wrapper，直接启动 follower 成交 websocket logger | `bash scripts/run_rust_copytrade_fill_latency_logger.sh --user <leader_wallet>` |
+| `scripts/run_rust_minmax_follow_live_submit_latency.sh` | 给主跟单配套的独立延时统计脚本（不启动主跟单） | `bash scripts/run_rust_minmax_follow_live_submit_latency.sh --user <leader_wallet>` |
 
 ### E. follower 账户监控相关
 
@@ -254,7 +266,7 @@ fill latency_ms=1234 leader_ts_ms=... fill_ts_ms=... leader_price=0.50000000 fil
 bash scripts/run_rust_minmax_follow_live_submit.sh --user <leader_wallet>
 ```
 
-### 连续自动跟单 + 实时成交延时日志
+### 单独启动真实成交延时日志
 
 ```bash
 bash scripts/run_rust_minmax_follow_live_submit_latency.sh --user <leader_wallet>
@@ -291,16 +303,18 @@ bash scripts/run_rust_account_user_ws.sh --output .omx/account-monitor/user-ws.j
 
 ## 8. 当前建议
 
-如果你现在只保留一个“日常实用入口”，就用：
+如果你现在只保留一套“日常实用组合”，就用这两个分开的终端：
 
 ```bash
+# 终端 1：主跟单
+bash scripts/run_rust_minmax_follow_live_submit.sh --user <leader_wallet>
+
+# 终端 2：延时/logger
 bash scripts/run_rust_minmax_follow_live_submit_latency.sh --user <leader_wallet>
 ```
 
-因为它同时覆盖：
+这样主跟单和延时统计彻底分开：
 
-- 连续跟单
-- 当前持仓过滤
-- limit 跟单
-- 真实成交延时
-- 持久化日志
+- 主跟单只负责跟单
+- latency 脚本只负责真实成交延时/价差统计
+- 持久化日志落在 `logs/copytrade-fill-latency/<leader_wallet>/`

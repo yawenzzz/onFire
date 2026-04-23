@@ -25,10 +25,13 @@ class MainReadmeTests(unittest.TestCase):
             'run_rust_show_account_info.sh',
             'run_rust_account_monitor.sh',
             'run_rust_account_user_ws.sh',
-            '.omx/fill-latency/<leader_wallet>/fills.log',
+            'logs/copytrade-fill-latency/<leader_wallet>/fills.log',
             'leader 动作发生时间 -> follower 真实成交时间',
             'PRIVATE_KEY',
             'CLOB_SECRET',
             'authenticated websocket',
+            '主跟单只负责跟单',
+            '`[info]: ...`',
+            'corr=trade_id|order_id|tx_hash',
         ]:
             self.assertIn(needle, text)

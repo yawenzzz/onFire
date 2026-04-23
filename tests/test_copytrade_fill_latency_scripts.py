@@ -21,26 +21,25 @@ class CopytradeFillLatencyScriptTests(unittest.TestCase):
         self.assertIn('args=(--root "$ROOT" "${args[@]}")', text)
         self.assertIn('"$CARGO_BIN" run --bin run_copytrader_fill_latency_logger -- "${args[@]}"', text)
 
-    def test_live_submit_latency_wrapper_starts_logger_and_redirects_follow_logs(self) -> None:
+    def test_live_submit_latency_wrapper_runs_logger_only_and_uses_logs_dir(self) -> None:
         text = Path("scripts/run_rust_minmax_follow_live_submit_latency.sh").read_text()
-        self.assertIn('FOLLOW_BIN="${FOLLOW_BIN:-$ROOT/scripts/run_rust_minmax_follow_live_submit.sh}"', text)
-        self.assertIn('FILL_LATENCY_LOGGER_BIN="${FILL_LATENCY_LOGGER_BIN:-$ROOT/scripts/run_rust_copytrade_fill_latency_logger.sh}"', text)
-        self.assertIn('bash "$FILL_LATENCY_LOGGER_BIN" --user "$USER_WALLET" --log-dir "$LOG_ROOT" &', text)
-        self.assertIn('bash "$FOLLOW_BIN" "${ARGS[@]}" >>"$FOLLOW_STDOUT_LOG" 2>>"$FOLLOW_STDERR_LOG"', text)
+        self.assertIn('LATENCY_LOGGER_BIN="${LATENCY_LOGGER_BIN:-$ROOT/scripts/run_rust_copytrade_fill_latency_logger.sh}"', text)
+        self.assertIn('LOG_ROOT="${LOG_ROOT:-$ROOT/logs/copytrade-fill-latency/$LEADER_KEY}"', text)
+        self.assertIn('echo "[info]: fill latency logger only"', text)
+        self.assertIn('echo "[info]: log_file=$LOG_ROOT/fills.log"', text)
+        self.assertIn('cmd=(bash "$LATENCY_LOGGER_BIN" --user "$USER_WALLET" --log-dir "$LOG_ROOT")', text)
+        self.assertIn('exec "${cmd[@]}"', text)
+        self.assertNotIn('FOLLOW_BIN="${FOLLOW_BIN', text)
+        self.assertNotIn('follow.stdout.log', text)
 
-    def test_live_submit_latency_wrapper_uses_stubbed_logger_and_follow_bins(self) -> None:
+    def test_live_submit_latency_wrapper_uses_stubbed_logger_only(self) -> None:
         root = Path.cwd()
         with tempfile.TemporaryDirectory(prefix="fill-latency-wrapper-") as tmpdir:
             tmp = Path(tmpdir)
             logger = tmp / "logger.sh"
-            follow = tmp / "follow.sh"
             self._make_exec(
                 logger,
-                "#!/usr/bin/env bash\nprintf 'fill latency_ms=123 price_gap_bps=10.0000 shares=5.00 leader_tx=0xabc trade_id=trade-1\\n'\nsleep 1\n",
-            )
-            self._make_exec(
-                follow,
-                "#!/usr/bin/env bash\nprintf 'follow-stdout\\n'\nprintf 'follow-stderr\\n' >&2\n",
+                "#!/usr/bin/env bash\nprintf '[info]: latency_ms=123 fill_ts_source=matchtime corr=order_id price_gap_bps=10.0000 shares=5.00 leader_tx=0xabc trade_id=trade-1\\n'\n",
             )
 
             completed = subprocess.run(
@@ -53,8 +52,7 @@ class CopytradeFillLatencyScriptTests(unittest.TestCase):
                 cwd=root,
                 env={
                     **os.environ,
-                    "FOLLOW_BIN": str(follow),
-                    "FILL_LATENCY_LOGGER_BIN": str(logger),
+                    "LATENCY_LOGGER_BIN": str(logger),
                     "LOG_ROOT": str(tmp / "latency"),
                 },
                 capture_output=True,
@@ -62,9 +60,8 @@ class CopytradeFillLatencyScriptTests(unittest.TestCase):
                 check=True,
             )
 
-            self.assertIn("live_submit_latency_ready", completed.stdout)
-            self.assertIn("fill latency_ms=123", completed.stdout)
-            self.assertTrue((tmp / "latency" / "follow.stdout.log").exists())
-            self.assertTrue((tmp / "latency" / "follow.stderr.log").exists())
-            self.assertIn("follow-stdout", (tmp / "latency" / "follow.stdout.log").read_text())
-            self.assertIn("follow-stderr", (tmp / "latency" / "follow.stderr.log").read_text())
+            self.assertIn("[info]: fill latency logger only", completed.stdout)
+            self.assertIn("[info]: log_file=", completed.stdout)
+            self.assertIn("run main follow separately", completed.stdout)
+            self.assertIn("[info]: latency_ms=123", completed.stdout)
+            self.assertFalse((tmp / "latency" / "follow.stdout.log").exists())
