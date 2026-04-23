@@ -632,6 +632,87 @@ class FollowLastActionForceLiveOnceE2ETests(unittest.TestCase):
             summary = (run_dir / "summary.txt").read_text()
             self.assertIn("follow_share_size=4.000000", summary)
             self.assertIn("follow_min_open_floor_applied=false", summary)
+            self.assertIn("follow_min_compatible_floor_applied=false", summary)
+            self.assertIn("follow_trigger_reason=follower_holds_asset", summary)
+        finally:
+            shutil.rmtree(log_dir, ignore_errors=True)
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+
+    def test_force_live_once_floors_tiny_add_on_to_min_compatible_share(self) -> None:
+        root = Path.cwd()
+        state_root = root / ".omx" / "force-live-follow" / WALLET
+        activity_root = root / ".omx" / "live-activity" / WALLET
+        log_dir = Path(tempfile.mkdtemp(prefix="force-live-once-add-on-compatible-floor-"))
+        try:
+            shutil.rmtree(state_root, ignore_errors=True)
+            shutil.rmtree(activity_root, ignore_errors=True)
+            activity_root.mkdir(parents=True, exist_ok=True)
+
+            latest_activity = activity_root / "latest-activity.json"
+            latest_activity.write_text(
+                '[{"proxyWallet":"%s","timestamp":20,"type":"TRADE","asset":"asset-1","conditionId":"cond-open","size":0.02,"usdcSize":0.01,"transactionHash":"0xtiny","price":0.5,"side":"BUY","slug":"market-a"}]'
+                % WALLET
+            )
+
+            watch = log_dir / "watch.sh"
+            positions_gate = log_dir / "positions-gate.sh"
+            snapshot = log_dir / "snapshot.sh"
+            snapshot_output = log_dir / "dashboard.json"
+            submit = log_dir / "submit.sh"
+            submit_log = log_dir / "submit-args.txt"
+
+            self._make_exec(
+                watch,
+                "#!/usr/bin/env bash\nprintf 'watch_user=%s\\npoll_new_events=1\\nlatest_new_tx=0xtiny\\n'\n"
+                % WALLET,
+            )
+            self._make_exec(
+                submit,
+                "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > %s\nprintf 'live_submit_status=submitted\\n'\n"
+                % ("%s", submit_log),
+            )
+            self._make_positions_gate_exec(
+                positions_gate,
+                status="skip_existing_event_position",
+                reason="wallet_already_holds_other_outcome_in_event",
+                should_follow=False,
+                target_size="0.020000",
+                other_size="10.000000",
+                total_size="10.020000",
+                response_count="2",
+                event_count="2",
+            )
+            self._make_account_snapshot_exec(
+                snapshot,
+                '{"account_snapshot":{"positions":[{"asset_id":"asset-1","net_size":"1.0","last_price":"0.5","estimated_equity":"0.5"}],"open_orders":[]}}',
+            )
+
+            env = os.environ.copy()
+            env["WATCH_BIN_DEFAULT"] = str(watch)
+            env["POSITIONS_GATE_BIN_DEFAULT"] = str(positions_gate)
+            env["ACCOUNT_SNAPSHOT_BIN_DEFAULT"] = str(snapshot)
+            env["ACCOUNT_SNAPSHOT_PATH"] = str(snapshot_output)
+            env["LIVE_SUBMIT_BIN_DEFAULT"] = str(submit)
+            env["POLYMARKET_CURL_PROXY"] = ""
+
+            completed = subprocess.run(
+                ["bash", "scripts/run_rust_follow_last_action_force_live_once.sh", "--user", WALLET],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            self.assertIn("live_submit_status=submitted", completed.stdout)
+            forwarded = submit_log.read_text()
+            self.assertIn("0.005000", forwarded)
+            run_dir = next((root / ".omx" / "force-live-follow" / WALLET / "runs").iterdir())
+            summary = (run_dir / "summary.txt").read_text()
+            self.assertIn("follow_share_size=0.01", summary)
+            self.assertIn("follow_min_open_floor_applied=false", summary)
+            self.assertIn("follow_min_compatible_floor_applied=true", summary)
             self.assertIn("follow_trigger_reason=follower_holds_asset", summary)
         finally:
             shutil.rmtree(log_dir, ignore_errors=True)

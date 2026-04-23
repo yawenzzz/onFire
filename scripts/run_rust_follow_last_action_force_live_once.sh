@@ -18,6 +18,7 @@ IGNORE_SEEN_TX="${IGNORE_SEEN_TX:-0}"
 REQUIRE_NEW_ACTIVITY="${REQUIRE_NEW_ACTIVITY:-0}"
 FOLLOW_SHARE_DIVISOR="${FOLLOW_SHARE_DIVISOR:-10}"
 MIN_OPEN_SHARES="${MIN_OPEN_SHARES:-5}"
+MIN_COMPATIBLE_SHARES="${MIN_COMPATIBLE_SHARES:-0.01}"
 FOLLOW_ORDER_TYPE="${FOLLOW_ORDER_TYPE:-GTC}"
 POSITIONS_RETRY_COUNT="${POSITIONS_RETRY_COUNT:-4}"
 POSITIONS_RETRY_DELAY_MS="${POSITIONS_RETRY_DELAY_MS:-750}"
@@ -332,6 +333,7 @@ echo "ignore_seen_tx=$IGNORE_SEEN_TX"
 echo "require_new_activity=$REQUIRE_NEW_ACTIVITY"
 echo "follow_share_divisor=$FOLLOW_SHARE_DIVISOR"
 echo "min_open_shares=$MIN_OPEN_SHARES"
+echo "min_compatible_shares=$MIN_COMPATIBLE_SHARES"
 echo "follow_order_type=$FOLLOW_ORDER_TYPE"
 echo "positions_gate_bin=$POSITIONS_GATE_BIN_DEFAULT"
 echo "positions_retry_count=$POSITIONS_RETRY_COUNT"
@@ -482,6 +484,7 @@ FOLLOWER_CURRENT_ASSET_HELD="false"
 FOLLOW_TRIGGER_REASON=""
 FOLLOW_IS_FIRST_OPEN="false"
 FOLLOW_MIN_OPEN_FLOOR_APPLIED="false"
+FOLLOW_MIN_COMPATIBLE_FLOOR_APPLIED="false"
 
 if [[ "$LATEST_ACTIVITY_TYPE" == "TRADE" ]]; then
   set +e
@@ -549,6 +552,10 @@ if [[ "$LATEST_ACTIVITY_TYPE" == "TRADE" ]]; then
     FOLLOW_SHARES="$MIN_OPEN_SHARES"
     FOLLOW_USDC="$(scale_usdc_for_target_shares "${LATEST_ACTIVITY_USDC_SIZE:-0}" "${LATEST_ACTIVITY_SIZE:-0}" "$MIN_OPEN_SHARES")"
     FOLLOW_MIN_OPEN_FLOOR_APPLIED="true"
+  elif [[ -n "$FOLLOW_SHARES" ]] && decimal_lt "$FOLLOW_SHARES" "$MIN_COMPATIBLE_SHARES"; then
+    FOLLOW_SHARES="$MIN_COMPATIBLE_SHARES"
+    FOLLOW_USDC="$(scale_usdc_for_target_shares "${LATEST_ACTIVITY_USDC_SIZE:-0}" "${LATEST_ACTIVITY_SIZE:-0}" "$MIN_COMPATIBLE_SHARES")"
+    FOLLOW_MIN_COMPATIBLE_FLOOR_APPLIED="true"
   fi
 fi
 
@@ -574,11 +581,13 @@ watch_elapsed_ms=$WATCH_ELAPSED_MS
 leader_to_watch_finished_ms=$LEADER_TO_WATCH_FINISHED_MS
 follow_share_divisor=$FOLLOW_SHARE_DIVISOR
 min_open_shares=$MIN_OPEN_SHARES
+min_compatible_shares=$MIN_COMPATIBLE_SHARES
 follower_position_check_status=$FOLLOWER_POSITION_CHECK_STATUS
 follower_current_asset_net_size=$FOLLOWER_CURRENT_ASSET_NET_SIZE
 follower_current_asset_held=$FOLLOWER_CURRENT_ASSET_HELD
 follow_is_first_open=$FOLLOW_IS_FIRST_OPEN
 follow_min_open_floor_applied=$FOLLOW_MIN_OPEN_FLOOR_APPLIED
+follow_min_compatible_floor_applied=$FOLLOW_MIN_COMPATIBLE_FLOOR_APPLIED
 follow_trigger_reason=
 $(metric_from_positions_gate positions_query_status)
 $(metric_from_positions_gate positions_retry_attempts)
@@ -706,12 +715,14 @@ follow_share_divisor=$FOLLOW_SHARE_DIVISOR
 follow_share_size=$FOLLOW_SHARES
 follow_usdc_size=$FOLLOW_USDC
 min_open_shares=$MIN_OPEN_SHARES
+min_compatible_shares=$MIN_COMPATIBLE_SHARES
 follower_snapshot_exit=$FOLLOWER_SNAPSHOT_EXIT
 follower_position_check_status=$FOLLOWER_POSITION_CHECK_STATUS
 follower_current_asset_net_size=$FOLLOWER_CURRENT_ASSET_NET_SIZE
 follower_current_asset_held=$FOLLOWER_CURRENT_ASSET_HELD
 follow_is_first_open=$FOLLOW_IS_FIRST_OPEN
 follow_min_open_floor_applied=$FOLLOW_MIN_OPEN_FLOOR_APPLIED
+follow_min_compatible_floor_applied=$FOLLOW_MIN_COMPATIBLE_FLOOR_APPLIED
 follow_trigger_reason=$FOLLOW_TRIGGER_REASON
 $(metric_from_positions_gate positions_query_status)
 $(metric_from_positions_gate positions_retry_attempts)
