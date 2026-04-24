@@ -22,8 +22,16 @@ use std::process::ExitCode;
 use std::str::FromStr as _;
 use tokio::time::{Duration, sleep};
 
-const DEFAULT_RPC_URL: &str = "https://polygon-rpc.com";
-const POLYGON_USDC: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+const DEFAULT_RPC_URL: &str = "https://polygon.drpc.org";
+const DEFAULT_PUBLIC_RPC_URLS: &[&str] = &[
+    "https://polygon.drpc.org",
+    "https://tenderly.rpc.polygon.community",
+    "https://polygon.publicnode.com",
+    "https://polygon-public.nodies.app",
+    "https://1rpc.io/matic",
+    "https://polygon.api.onfinality.io/public",
+];
+const POLYGON_PUSD: &str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
 const DEFAULT_INTERVAL_SECS: u64 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -459,13 +467,13 @@ fn is_yes_outcome(position: &DataPosition) -> bool {
 }
 
 async fn submit_merge(root: &Path, candidate: &MergeCandidate) -> Result<(String, String), String> {
-    let rpc_urls = rpc_urls_to_try();
+    let rpc_urls = rpc_urls_to_try(root)?;
     let mut last_error = None;
     for rpc_url in rpc_urls {
         match submit_merge_via_rpc(root, candidate, &rpc_url).await {
             Ok(response) => return Ok(response),
             Err(error) => {
-                let retry_default = should_retry_with_default_rpc(&error, &rpc_url);
+                let retry_default = should_try_next_rpc(&error, &rpc_url);
                 last_error = Some(error);
                 if retry_default {
                     continue;
@@ -491,8 +499,8 @@ async fn submit_merge_via_rpc(
         .map_err(|error| format!("failed to connect polygon rpc {rpc_url}: {error}"))?;
     let client = CtfClient::with_neg_risk(provider, POLYGON)
         .map_err(|error| format!("failed to initialize ctf client via {rpc_url}: {error}"))?;
-    let collateral_token = SdkAddress::from_str(POLYGON_USDC)
-        .map_err(|error| format!("invalid USDC address: {error}"))?;
+    let collateral_token = SdkAddress::from_str(POLYGON_PUSD)
+        .map_err(|error| format!("invalid pUSD address: {error}"))?;
     let request = MergePositionsRequest::for_binary_market(
         collateral_token,
         candidate.condition_id,
@@ -512,13 +520,13 @@ async fn submit_redeem(
     root: &Path,
     candidate: &RedeemCandidate,
 ) -> Result<(String, String, &'static str), String> {
-    let rpc_urls = rpc_urls_to_try();
+    let rpc_urls = rpc_urls_to_try(root)?;
     let mut last_error = None;
     for rpc_url in rpc_urls {
         match submit_redeem_via_rpc(root, candidate, &rpc_url).await {
             Ok(response) => return Ok(response),
             Err(error) => {
-                let retry_default = should_retry_with_default_rpc(&error, &rpc_url);
+                let retry_default = should_try_next_rpc(&error, &rpc_url);
                 last_error = Some(error);
                 if retry_default {
                     continue;
@@ -544,8 +552,8 @@ async fn submit_redeem_via_rpc(
         .map_err(|error| format!("failed to connect polygon rpc {rpc_url}: {error}"))?;
     let client = CtfClient::with_neg_risk(provider, POLYGON)
         .map_err(|error| format!("failed to initialize ctf client via {rpc_url}: {error}"))?;
-    let collateral_token = SdkAddress::from_str(POLYGON_USDC)
-        .map_err(|error| format!("invalid USDC address: {error}"))?;
+    let collateral_token = SdkAddress::from_str(POLYGON_PUSD)
+        .map_err(|error| format!("invalid pUSD address: {error}"))?;
 
     if candidate.negative_risk {
         let request = RedeemNegRiskRequest::builder()
@@ -578,35 +586,71 @@ async fn submit_redeem_via_rpc(
     }
 }
 
-fn rpc_urls_to_try() -> Vec<String> {
-    let configured = env::var("POLYGON_RPC_URL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+fn rpc_urls_to_try(root: &Path) -> Result<Vec<String>, String> {
+    let env_map = merged_env(root)?;
+    let mut urls = Vec::<String>::new();
 
-    match configured {
-        Some(url) if url != DEFAULT_RPC_URL => vec![url, DEFAULT_RPC_URL.to_string()],
-        Some(url) => vec![url],
-        None => vec![DEFAULT_RPC_URL.to_string()],
+    if let Some(list) = env_map.get("POLYGON_RPC_URLS") {
+        for value in split_rpc_list(list) {
+            push_rpc_url(&mut urls, value);
+        }
     }
+    if let Some(value) = env_map.get("POLYGON_RPC_URL") {
+        push_rpc_url(&mut urls, value);
+    }
+    for value in DEFAULT_PUBLIC_RPC_URLS {
+        push_rpc_url(&mut urls, value);
+    }
+    if urls.is_empty() {
+        push_rpc_url(&mut urls, DEFAULT_RPC_URL);
+    }
+    Ok(urls)
 }
 
-fn should_retry_with_default_rpc(error: &str, attempted_rpc_url: &str) -> bool {
-    if attempted_rpc_url == DEFAULT_RPC_URL {
-        return false;
+fn split_rpc_list(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split(|ch: char| ch == ',' || ch == ';' || ch.is_ascii_whitespace())
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+}
+
+fn push_rpc_url(urls: &mut Vec<String>, value: &str) {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        return;
     }
+    if urls.iter().any(|existing| existing == normalized) {
+        return;
+    }
+    urls.push(normalized.to_string());
+}
+
+fn should_try_next_rpc(error: &str, attempted_rpc_url: &str) -> bool {
     let error = error.to_ascii_lowercase();
-    [
+    let retriable = [
         "api key disabled",
         "tenant disabled",
         "http error 401",
+        "http error 403",
         "rest code: 403",
         "unauthorized",
         "forbidden",
         "invalid api key",
+        "failed to connect polygon rpc",
+        "connection reset",
+        "connect timeout",
+        "timed out",
+        "429",
+        "rate limit",
     ]
     .iter()
-    .any(|needle| error.contains(needle))
+    .any(|needle| error.contains(needle));
+    retriable
+        && attempted_rpc_url
+            != DEFAULT_PUBLIC_RPC_URLS
+                .last()
+                .copied()
+                .unwrap_or(DEFAULT_RPC_URL)
 }
 
 fn private_key_signer(root: &Path) -> Result<PrivateKeySigner, String> {
@@ -770,9 +814,9 @@ fn format_root_error(error: RootEnvLoadError) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_RPC_URL, MergeCandidate, Options, RedeemCandidate, build_merge_candidates,
-        build_redeem_candidates, decimal_to_fixed_6, format_amount, parse_args, rpc_urls_to_try,
-        should_retry_with_default_rpc,
+        DEFAULT_PUBLIC_RPC_URLS, DEFAULT_RPC_URL, MergeCandidate, Options, RedeemCandidate,
+        build_merge_candidates, build_redeem_candidates, decimal_to_fixed_6, format_amount,
+        parse_args, push_rpc_url, rpc_urls_to_try, should_try_next_rpc, split_rpc_list,
     };
     use polymarket_client_sdk::data::types::response::Position as DataPosition;
     use polymarket_client_sdk::types::{Address as SdkAddress, B256, Decimal as SdkDecimal, U256};
@@ -895,32 +939,65 @@ mod tests {
 
     #[test]
     fn rpc_urls_to_try_falls_back_to_default_when_custom_url_is_present() {
+        let root = std::env::temp_dir();
         unsafe {
             env::set_var("POLYGON_RPC_URL", "https://rpc.example.invalid/key");
         }
-        let urls = rpc_urls_to_try();
-        assert_eq!(
-            urls,
-            vec![
-                "https://rpc.example.invalid/key".to_string(),
-                DEFAULT_RPC_URL.to_string()
-            ]
-        );
+        let urls = rpc_urls_to_try(&root).expect("urls");
+        assert_eq!(urls[0], "https://rpc.example.invalid/key");
+        assert!(urls.iter().any(|url| url == DEFAULT_RPC_URL));
+        assert!(urls.iter().any(|url| url == DEFAULT_PUBLIC_RPC_URLS[1]));
         unsafe {
             env::remove_var("POLYGON_RPC_URL");
         }
     }
 
     #[test]
-    fn should_retry_with_default_rpc_matches_disabled_rpc_tenant_errors() {
-        assert!(should_retry_with_default_rpc(
+    fn should_try_next_rpc_matches_disabled_rpc_tenant_errors() {
+        assert!(should_try_next_rpc(
             r#"failed to redeem positions via https://rpc.example: HTTP error 401 with body: {"error":"message: API key disabled, reason: tenant disabled, json-rpc code: -32051, rest code: 403"}"#,
             "https://rpc.example"
         ));
-        assert!(!should_retry_with_default_rpc(
-            "failed to redeem positions via https://polygon-rpc.com: execution reverted",
+        assert!(should_try_next_rpc(
+            "failed to connect polygon rpc https://rpc.example: connection reset by peer",
+            "https://rpc.example"
+        ));
+        assert!(!should_try_next_rpc(
+            "failed to redeem positions via https://polygon.drpc.org: execution reverted",
             DEFAULT_RPC_URL
         ));
+    }
+
+    #[test]
+    fn split_rpc_list_accepts_commas_semicolons_and_spaces() {
+        let values = split_rpc_list(
+            "https://a.example, https://b.example;https://c.example  https://d.example",
+        )
+        .collect::<Vec<_>>();
+        assert_eq!(
+            values,
+            vec![
+                "https://a.example",
+                "https://b.example",
+                "https://c.example",
+                "https://d.example"
+            ]
+        );
+    }
+
+    #[test]
+    fn push_rpc_url_deduplicates_entries() {
+        let mut urls = Vec::new();
+        push_rpc_url(&mut urls, "https://polygon.drpc.org");
+        push_rpc_url(&mut urls, "https://polygon.drpc.org");
+        push_rpc_url(&mut urls, "  https://polygon.publicnode.com  ");
+        assert_eq!(
+            urls,
+            vec![
+                "https://polygon.drpc.org".to_string(),
+                "https://polygon.publicnode.com".to_string(),
+            ]
+        );
     }
     #[test]
     fn build_redeem_candidates_groups_by_condition() {
