@@ -1,6 +1,9 @@
+use alloy::primitives::Bytes as AlloyBytes;
 use alloy::providers::ProviderBuilder;
 use alloy::signers::Signer as _;
 use alloy::signers::local::PrivateKeySigner;
+use alloy::sol;
+use alloy::sol_types::SolCall;
 use polymarket_client_sdk::POLYGON;
 use polymarket_client_sdk::auth::LocalSigner;
 use polymarket_client_sdk::ctf::Client as CtfClient;
@@ -32,7 +35,39 @@ const DEFAULT_PUBLIC_RPC_URLS: &[&str] = &[
     "https://polygon.api.onfinality.io/public",
 ];
 const POLYGON_PUSD: &str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
+const POLYGON_CTF: &str = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
+const POLYGON_NEG_RISK_ADAPTER: &str = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296";
+const POLYGON_PROXY_FACTORY: &str = "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052";
 const DEFAULT_INTERVAL_SECS: u64 = 30;
+
+sol! {
+    struct ProxyCall {
+        uint8 typeCode;
+        address to;
+        uint256 value;
+        bytes data;
+    }
+
+    #[sol(rpc)]
+    interface IProxyWalletFactory {
+        function proxy(ProxyCall[] calls) external payable returns (bytes[] returnValues);
+    }
+
+    #[sol(rpc)]
+    interface IERC1155Lite {
+        function setApprovalForAll(address operator, bool approved) external;
+        function isApprovedForAll(address account, address operator) external view returns (bool);
+    }
+
+    interface IConditionalTokensLite {
+        function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets) external;
+        function mergePositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] partition, uint256 amount) external;
+    }
+
+    interface INegRiskAdapterLite {
+        function redeemPositions(bytes32 conditionId, uint256[] amounts) external;
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Options {
@@ -88,6 +123,8 @@ struct ExecutionProfile {
     has_clob_l2_auth: bool,
     has_relayer_api_auth: bool,
     has_builder_api_auth: bool,
+    signer_address: Option<String>,
+    effective_account_address: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,7 +260,7 @@ async fn run(options: &Options) -> Result<(), String> {
     let user = SdkAddress::from_str(&account_address)
         .map_err(|error| format!("invalid effective account address {account_address}: {error}"))?;
     let client = SdkDataClient::default();
-    let execution_profile = resolve_execution_profile(&root, &material, &options)?;
+    let execution_profile = resolve_execution_profile(&root, &material, options)?;
 
     let mut iteration = 0usize;
     loop {
@@ -538,7 +575,7 @@ async fn submit_merge(
     let rpc_urls = rpc_urls_to_try(root)?;
     let mut last_error = None;
     for rpc_url in rpc_urls {
-        match submit_merge_via_rpc(root, candidate, &rpc_url).await {
+        match submit_merge_via_rpc(root, execution_profile, candidate, &rpc_url).await {
             Ok(response) => return Ok(response),
             Err(error) => {
                 let retry_default = should_try_next_rpc(&error, &rpc_url);
@@ -556,6 +593,7 @@ async fn submit_merge(
 
 async fn submit_merge_via_rpc(
     root: &Path,
+    execution_profile: &ExecutionProfile,
     candidate: &MergeCandidate,
     rpc_url: &str,
 ) -> Result<(String, String), String> {
@@ -565,6 +603,10 @@ async fn submit_merge_via_rpc(
         .connect(rpc_url)
         .await
         .map_err(|error| format!("failed to connect polygon rpc {rpc_url}: {error}"))?;
+    if execution_profile.wallet_kind == WalletKind::Proxy {
+        return submit_merge_via_proxy_factory(provider, execution_profile, candidate, rpc_url)
+            .await;
+    }
     let client = CtfClient::with_neg_risk(provider, POLYGON)
         .map_err(|error| format!("failed to initialize ctf client via {rpc_url}: {error}"))?;
     let collateral_token = SdkAddress::from_str(POLYGON_PUSD)
@@ -574,10 +616,12 @@ async fn submit_merge_via_rpc(
         candidate.condition_id,
         U256::from(candidate.merge_micros),
     );
-    let response = client
-        .merge_positions(&request)
-        .await
-        .map_err(|error| format!("failed to merge positions via {rpc_url}: {error}"))?;
+    let response = client.merge_positions(&request).await.map_err(|error| {
+        enrich_direct_rpc_error(
+            &format!("failed to merge positions via {rpc_url}: {error}"),
+            execution_profile,
+        )
+    })?;
     Ok((
         response.transaction_hash.to_string(),
         response.block_number.to_string(),
@@ -595,7 +639,7 @@ async fn submit_redeem(
     let rpc_urls = rpc_urls_to_try(root)?;
     let mut last_error = None;
     for rpc_url in rpc_urls {
-        match submit_redeem_via_rpc(root, candidate, &rpc_url).await {
+        match submit_redeem_via_rpc(root, execution_profile, candidate, &rpc_url).await {
             Ok(response) => return Ok(response),
             Err(error) => {
                 let retry_default = should_try_next_rpc(&error, &rpc_url);
@@ -613,6 +657,7 @@ async fn submit_redeem(
 
 async fn submit_redeem_via_rpc(
     root: &Path,
+    execution_profile: &ExecutionProfile,
     candidate: &RedeemCandidate,
     rpc_url: &str,
 ) -> Result<(String, String, &'static str), String> {
@@ -622,12 +667,17 @@ async fn submit_redeem_via_rpc(
         .connect(rpc_url)
         .await
         .map_err(|error| format!("failed to connect polygon rpc {rpc_url}: {error}"))?;
-    let client = CtfClient::with_neg_risk(provider, POLYGON)
+    if execution_profile.wallet_kind == WalletKind::Proxy {
+        return submit_redeem_via_proxy_factory(provider, execution_profile, candidate, rpc_url)
+            .await;
+    }
+    let client = CtfClient::with_neg_risk(provider.clone(), POLYGON)
         .map_err(|error| format!("failed to initialize ctf client via {rpc_url}: {error}"))?;
     let collateral_token = SdkAddress::from_str(POLYGON_PUSD)
         .map_err(|error| format!("invalid pUSD address: {error}"))?;
 
     if candidate.negative_risk {
+        ensure_neg_risk_operator_approval_direct(provider, execution_profile, rpc_url).await?;
         let request = RedeemNegRiskRequest::builder()
             .condition_id(candidate.condition_id)
             .amounts(vec![
@@ -636,7 +686,10 @@ async fn submit_redeem_via_rpc(
             ])
             .build();
         let response = client.redeem_neg_risk(&request).await.map_err(|error| {
-            format!("failed to redeem neg-risk position via {rpc_url}: {error}")
+            enrich_direct_rpc_error(
+                &format!("failed to redeem neg-risk position via {rpc_url}: {error}"),
+                execution_profile,
+            )
         })?;
         Ok((
             response.transaction_hash.to_string(),
@@ -646,16 +699,308 @@ async fn submit_redeem_via_rpc(
     } else {
         let request =
             RedeemPositionsRequest::for_binary_market(collateral_token, candidate.condition_id);
-        let response = client
-            .redeem_positions(&request)
-            .await
-            .map_err(|error| format!("failed to redeem positions via {rpc_url}: {error}"))?;
+        let response = client.redeem_positions(&request).await.map_err(|error| {
+            enrich_direct_rpc_error(
+                &format!("failed to redeem positions via {rpc_url}: {error}"),
+                execution_profile,
+            )
+        })?;
         Ok((
             response.transaction_hash.to_string(),
             response.block_number.to_string(),
             "redeem_positions",
         ))
     }
+}
+
+async fn submit_merge_via_proxy_factory<P>(
+    provider: P,
+    execution_profile: &ExecutionProfile,
+    candidate: &MergeCandidate,
+    rpc_url: &str,
+) -> Result<(String, String), String>
+where
+    P: alloy::providers::Provider + Clone,
+{
+    let proxy_factory = IProxyWalletFactory::new(
+        SdkAddress::from_str(POLYGON_PROXY_FACTORY)
+            .map_err(|error| format!("invalid proxy factory address: {error}"))?,
+        provider.clone(),
+    );
+    let calldata = IConditionalTokensLite::mergePositionsCall {
+        collateralToken: SdkAddress::from_str(POLYGON_PUSD)
+            .map_err(|error| format!("invalid pUSD address: {error}"))?,
+        parentCollectionId: B256::ZERO,
+        conditionId: candidate.condition_id,
+        partition: vec![U256::from(1_u8), U256::from(2_u8)],
+        amount: U256::from(candidate.merge_micros),
+    }
+    .abi_encode();
+    let response = proxy_factory
+        .proxy(vec![ProxyCall {
+            typeCode: 1,
+            to: SdkAddress::from_str(POLYGON_CTF)
+                .map_err(|error| format!("invalid CTF address: {error}"))?,
+            value: U256::ZERO,
+            data: AlloyBytes::from(calldata),
+        }])
+        .send()
+        .await
+        .map_err(|error| {
+            enrich_direct_rpc_error(
+                &format!("failed to execute proxy merge via {rpc_url}: {error}"),
+                execution_profile,
+            )
+        })?;
+    let tx_hash = response.tx_hash().to_string();
+    let receipt = response.get_receipt().await.map_err(|error| {
+        enrich_direct_rpc_error(
+            &format!("failed to confirm proxy merge via {rpc_url}: {error}"),
+            execution_profile,
+        )
+    })?;
+    Ok((
+        tx_hash,
+        receipt.block_number.unwrap_or_default().to_string(),
+    ))
+}
+
+async fn submit_redeem_via_proxy_factory<P>(
+    provider: P,
+    execution_profile: &ExecutionProfile,
+    candidate: &RedeemCandidate,
+    rpc_url: &str,
+) -> Result<(String, String, &'static str), String>
+where
+    P: alloy::providers::Provider + Clone,
+{
+    let proxy_factory = IProxyWalletFactory::new(
+        SdkAddress::from_str(POLYGON_PROXY_FACTORY)
+            .map_err(|error| format!("invalid proxy factory address: {error}"))?,
+        provider.clone(),
+    );
+    let (target, calldata, method) = if candidate.negative_risk {
+        ensure_neg_risk_operator_approval_proxy(provider.clone(), execution_profile, rpc_url)
+            .await?;
+        (
+            SdkAddress::from_str(POLYGON_NEG_RISK_ADAPTER)
+                .map_err(|error| format!("invalid neg risk adapter address: {error}"))?,
+            INegRiskAdapterLite::redeemPositionsCall {
+                conditionId: candidate.condition_id,
+                amounts: vec![
+                    U256::from(candidate.yes_micros),
+                    U256::from(candidate.no_micros),
+                ],
+            }
+            .abi_encode(),
+            "redeem_neg_risk",
+        )
+    } else {
+        (
+            SdkAddress::from_str(POLYGON_CTF)
+                .map_err(|error| format!("invalid CTF address: {error}"))?,
+            IConditionalTokensLite::redeemPositionsCall {
+                collateralToken: SdkAddress::from_str(POLYGON_PUSD)
+                    .map_err(|error| format!("invalid pUSD address: {error}"))?,
+                parentCollectionId: B256::ZERO,
+                conditionId: candidate.condition_id,
+                indexSets: vec![U256::from(1_u8), U256::from(2_u8)],
+            }
+            .abi_encode(),
+            "redeem_positions",
+        )
+    };
+    let response = proxy_factory
+        .proxy(vec![ProxyCall {
+            typeCode: 1,
+            to: target,
+            value: U256::ZERO,
+            data: AlloyBytes::from(calldata),
+        }])
+        .send()
+        .await
+        .map_err(|error| {
+            enrich_direct_rpc_error(
+                &format!("failed to execute proxy redeem via {rpc_url}: {error}"),
+                execution_profile,
+            )
+        })?;
+    let tx_hash = response.tx_hash().to_string();
+    let receipt = response.get_receipt().await.map_err(|error| {
+        enrich_direct_rpc_error(
+            &format!("failed to confirm proxy redeem via {rpc_url}: {error}"),
+            execution_profile,
+        )
+    })?;
+    Ok((
+        tx_hash,
+        receipt.block_number.unwrap_or_default().to_string(),
+        method,
+    ))
+}
+
+async fn ensure_neg_risk_operator_approval_proxy<P>(
+    provider: P,
+    execution_profile: &ExecutionProfile,
+    rpc_url: &str,
+) -> Result<(), String>
+where
+    P: alloy::providers::Provider + Clone,
+{
+    let owner = proxy_owner_address(execution_profile)?;
+    let operator = SdkAddress::from_str(POLYGON_NEG_RISK_ADAPTER)
+        .map_err(|error| format!("invalid neg risk adapter address: {error}"))?;
+    let ctf = IERC1155Lite::new(
+        SdkAddress::from_str(POLYGON_CTF)
+            .map_err(|error| format!("invalid CTF address: {error}"))?,
+        provider.clone(),
+    );
+    let approved = ctf
+        .isApprovedForAll(owner, operator)
+        .call()
+        .await
+        .map_err(|error| format!("failed to check CTF operator approval via {rpc_url}: {error}"))?;
+    if approved {
+        return Ok(());
+    }
+    let proxy_factory = IProxyWalletFactory::new(
+        SdkAddress::from_str(POLYGON_PROXY_FACTORY)
+            .map_err(|error| format!("invalid proxy factory address: {error}"))?,
+        provider,
+    );
+    let calldata = IERC1155Lite::setApprovalForAllCall {
+        operator,
+        approved: true,
+    }
+    .abi_encode();
+    let response = proxy_factory
+        .proxy(vec![ProxyCall {
+            typeCode: 1,
+            to: SdkAddress::from_str(POLYGON_CTF)
+                .map_err(|error| format!("invalid CTF address: {error}"))?,
+            value: U256::ZERO,
+            data: AlloyBytes::from(calldata),
+        }])
+        .send()
+        .await
+        .map_err(|error| {
+            enrich_direct_rpc_error(
+                &format!("failed to approve neg-risk operator via proxy on {rpc_url}: {error}"),
+                execution_profile,
+            )
+        })?;
+    let tx_hash = response.tx_hash().to_string();
+    let receipt = response.get_receipt().await.map_err(|error| {
+        enrich_direct_rpc_error(
+            &format!(
+                "failed to confirm neg-risk operator approval via proxy on {rpc_url}: {error}"
+            ),
+            execution_profile,
+        )
+    })?;
+    println!(
+        "[info]: operator approval submitted operator={} wallet_kind={} tx_hash={} block_number={}",
+        operator,
+        execution_profile.wallet_kind.label(),
+        tx_hash,
+        receipt.block_number.unwrap_or_default(),
+    );
+    Ok(())
+}
+
+async fn ensure_neg_risk_operator_approval_direct<P>(
+    provider: P,
+    execution_profile: &ExecutionProfile,
+    rpc_url: &str,
+) -> Result<(), String>
+where
+    P: alloy::providers::Provider + Clone,
+{
+    let owner = direct_owner_address(execution_profile)?;
+    let operator = SdkAddress::from_str(POLYGON_NEG_RISK_ADAPTER)
+        .map_err(|error| format!("invalid neg risk adapter address: {error}"))?;
+    let ctf = IERC1155Lite::new(
+        SdkAddress::from_str(POLYGON_CTF)
+            .map_err(|error| format!("invalid CTF address: {error}"))?,
+        provider.clone(),
+    );
+    let approved = ctf
+        .isApprovedForAll(owner, operator)
+        .call()
+        .await
+        .map_err(|error| format!("failed to check CTF operator approval via {rpc_url}: {error}"))?;
+    if approved {
+        return Ok(());
+    }
+    let response = ctf
+        .setApprovalForAll(operator, true)
+        .send()
+        .await
+        .map_err(|error| {
+            enrich_direct_rpc_error(
+                &format!("failed to approve neg-risk operator via {rpc_url}: {error}"),
+                execution_profile,
+            )
+        })?;
+    let tx_hash = response.tx_hash().to_string();
+    let receipt = response.get_receipt().await.map_err(|error| {
+        enrich_direct_rpc_error(
+            &format!("failed to confirm neg-risk operator approval via {rpc_url}: {error}"),
+            execution_profile,
+        )
+    })?;
+    println!(
+        "[info]: operator approval submitted operator={} wallet_kind={} tx_hash={} block_number={}",
+        operator,
+        execution_profile.wallet_kind.label(),
+        tx_hash,
+        receipt.block_number.unwrap_or_default(),
+    );
+    Ok(())
+}
+
+fn direct_owner_address(execution_profile: &ExecutionProfile) -> Result<SdkAddress, String> {
+    execution_profile
+        .signer_address
+        .as_deref()
+        .ok_or_else(|| "missing signer address for direct operator approval".to_string())
+        .and_then(|value| {
+            SdkAddress::from_str(value).map_err(|error| format!("invalid signer address: {error}"))
+        })
+}
+
+fn proxy_owner_address(execution_profile: &ExecutionProfile) -> Result<SdkAddress, String> {
+    execution_profile
+        .effective_account_address
+        .as_deref()
+        .ok_or_else(|| "missing proxy wallet address for operator approval".to_string())
+        .and_then(|value| {
+            SdkAddress::from_str(value)
+                .map_err(|error| format!("invalid proxy wallet address: {error}"))
+        })
+}
+
+fn enrich_direct_rpc_error(error: &str, execution_profile: &ExecutionProfile) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("insufficient funds for gas") {
+        let signer = execution_profile
+            .signer_address
+            .as_deref()
+            .unwrap_or("unknown_signer");
+        let owner = execution_profile
+            .effective_account_address
+            .as_deref()
+            .unwrap_or("unknown_account");
+        return format!(
+            "{error}; direct_rpc pays gas from signer {signer} while the positions sit on {owner}. Fund the signer with POL/MATIC or switch to relayer gasless execution for proxy wallets"
+        );
+    }
+    if lower.contains("erc1155: need operator approval") {
+        return format!(
+            "{error}; neg-risk redeem requires CTF setApprovalForAll for operator {POLYGON_NEG_RISK_ADAPTER}. The sweeper now auto-attempts that approval in direct_rpc mode, so if this persists the approval transaction itself likely failed or the wallet type requires relayer execution"
+        );
+    }
+    error.to_string()
 }
 
 fn rpc_urls_to_try(root: &Path) -> Result<Vec<String>, String> {
@@ -819,6 +1164,8 @@ fn resolve_execution_profile(
         has_clob_l2_auth,
         has_relayer_api_auth,
         has_builder_api_auth,
+        signer_address: Some(material.poly_address.clone()),
+        effective_account_address: effective_funder_address(material)?,
     })
 }
 
