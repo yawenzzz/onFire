@@ -25,6 +25,7 @@ class MainReadmeTests(unittest.TestCase):
             'run_rust_show_account_info.sh',
             'run_rust_account_monitor.sh',
             'run_rust_account_user_ws.sh',
+            'run_rust_account_sweeper.sh',
             'logs/copytrade-fill-latency/<leader_wallet>/fills.log',
             'leader 动作发生时间 -> follower 真实成交时间',
             'PRIVATE_KEY',
@@ -33,5 +34,8 @@ class MainReadmeTests(unittest.TestCase):
             '主跟单只负责跟单',
             '`[info]: ...`',
             'corr=trade_id|order_id|tx_hash',
+            'logs/account-sweeper/account-sweeper.log',
+            '账户资金回收',
+            'ALLOW_LIVE_SUBMIT=0 bash scripts/run_rust_account_sweeper.sh --max-iterations 1',
         ]:
             self.assertIn(needle, text)

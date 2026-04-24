@@ -216,6 +216,24 @@ bash scripts/run_rust_minmax_follow_live_submit_latency.sh --user <leader_wallet
 | `scripts/run_rust_account_monitor.sh` | 持续轮询 follower 账户状态 | `bash scripts/run_rust_account_monitor.sh --output .omx/account-monitor/latest.json` |
 | `scripts/run_rust_account_user_ws.sh` | 监听 follower 自己账户 websocket 事件 | `bash scripts/run_rust_account_user_ws.sh --output .omx/account-monitor/user-ws.json` |
 
+### F. 账户资金回收 / merge / redeem 相关
+
+| 脚本 | 用途 | 常见用法 |
+| --- | --- | --- |
+| `scripts/run_rust_account_sweeper.sh` | 独立扫自己的账户；能 merge 就 merge，需要 redeem 就 redeem | `bash scripts/run_rust_account_sweeper.sh` |
+
+默认日志文件：
+
+```text
+logs/account-sweeper/account-sweeper.log
+```
+
+这个脚本和主跟单是**独立进程**：
+
+- 不会帮你启动主跟单
+- 不会改主跟单的轮询/提交逻辑
+- 可以单独长期挂着做资金回收
+
 ---
 
 ## 5. 关键行为说明
@@ -290,6 +308,18 @@ bash scripts/run_rust_copytrade_latency_report.sh --user <leader_wallet> --sourc
 bash scripts/run_rust_account_user_ws.sh --output .omx/account-monitor/user-ws.json
 ```
 
+### 独立跑账户 merge / redeem sweeper
+
+```bash
+bash scripts/run_rust_account_sweeper.sh
+```
+
+如果你想先只看预览，不实际发链上交易：
+
+```bash
+ALLOW_LIVE_SUBMIT=0 bash scripts/run_rust_account_sweeper.sh --max-iterations 1
+```
+
 ---
 
 ## 7. 补充文档
@@ -297,6 +327,7 @@ bash scripts/run_rust_account_user_ws.sh --output .omx/account-monitor/user-ws.j
 如果你要看更细的专项文档：
 
 - 账户监控：`rust-copytrader/ACCOUNT_MONITOR.md`
+- 账户资金回收：`rust-copytrader/ACCOUNT_SWEEPER.md`
 - submit 路延时字段：`rust-copytrader/COPYTRADE_LATENCY.md`
 
 ---
