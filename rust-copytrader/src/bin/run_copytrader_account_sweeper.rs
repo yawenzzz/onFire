@@ -42,6 +42,7 @@ struct Options {
     max_iterations: Option<usize>,
     positions_limit: i32,
     allow_live_submit: bool,
+    execution_mode: String,
 }
 
 impl Default for Options {
@@ -53,6 +54,7 @@ impl Default for Options {
             max_iterations: None,
             positions_limit: 500,
             allow_live_submit: false,
+            execution_mode: "auto".to_string(),
         }
     }
 }
@@ -61,6 +63,31 @@ impl Default for Options {
 enum PositionFilter {
     Mergeable,
     Redeemable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WalletKind {
+    Eoa,
+    Proxy,
+    Safe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionTransport {
+    DirectRpc,
+    RelayerApi,
+    BuilderApi,
+    ClobL2Hook,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExecutionProfile {
+    wallet_kind: WalletKind,
+    transport: ExecutionTransport,
+    signature_type: u8,
+    has_clob_l2_auth: bool,
+    has_relayer_api_auth: bool,
+    has_builder_api_auth: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,7 +157,7 @@ async fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "usage: run_copytrader_account_sweeper [--root <path>] [--watch] [--interval-secs <n>] [--max-iterations <n>] [--positions-limit <n>] [--allow-live-submit]"
+        "usage: run_copytrader_account_sweeper [--root <path>] [--watch] [--interval-secs <n>] [--max-iterations <n>] [--positions-limit <n>] [--allow-live-submit] [--execution-mode <auto|direct_rpc|relayer_api|builder_api|clob_l2_hook>]"
     );
 }
 
@@ -161,12 +188,19 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                     .map_err(|_| "invalid integer for positions-limit".to_string())?
             }
             "--allow-live-submit" => options.allow_live_submit = true,
+            "--execution-mode" => options.execution_mode = next_value(&mut iter, arg)?,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
 
     if options.positions_limit < 0 || options.positions_limit > 500 {
         return Err("positions-limit must be between 0 and 500".to_string());
+    }
+    if parse_execution_transport(&options.execution_mode).is_none() {
+        return Err(
+            "execution-mode must be one of auto|direct_rpc|relayer_api|builder_api|clob_l2_hook"
+                .to_string(),
+        );
     }
 
     Ok(options)
@@ -189,11 +223,22 @@ async fn run(options: &Options) -> Result<(), String> {
     let user = SdkAddress::from_str(&account_address)
         .map_err(|error| format!("invalid effective account address {account_address}: {error}"))?;
     let client = SdkDataClient::default();
+    let execution_profile = resolve_execution_profile(&root, &material, &options)?;
 
     let mut iteration = 0usize;
     loop {
         iteration += 1;
-        match sweep_iteration(&client, user, &root, &material, options, iteration).await {
+        match sweep_iteration(
+            &client,
+            user,
+            &root,
+            &material,
+            &execution_profile,
+            options,
+            iteration,
+        )
+        .await
+        {
             Ok(lines) => {
                 for line in lines {
                     println!("{line}");
@@ -224,6 +269,7 @@ async fn sweep_iteration(
     user: SdkAddress,
     root: &Path,
     material: &AuthMaterial,
+    execution_profile: &ExecutionProfile,
     options: &Options,
     iteration: usize,
 ) -> Result<Vec<String>, String> {
@@ -238,7 +284,7 @@ async fn sweep_iteration(
     };
 
     let mut lines = vec![format!(
-        "[info]: account_sweeper iteration={iteration} mode={} auth_env_source={} account={} merge_positions={} merge_candidates={} redeem_positions={} redeem_candidates={}",
+        "[info]: account_sweeper iteration={iteration} mode={} auth_env_source={} account={} execution_transport={} wallet_kind={} signature_type={} l2_auth_available={} merge_positions={} merge_candidates={} redeem_positions={} redeem_candidates={}",
         if options.allow_live_submit {
             "live"
         } else {
@@ -246,6 +292,10 @@ async fn sweep_iteration(
         },
         auth_env_source(root),
         effective_funder_address(material)?.unwrap_or_else(|| material.poly_address.clone()),
+        execution_profile.transport.label(),
+        execution_profile.wallet_kind.label(),
+        execution_profile.signature_type,
+        execution_profile.has_clob_l2_auth,
         plan.merge_positions_scanned,
         plan.merge_candidates.len(),
         plan.redeem_positions_scanned,
@@ -257,9 +307,17 @@ async fn sweep_iteration(
         return Ok(lines);
     }
 
+    if options.allow_live_submit && execution_profile.transport != ExecutionTransport::DirectRpc {
+        lines.push(format!(
+            "[warn]: execution_transport={} selected_for_signature_type={} current_live_hook=placeholder",
+            execution_profile.transport.label(),
+            execution_profile.signature_type,
+        ));
+    }
+
     for candidate in &plan.merge_candidates {
         if options.allow_live_submit {
-            match submit_merge(root, candidate).await {
+            match submit_merge(root, execution_profile, candidate).await {
                 Ok((tx_hash, block_number)) => lines.push(format!(
                     "[info]: merge submitted condition_id={} shares={} yes_shares={} no_shares={} negative_risk={} slug={} tx_hash={} block_number={}",
                     candidate.condition_id,
@@ -294,7 +352,7 @@ async fn sweep_iteration(
 
     for candidate in &plan.redeem_candidates {
         if options.allow_live_submit {
-            match submit_redeem(root, candidate).await {
+            match submit_redeem(root, execution_profile, candidate).await {
                 Ok((tx_hash, block_number, method)) => lines.push(format!(
                     "[info]: redeem submitted condition_id={} method={} yes_shares={} no_shares={} negative_risk={} slug={} tx_hash={} block_number={}",
                     candidate.condition_id,
@@ -466,7 +524,17 @@ fn is_yes_outcome(position: &DataPosition) -> bool {
     position.outcome.eq_ignore_ascii_case("yes") || position.outcome_index == 0
 }
 
-async fn submit_merge(root: &Path, candidate: &MergeCandidate) -> Result<(String, String), String> {
+async fn submit_merge(
+    root: &Path,
+    execution_profile: &ExecutionProfile,
+    candidate: &MergeCandidate,
+) -> Result<(String, String), String> {
+    if execution_profile.transport != ExecutionTransport::DirectRpc {
+        return Err(execution_transport_placeholder_error(execution_profile));
+    }
+    if execution_profile.transport != ExecutionTransport::DirectRpc {
+        return Err(execution_transport_placeholder_error(execution_profile));
+    }
     let rpc_urls = rpc_urls_to_try(root)?;
     let mut last_error = None;
     for rpc_url in rpc_urls {
@@ -518,8 +586,12 @@ async fn submit_merge_via_rpc(
 
 async fn submit_redeem(
     root: &Path,
+    execution_profile: &ExecutionProfile,
     candidate: &RedeemCandidate,
 ) -> Result<(String, String, &'static str), String> {
+    if execution_profile.transport != ExecutionTransport::DirectRpc {
+        return Err(execution_transport_placeholder_error(execution_profile));
+    }
     let rpc_urls = rpc_urls_to_try(root)?;
     let mut last_error = None;
     for rpc_url in rpc_urls {
@@ -651,6 +723,124 @@ fn should_try_next_rpc(error: &str, attempted_rpc_url: &str) -> bool {
                 .last()
                 .copied()
                 .unwrap_or(DEFAULT_RPC_URL)
+}
+
+impl WalletKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Eoa => "eoa",
+            Self::Proxy => "proxy",
+            Self::Safe => "safe",
+        }
+    }
+}
+
+impl ExecutionTransport {
+    fn label(self) -> &'static str {
+        match self {
+            Self::DirectRpc => "direct_rpc",
+            Self::RelayerApi => "relayer_api",
+            Self::BuilderApi => "builder_api",
+            Self::ClobL2Hook => "clob_l2_hook",
+        }
+    }
+}
+
+fn parse_execution_transport(value: &str) -> Option<Option<ExecutionTransport>> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(None),
+        "direct_rpc" => Some(Some(ExecutionTransport::DirectRpc)),
+        "relayer_api" => Some(Some(ExecutionTransport::RelayerApi)),
+        "builder_api" => Some(Some(ExecutionTransport::BuilderApi)),
+        "clob_l2_hook" => Some(Some(ExecutionTransport::ClobL2Hook)),
+        _ => None,
+    }
+}
+
+fn resolve_execution_profile(
+    root: &Path,
+    material: &AuthMaterial,
+    options: &Options,
+) -> Result<ExecutionProfile, String> {
+    let env_map = merged_env(root)?;
+    let wallet_kind = match material.signature_type {
+        0 => WalletKind::Eoa,
+        1 => WalletKind::Proxy,
+        2 => WalletKind::Safe,
+        other => {
+            return Err(format!(
+                "unsupported SIGNATURE_TYPE for sweeper execution: {other}"
+            ));
+        }
+    };
+    let has_clob_l2_auth = material
+        .api_secret
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && !material.api_key.trim().is_empty()
+        && !material.passphrase.trim().is_empty();
+    let has_relayer_api_auth =
+        env_has_all(&env_map, &["RELAYER_API_KEY", "RELAYER_API_KEY_ADDRESS"]);
+    let has_builder_api_auth = env_has_all(
+        &env_map,
+        &[
+            "POLY_BUILDER_API_KEY",
+            "POLY_BUILDER_SECRET",
+            "POLY_BUILDER_PASSPHRASE",
+        ],
+    );
+    let transport = match parse_execution_transport(&options.execution_mode) {
+        Some(Some(explicit)) => explicit,
+        Some(None) => match wallet_kind {
+            WalletKind::Eoa => ExecutionTransport::DirectRpc,
+            WalletKind::Proxy | WalletKind::Safe => {
+                if has_relayer_api_auth {
+                    ExecutionTransport::RelayerApi
+                } else if has_builder_api_auth {
+                    ExecutionTransport::BuilderApi
+                } else if has_clob_l2_auth {
+                    ExecutionTransport::ClobL2Hook
+                } else {
+                    ExecutionTransport::DirectRpc
+                }
+            }
+        },
+        None => {
+            return Err(
+                "execution-mode must be one of auto|direct_rpc|relayer_api|builder_api|clob_l2_hook"
+                    .to_string(),
+            );
+        }
+    };
+    Ok(ExecutionProfile {
+        wallet_kind,
+        transport,
+        signature_type: material.signature_type,
+        has_clob_l2_auth,
+        has_relayer_api_auth,
+        has_builder_api_auth,
+    })
+}
+
+fn env_has_all(env_map: &BTreeMap<String, String>, keys: &[&str]) -> bool {
+    keys.iter().all(|key| {
+        env_map
+            .get(*key)
+            .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
+fn execution_transport_placeholder_error(execution_profile: &ExecutionProfile) -> String {
+    match execution_profile.transport {
+        ExecutionTransport::RelayerApi => "proxy/safe sweeper selected relayer_api transport but relayer submission is not wired yet. Keep this seam for current proxy accounts and future relayer auth; configure RELAYER_API_KEY + RELAYER_API_KEY_ADDRESS when the relayer hook lands, or force --execution-mode direct_rpc for manual testing.".to_string(),
+        ExecutionTransport::BuilderApi => "proxy/safe sweeper selected builder_api transport but builder relayer submission is not wired yet. Keep this seam for future builder gasless auth; configure POLY_BUILDER_API_KEY + POLY_BUILDER_SECRET + POLY_BUILDER_PASSPHRASE when the relayer hook lands, or force --execution-mode direct_rpc for manual testing.".to_string(),
+        ExecutionTransport::ClobL2Hook => "proxy/safe sweeper detected CLOB L2 auth and selected clob_l2_hook. The hook is reserved so proxy signature_type=1 accounts and future L2-auth-backed flows can share the same execution seam; current official gasless docs still require RELAYER_API_KEY or builder keys for relayer auth, so force --execution-mode direct_rpc for manual testing until the relayer hook lands.".to_string(),
+        ExecutionTransport::DirectRpc => match execution_profile.wallet_kind {
+            WalletKind::Proxy => "proxy sweeper is using direct_rpc. This requires the signing EOA to fund gas and may still fail because the proxy flow is better served by the relayer path.".to_string(),
+            WalletKind::Safe => "safe sweeper is using direct_rpc. This requires a safe-compatible execution path and may still fail without relayer support.".to_string(),
+            WalletKind::Eoa => "direct_rpc execution failed".to_string(),
+        },
+    }
 }
 
 fn private_key_signer(root: &Path) -> Result<PrivateKeySigner, String> {
@@ -814,14 +1004,17 @@ fn format_root_error(error: RootEnvLoadError) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_PUBLIC_RPC_URLS, DEFAULT_RPC_URL, MergeCandidate, Options, RedeemCandidate,
-        build_merge_candidates, build_redeem_candidates, decimal_to_fixed_6, format_amount,
-        parse_args, push_rpc_url, rpc_urls_to_try, should_try_next_rpc, split_rpc_list,
+        DEFAULT_PUBLIC_RPC_URLS, DEFAULT_RPC_URL, ExecutionTransport, MergeCandidate, Options,
+        RedeemCandidate, WalletKind, build_merge_candidates, build_redeem_candidates,
+        decimal_to_fixed_6, format_amount, parse_args, push_rpc_url, resolve_execution_profile,
+        rpc_urls_to_try, should_try_next_rpc, split_rpc_list,
     };
     use polymarket_client_sdk::data::types::response::Position as DataPosition;
     use polymarket_client_sdk::types::{Address as SdkAddress, B256, Decimal as SdkDecimal, U256};
     use std::env;
+    use std::fs;
     use std::str::FromStr as _;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_position(condition_id: &str, outcome: &str, size: &str) -> DataPosition {
         DataPosition::builder()
@@ -896,6 +1089,7 @@ mod tests {
                 max_iterations: Some(3),
                 positions_limit: 200,
                 allow_live_submit: true,
+                execution_mode: "auto".to_string(),
             }
         );
     }
@@ -966,6 +1160,65 @@ mod tests {
             "failed to redeem positions via https://polygon.drpc.org: execution reverted",
             DEFAULT_RPC_URL
         ));
+    }
+
+    fn unique_temp_dir(name: &str) -> std::path::PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("run-copytrader-account-sweeper-{name}-{suffix}"))
+    }
+
+    #[test]
+    fn resolve_execution_profile_prefers_clob_l2_hook_for_proxy_accounts() {
+        let root = unique_temp_dir("proxy-l2");
+        fs::create_dir_all(&root).expect("dir created");
+        fs::write(
+            root.join(".env"),
+            "PRIVATE_KEY=0x59c6995e998f97a5a0044966f094538c5f34f6c4a0499b6f6f489f5fabe59d3f
+CLOB_API_KEY=00000000-0000-0000-0000-000000000001
+CLOB_SECRET=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+CLOB_PASS_PHRASE=test-pass
+SIGNATURE_TYPE=1
+FUNDER_ADDRESS=0x0bDC847347571342E1563971E8bA206c8B03e345
+",
+        )
+        .expect("env written");
+        let material = super::auth_material_with_signer_fallback(&root).expect("material");
+        let profile =
+            resolve_execution_profile(&root, &material, &Options::default()).expect("profile");
+        assert_eq!(profile.wallet_kind, WalletKind::Proxy);
+        assert_eq!(profile.transport, ExecutionTransport::ClobL2Hook);
+        assert!(profile.has_clob_l2_auth);
+    }
+
+    #[test]
+    fn resolve_execution_profile_honors_explicit_direct_override() {
+        let root = unique_temp_dir("proxy-direct");
+        fs::create_dir_all(&root).expect("dir created");
+        fs::write(
+            root.join(".env"),
+            "PRIVATE_KEY=0x59c6995e998f97a5a0044966f094538c5f34f6c4a0499b6f6f489f5fabe59d3f
+CLOB_API_KEY=00000000-0000-0000-0000-000000000001
+CLOB_SECRET=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+CLOB_PASS_PHRASE=test-pass
+SIGNATURE_TYPE=1
+FUNDER_ADDRESS=0x0bDC847347571342E1563971E8bA206c8B03e345
+",
+        )
+        .expect("env written");
+        let material = super::auth_material_with_signer_fallback(&root).expect("material");
+        let profile = resolve_execution_profile(
+            &root,
+            &material,
+            &Options {
+                execution_mode: "direct_rpc".to_string(),
+                ..Options::default()
+            },
+        )
+        .expect("profile");
+        assert_eq!(profile.transport, ExecutionTransport::DirectRpc);
     }
 
     #[test]
