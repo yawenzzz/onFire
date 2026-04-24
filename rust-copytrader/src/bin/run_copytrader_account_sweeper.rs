@@ -459,15 +459,38 @@ fn is_yes_outcome(position: &DataPosition) -> bool {
 }
 
 async fn submit_merge(root: &Path, candidate: &MergeCandidate) -> Result<(String, String), String> {
+    let rpc_urls = rpc_urls_to_try();
+    let mut last_error = None;
+    for rpc_url in rpc_urls {
+        match submit_merge_via_rpc(root, candidate, &rpc_url).await {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                let retry_default = should_retry_with_default_rpc(&error, &rpc_url);
+                last_error = Some(error);
+                if retry_default {
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| "failed to merge positions: no rpc attempts were made".to_string()))
+}
+
+async fn submit_merge_via_rpc(
+    root: &Path,
+    candidate: &MergeCandidate,
+    rpc_url: &str,
+) -> Result<(String, String), String> {
     let signer = private_key_signer(root)?;
-    let rpc_url = env::var("POLYGON_RPC_URL").unwrap_or_else(|_| DEFAULT_RPC_URL.to_string());
     let provider = ProviderBuilder::new()
         .wallet(signer)
-        .connect(&rpc_url)
+        .connect(rpc_url)
         .await
-        .map_err(|error| format!("failed to connect polygon rpc: {error}"))?;
+        .map_err(|error| format!("failed to connect polygon rpc {rpc_url}: {error}"))?;
     let client = CtfClient::with_neg_risk(provider, POLYGON)
-        .map_err(|error| format!("failed to initialize ctf client: {error}"))?;
+        .map_err(|error| format!("failed to initialize ctf client via {rpc_url}: {error}"))?;
     let collateral_token = SdkAddress::from_str(POLYGON_USDC)
         .map_err(|error| format!("invalid USDC address: {error}"))?;
     let request = MergePositionsRequest::for_binary_market(
@@ -478,7 +501,7 @@ async fn submit_merge(root: &Path, candidate: &MergeCandidate) -> Result<(String
     let response = client
         .merge_positions(&request)
         .await
-        .map_err(|error| format!("failed to merge positions: {error}"))?;
+        .map_err(|error| format!("failed to merge positions via {rpc_url}: {error}"))?;
     Ok((
         response.transaction_hash.to_string(),
         response.block_number.to_string(),
@@ -489,15 +512,38 @@ async fn submit_redeem(
     root: &Path,
     candidate: &RedeemCandidate,
 ) -> Result<(String, String, &'static str), String> {
+    let rpc_urls = rpc_urls_to_try();
+    let mut last_error = None;
+    for rpc_url in rpc_urls {
+        match submit_redeem_via_rpc(root, candidate, &rpc_url).await {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                let retry_default = should_retry_with_default_rpc(&error, &rpc_url);
+                last_error = Some(error);
+                if retry_default {
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| "failed to redeem positions: no rpc attempts were made".to_string()))
+}
+
+async fn submit_redeem_via_rpc(
+    root: &Path,
+    candidate: &RedeemCandidate,
+    rpc_url: &str,
+) -> Result<(String, String, &'static str), String> {
     let signer = private_key_signer(root)?;
-    let rpc_url = env::var("POLYGON_RPC_URL").unwrap_or_else(|_| DEFAULT_RPC_URL.to_string());
     let provider = ProviderBuilder::new()
         .wallet(signer)
-        .connect(&rpc_url)
+        .connect(rpc_url)
         .await
-        .map_err(|error| format!("failed to connect polygon rpc: {error}"))?;
+        .map_err(|error| format!("failed to connect polygon rpc {rpc_url}: {error}"))?;
     let client = CtfClient::with_neg_risk(provider, POLYGON)
-        .map_err(|error| format!("failed to initialize ctf client: {error}"))?;
+        .map_err(|error| format!("failed to initialize ctf client via {rpc_url}: {error}"))?;
     let collateral_token = SdkAddress::from_str(POLYGON_USDC)
         .map_err(|error| format!("invalid USDC address: {error}"))?;
 
@@ -509,10 +555,9 @@ async fn submit_redeem(
                 U256::from(candidate.no_micros),
             ])
             .build();
-        let response = client
-            .redeem_neg_risk(&request)
-            .await
-            .map_err(|error| format!("failed to redeem neg-risk position: {error}"))?;
+        let response = client.redeem_neg_risk(&request).await.map_err(|error| {
+            format!("failed to redeem neg-risk position via {rpc_url}: {error}")
+        })?;
         Ok((
             response.transaction_hash.to_string(),
             response.block_number.to_string(),
@@ -524,13 +569,44 @@ async fn submit_redeem(
         let response = client
             .redeem_positions(&request)
             .await
-            .map_err(|error| format!("failed to redeem positions: {error}"))?;
+            .map_err(|error| format!("failed to redeem positions via {rpc_url}: {error}"))?;
         Ok((
             response.transaction_hash.to_string(),
             response.block_number.to_string(),
             "redeem_positions",
         ))
     }
+}
+
+fn rpc_urls_to_try() -> Vec<String> {
+    let configured = env::var("POLYGON_RPC_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    match configured {
+        Some(url) if url != DEFAULT_RPC_URL => vec![url, DEFAULT_RPC_URL.to_string()],
+        Some(url) => vec![url],
+        None => vec![DEFAULT_RPC_URL.to_string()],
+    }
+}
+
+fn should_retry_with_default_rpc(error: &str, attempted_rpc_url: &str) -> bool {
+    if attempted_rpc_url == DEFAULT_RPC_URL {
+        return false;
+    }
+    let error = error.to_ascii_lowercase();
+    [
+        "api key disabled",
+        "tenant disabled",
+        "http error 401",
+        "rest code: 403",
+        "unauthorized",
+        "forbidden",
+        "invalid api key",
+    ]
+    .iter()
+    .any(|needle| error.contains(needle))
 }
 
 fn private_key_signer(root: &Path) -> Result<PrivateKeySigner, String> {
@@ -694,11 +770,13 @@ fn format_root_error(error: RootEnvLoadError) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MergeCandidate, Options, RedeemCandidate, build_merge_candidates, build_redeem_candidates,
-        decimal_to_fixed_6, format_amount, parse_args,
+        DEFAULT_RPC_URL, MergeCandidate, Options, RedeemCandidate, build_merge_candidates,
+        build_redeem_candidates, decimal_to_fixed_6, format_amount, parse_args, rpc_urls_to_try,
+        should_retry_with_default_rpc,
     };
     use polymarket_client_sdk::data::types::response::Position as DataPosition;
     use polymarket_client_sdk::types::{Address as SdkAddress, B256, Decimal as SdkDecimal, U256};
+    use std::env;
     use std::str::FromStr as _;
 
     fn sample_position(condition_id: &str, outcome: &str, size: &str) -> DataPosition {
@@ -815,6 +893,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rpc_urls_to_try_falls_back_to_default_when_custom_url_is_present() {
+        unsafe {
+            env::set_var("POLYGON_RPC_URL", "https://rpc.example.invalid/key");
+        }
+        let urls = rpc_urls_to_try();
+        assert_eq!(
+            urls,
+            vec![
+                "https://rpc.example.invalid/key".to_string(),
+                DEFAULT_RPC_URL.to_string()
+            ]
+        );
+        unsafe {
+            env::remove_var("POLYGON_RPC_URL");
+        }
+    }
+
+    #[test]
+    fn should_retry_with_default_rpc_matches_disabled_rpc_tenant_errors() {
+        assert!(should_retry_with_default_rpc(
+            r#"failed to redeem positions via https://rpc.example: HTTP error 401 with body: {"error":"message: API key disabled, reason: tenant disabled, json-rpc code: -32051, rest code: 403"}"#,
+            "https://rpc.example"
+        ));
+        assert!(!should_retry_with_default_rpc(
+            "failed to redeem positions via https://polygon-rpc.com: execution reverted",
+            DEFAULT_RPC_URL
+        ));
+    }
     #[test]
     fn build_redeem_candidates_groups_by_condition() {
         let one = "0x1111111111111111111111111111111111111111111111111111111111111111";
