@@ -1,9 +1,13 @@
-use alloy::primitives::Bytes as AlloyBytes;
-use alloy::providers::ProviderBuilder;
+use alloy::primitives::{Bytes as AlloyBytes, keccak256};
+use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::signers::Signer as _;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol;
 use alloy::sol_types::SolCall;
+use alloy::transports::http::reqwest::{
+    self,
+    header::{CONTENT_TYPE, HeaderMap, HeaderValue},
+};
 use polymarket_client_sdk::POLYGON;
 use polymarket_client_sdk::auth::LocalSigner;
 use polymarket_client_sdk::ctf::Client as CtfClient;
@@ -16,6 +20,7 @@ use polymarket_client_sdk::data::types::response::Position as DataPosition;
 use polymarket_client_sdk::types::{Address as SdkAddress, B256, Decimal as SdkDecimal, U256};
 use rust_copytrader::adapters::signing::AuthMaterial;
 use rust_copytrader::config::RootEnvLoadError;
+use serde_json::{Value, json};
 use std::cmp::min;
 use std::collections::BTreeMap;
 use std::env;
@@ -38,7 +43,12 @@ const POLYGON_PUSD: &str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
 const POLYGON_CTF: &str = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
 const POLYGON_NEG_RISK_ADAPTER: &str = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296";
 const POLYGON_PROXY_FACTORY: &str = "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052";
+const POLYGON_RELAY_HUB: &str = "0xD216153c06E857cD7f72665E0aF1d7D82172F494";
+const RELAYER_API_BASE_URL: &str = "https://relayer-v2.polymarket.com";
 const DEFAULT_INTERVAL_SECS: u64 = 30;
+const DEFAULT_PROXY_RELAYER_GAS_LIMIT: u64 = 10_000_000;
+const RELAYER_POLL_MAX_ATTEMPTS: usize = 100;
+const RELAYER_POLL_INTERVAL_MS: u64 = 2_000;
 
 sol! {
     struct ProxyCall {
@@ -344,7 +354,7 @@ async fn sweep_iteration(
         return Ok(lines);
     }
 
-    if options.allow_live_submit && execution_profile.transport != ExecutionTransport::DirectRpc {
+    if options.allow_live_submit && execution_transport_is_placeholder(execution_profile) {
         lines.push(format!(
             "[warn]: execution_transport={} selected_for_signature_type={} current_live_hook=placeholder",
             execution_profile.transport.label(),
@@ -566,11 +576,14 @@ async fn submit_merge(
     execution_profile: &ExecutionProfile,
     candidate: &MergeCandidate,
 ) -> Result<(String, String), String> {
-    if execution_profile.transport != ExecutionTransport::DirectRpc {
-        return Err(execution_transport_placeholder_error(execution_profile));
-    }
-    if execution_profile.transport != ExecutionTransport::DirectRpc {
-        return Err(execution_transport_placeholder_error(execution_profile));
+    match execution_profile.transport {
+        ExecutionTransport::DirectRpc => {}
+        ExecutionTransport::RelayerApi if execution_profile.wallet_kind == WalletKind::Proxy => {
+            return submit_merge_via_relayer(root, execution_profile, candidate).await;
+        }
+        _ => {
+            return Err(execution_transport_placeholder_error(execution_profile));
+        }
     }
     let rpc_urls = rpc_urls_to_try(root)?;
     let mut last_error = None;
@@ -633,8 +646,14 @@ async fn submit_redeem(
     execution_profile: &ExecutionProfile,
     candidate: &RedeemCandidate,
 ) -> Result<(String, String, &'static str), String> {
-    if execution_profile.transport != ExecutionTransport::DirectRpc {
-        return Err(execution_transport_placeholder_error(execution_profile));
+    match execution_profile.transport {
+        ExecutionTransport::DirectRpc => {}
+        ExecutionTransport::RelayerApi if execution_profile.wallet_kind == WalletKind::Proxy => {
+            return submit_redeem_via_relayer(root, execution_profile, candidate).await;
+        }
+        _ => {
+            return Err(execution_transport_placeholder_error(execution_profile));
+        }
     }
     let rpc_urls = rpc_urls_to_try(root)?;
     let mut last_error = None;
@@ -713,6 +732,424 @@ async fn submit_redeem_via_rpc(
     }
 }
 
+fn proxy_merge_call(candidate: &MergeCandidate) -> Result<ProxyCall, String> {
+    let calldata = IConditionalTokensLite::mergePositionsCall {
+        collateralToken: SdkAddress::from_str(POLYGON_PUSD)
+            .map_err(|error| format!("invalid pUSD address: {error}"))?,
+        parentCollectionId: B256::ZERO,
+        conditionId: candidate.condition_id,
+        partition: vec![U256::from(1_u8), U256::from(2_u8)],
+        amount: U256::from(candidate.merge_micros),
+    }
+    .abi_encode();
+    Ok(ProxyCall {
+        typeCode: 1,
+        to: SdkAddress::from_str(POLYGON_CTF)
+            .map_err(|error| format!("invalid CTF address: {error}"))?,
+        value: U256::ZERO,
+        data: AlloyBytes::from(calldata),
+    })
+}
+
+fn proxy_neg_risk_approval_call() -> Result<ProxyCall, String> {
+    let calldata = IERC1155Lite::setApprovalForAllCall {
+        operator: SdkAddress::from_str(POLYGON_NEG_RISK_ADAPTER)
+            .map_err(|error| format!("invalid neg risk adapter address: {error}"))?,
+        approved: true,
+    }
+    .abi_encode();
+    Ok(ProxyCall {
+        typeCode: 1,
+        to: SdkAddress::from_str(POLYGON_CTF)
+            .map_err(|error| format!("invalid CTF address: {error}"))?,
+        value: U256::ZERO,
+        data: AlloyBytes::from(calldata),
+    })
+}
+
+fn proxy_redeem_call(candidate: &RedeemCandidate) -> Result<(ProxyCall, &'static str), String> {
+    if candidate.negative_risk {
+        let calldata = INegRiskAdapterLite::redeemPositionsCall {
+            conditionId: candidate.condition_id,
+            amounts: vec![
+                U256::from(candidate.yes_micros),
+                U256::from(candidate.no_micros),
+            ],
+        }
+        .abi_encode();
+        Ok((
+            ProxyCall {
+                typeCode: 1,
+                to: SdkAddress::from_str(POLYGON_NEG_RISK_ADAPTER)
+                    .map_err(|error| format!("invalid neg risk adapter address: {error}"))?,
+                value: U256::ZERO,
+                data: AlloyBytes::from(calldata),
+            },
+            "redeem_neg_risk",
+        ))
+    } else {
+        let calldata = IConditionalTokensLite::redeemPositionsCall {
+            collateralToken: SdkAddress::from_str(POLYGON_PUSD)
+                .map_err(|error| format!("invalid pUSD address: {error}"))?,
+            parentCollectionId: B256::ZERO,
+            conditionId: candidate.condition_id,
+            indexSets: vec![U256::from(1_u8), U256::from(2_u8)],
+        }
+        .abi_encode();
+        Ok((
+            ProxyCall {
+                typeCode: 1,
+                to: SdkAddress::from_str(POLYGON_CTF)
+                    .map_err(|error| format!("invalid CTF address: {error}"))?,
+                value: U256::ZERO,
+                data: AlloyBytes::from(calldata),
+            },
+            "redeem_positions",
+        ))
+    }
+}
+
+fn encode_proxy_factory_calldata(calls: Vec<ProxyCall>) -> AlloyBytes {
+    AlloyBytes::from(IProxyWalletFactory::proxyCall { calls }.abi_encode())
+}
+
+async fn submit_merge_via_relayer(
+    root: &Path,
+    execution_profile: &ExecutionProfile,
+    candidate: &MergeCandidate,
+) -> Result<(String, String), String> {
+    let provider = connect_polygon_provider(root).await?;
+    submit_proxy_calls_via_relayer(
+        root,
+        execution_profile,
+        provider,
+        vec![proxy_merge_call(candidate)?],
+        &format!(
+            "account sweeper merge {}",
+            safe_slug(&candidate.slug, &candidate.event_slug)
+        ),
+    )
+    .await
+}
+
+async fn submit_redeem_via_relayer(
+    root: &Path,
+    execution_profile: &ExecutionProfile,
+    candidate: &RedeemCandidate,
+) -> Result<(String, String, &'static str), String> {
+    let provider = connect_polygon_provider(root).await?;
+    let mut calls = Vec::new();
+    let (redeem_call, method) = proxy_redeem_call(candidate)?;
+    let method = if candidate.negative_risk
+        && proxy_needs_neg_risk_operator_approval(
+            provider.clone(),
+            execution_profile,
+            "relayer_api",
+        )
+        .await?
+    {
+        calls.push(proxy_neg_risk_approval_call()?);
+        calls.push(redeem_call);
+        "approve_and_redeem_neg_risk"
+    } else {
+        calls.push(redeem_call);
+        method
+    };
+    let (tx_hash, block_number) = submit_proxy_calls_via_relayer(
+        root,
+        execution_profile,
+        provider,
+        calls,
+        &format!(
+            "account sweeper redeem {}",
+            safe_slug(&candidate.slug, &candidate.event_slug)
+        ),
+    )
+    .await?;
+    Ok((tx_hash, block_number, method))
+}
+
+async fn submit_proxy_calls_via_relayer(
+    root: &Path,
+    execution_profile: &ExecutionProfile,
+    provider: DynProvider,
+    calls: Vec<ProxyCall>,
+    metadata: &str,
+) -> Result<(String, String), String> {
+    let signer = private_key_signer(root)?;
+    let signer_address = signer.address();
+    let proxy_wallet = proxy_owner_address(execution_profile)?;
+    let relay_payload = get_proxy_relay_payload(root, signer_address).await?;
+    let calldata = encode_proxy_factory_calldata(calls.clone());
+    let gas_limit = estimate_proxy_relayer_gas(provider.clone(), calls).await;
+    let signature_hash = proxy_relayer_signature_hash(
+        signer_address,
+        calldata.as_ref(),
+        gas_limit,
+        &relay_payload.nonce,
+        relay_payload.relay_address,
+    )?;
+    let signature = signer
+        .sign_message(signature_hash.as_slice())
+        .await
+        .map_err(|error| format!("failed to sign proxy relayer payload: {error}"))?;
+
+    let submit_payload = json!({
+        "from": signer_address.to_string(),
+        "to": POLYGON_PROXY_FACTORY,
+        "proxyWallet": proxy_wallet.to_string(),
+        "data": calldata.to_string(),
+        "nonce": relay_payload.nonce,
+        "signature": signature.to_string(),
+        "signatureParams": {
+            "gasPrice": "0",
+            "gasLimit": gas_limit.to_string(),
+            "relayerFee": "0",
+            "relayHub": POLYGON_RELAY_HUB,
+            "relay": relay_payload.relay_address.to_string(),
+        },
+        "type": "PROXY",
+        "metadata": metadata,
+    });
+
+    let submit_response = send_relayer_request(
+        root,
+        reqwest::Method::POST,
+        "/submit",
+        None,
+        Some(submit_payload),
+    )
+    .await?;
+    let transaction_id = submit_response
+        .get("transactionID")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("relayer submit missing transactionID: {}", submit_response))?;
+
+    let relayer_tx = wait_for_relayer_transaction(root, transaction_id).await?;
+    let tx_hash = relayer_tx
+        .get("transactionHash")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "relayer transaction missing transactionHash: {}",
+                relayer_tx
+            )
+        })?
+        .to_string();
+    let block_number = fetch_block_number_for_tx_hash(provider, &tx_hash)
+        .await
+        .unwrap_or_else(|_| "unknown".to_string());
+    Ok((tx_hash, block_number))
+}
+
+#[derive(Debug, Clone)]
+struct ProxyRelayPayload {
+    relay_address: SdkAddress,
+    nonce: String,
+}
+
+async fn get_proxy_relay_payload(
+    root: &Path,
+    signer_address: SdkAddress,
+) -> Result<ProxyRelayPayload, String> {
+    let response = send_relayer_request(
+        root,
+        reqwest::Method::GET,
+        "/relay-payload",
+        Some(vec![
+            ("address".to_string(), signer_address.to_string()),
+            ("type".to_string(), "PROXY".to_string()),
+        ]),
+        None,
+    )
+    .await?;
+    let relay_address = response
+        .get("address")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("relayer relay-payload missing address: {}", response))
+        .and_then(|value| {
+            SdkAddress::from_str(value)
+                .map_err(|error| format!("invalid relayer address from relay-payload: {error}"))
+        })?;
+    let nonce = response
+        .get("nonce")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("relayer relay-payload missing nonce: {}", response))?
+        .to_string();
+    Ok(ProxyRelayPayload {
+        relay_address,
+        nonce,
+    })
+}
+
+async fn wait_for_relayer_transaction(root: &Path, transaction_id: &str) -> Result<Value, String> {
+    let mut last_state = None;
+    for _ in 0..RELAYER_POLL_MAX_ATTEMPTS {
+        let response = send_relayer_request(
+            root,
+            reqwest::Method::GET,
+            "/transaction",
+            Some(vec![("id".to_string(), transaction_id.to_string())]),
+            None,
+        )
+        .await?;
+        let Some(tx) = response.as_array().and_then(|items| items.first()).cloned() else {
+            sleep(Duration::from_millis(RELAYER_POLL_INTERVAL_MS)).await;
+            continue;
+        };
+        let state = tx
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("UNKNOWN")
+            .to_string();
+        if matches!(state.as_str(), "STATE_MINED" | "STATE_CONFIRMED") {
+            return Ok(tx);
+        }
+        if matches!(state.as_str(), "STATE_FAILED" | "STATE_INVALID") {
+            return Err(format!(
+                "relayer transaction {transaction_id} failed with state={state}: {tx}"
+            ));
+        }
+        last_state = Some(state);
+        sleep(Duration::from_millis(RELAYER_POLL_INTERVAL_MS)).await;
+    }
+    Err(format!(
+        "timed out waiting for relayer transaction {transaction_id}; last_state={}",
+        last_state.unwrap_or_else(|| "UNKNOWN".to_string())
+    ))
+}
+
+async fn estimate_proxy_relayer_gas(provider: DynProvider, calls: Vec<ProxyCall>) -> u64 {
+    let proxy_factory = match SdkAddress::from_str(POLYGON_PROXY_FACTORY) {
+        Ok(address) => IProxyWalletFactory::new(address, provider),
+        Err(_) => return DEFAULT_PROXY_RELAYER_GAS_LIMIT,
+    };
+    match proxy_factory.proxy(calls).estimate_gas().await {
+        Ok(gas) => gas,
+        Err(error) => {
+            eprintln!(
+                "[warn]: failed to estimate proxy relayer gas, falling back to {}: {}",
+                DEFAULT_PROXY_RELAYER_GAS_LIMIT, error
+            );
+            DEFAULT_PROXY_RELAYER_GAS_LIMIT
+        }
+    }
+}
+
+fn proxy_relayer_signature_hash(
+    from: SdkAddress,
+    calldata: &[u8],
+    gas_limit: u64,
+    nonce: &str,
+    relay_address: SdkAddress,
+) -> Result<B256, String> {
+    let proxy_factory = SdkAddress::from_str(POLYGON_PROXY_FACTORY)
+        .map_err(|error| format!("invalid proxy factory address: {error}"))?;
+    let relay_hub = SdkAddress::from_str(POLYGON_RELAY_HUB)
+        .map_err(|error| format!("invalid relay hub address: {error}"))?;
+    let nonce = nonce
+        .parse::<U256>()
+        .map_err(|error| format!("invalid relayer nonce {nonce}: {error}"))?;
+
+    let mut payload = Vec::with_capacity(4 + 20 + 20 + calldata.len() + 32 * 4 + 20 + 20);
+    payload.extend_from_slice(b"rlx:");
+    payload.extend_from_slice(from.as_slice());
+    payload.extend_from_slice(proxy_factory.as_slice());
+    payload.extend_from_slice(calldata);
+    payload.extend_from_slice(U256::ZERO.to_be_bytes::<32>().as_slice());
+    payload.extend_from_slice(U256::ZERO.to_be_bytes::<32>().as_slice());
+    payload.extend_from_slice(U256::from(gas_limit).to_be_bytes::<32>().as_slice());
+    payload.extend_from_slice(nonce.to_be_bytes::<32>().as_slice());
+    payload.extend_from_slice(relay_hub.as_slice());
+    payload.extend_from_slice(relay_address.as_slice());
+    Ok(keccak256(payload))
+}
+
+async fn send_relayer_request(
+    root: &Path,
+    method: reqwest::Method,
+    endpoint: &str,
+    query: Option<Vec<(String, String)>>,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let client = reqwest::Client::new();
+    let mut request = client.request(method.clone(), format!("{RELAYER_API_BASE_URL}{endpoint}"));
+    request = request.headers(relayer_api_headers(root)?);
+    if let Some(query) = query.as_ref() {
+        request = request.query(query);
+    }
+    if let Some(body) = body.as_ref() {
+        request = request.json(body);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("relayer {} {} request failed: {error}", method, endpoint))?;
+    let status = response.status();
+    let text = response.text().await.map_err(|error| {
+        format!(
+            "failed to read relayer {} {} response body: {error}",
+            method, endpoint
+        )
+    })?;
+    if !status.is_success() {
+        return Err(format!(
+            "relayer {} {} failed with status {}: {}",
+            method, endpoint, status, text
+        ));
+    }
+    serde_json::from_str(&text).map_err(|error| {
+        format!(
+            "failed to parse relayer {} {} response JSON: {error}; body={text}",
+            method, endpoint
+        )
+    })
+}
+
+fn relayer_api_headers(root: &Path) -> Result<HeaderMap, String> {
+    let env_map = merged_env(root)?;
+    let api_key = env_map
+        .get("RELAYER_API_KEY")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "missing RELAYER_API_KEY for relayer_api transport".to_string())?;
+    let api_key_address = env_map
+        .get("RELAYER_API_KEY_ADDRESS")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "missing RELAYER_API_KEY_ADDRESS for relayer_api transport".to_string())?;
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        "RELAYER_API_KEY",
+        HeaderValue::from_str(api_key)
+            .map_err(|error| format!("invalid RELAYER_API_KEY header: {error}"))?,
+    );
+    headers.insert(
+        "RELAYER_API_KEY_ADDRESS",
+        HeaderValue::from_str(api_key_address)
+            .map_err(|error| format!("invalid RELAYER_API_KEY_ADDRESS header: {error}"))?,
+    );
+    Ok(headers)
+}
+
+async fn fetch_block_number_for_tx_hash(
+    provider: DynProvider,
+    tx_hash: &str,
+) -> Result<String, String> {
+    let tx_hash = B256::from_str(tx_hash)
+        .map_err(|error| format!("invalid relayer transaction hash {tx_hash}: {error}"))?;
+    let receipt = provider
+        .get_transaction_receipt(tx_hash)
+        .await
+        .map_err(|error| format!("failed to fetch relayer receipt for {tx_hash}: {error}"))?
+        .ok_or_else(|| format!("relayer receipt missing for {tx_hash}"))?;
+    Ok(receipt.block_number.unwrap_or_default().to_string())
+}
+
 async fn submit_merge_via_proxy_factory<P>(
     provider: P,
     execution_profile: &ExecutionProfile,
@@ -727,23 +1164,8 @@ where
             .map_err(|error| format!("invalid proxy factory address: {error}"))?,
         provider.clone(),
     );
-    let calldata = IConditionalTokensLite::mergePositionsCall {
-        collateralToken: SdkAddress::from_str(POLYGON_PUSD)
-            .map_err(|error| format!("invalid pUSD address: {error}"))?,
-        parentCollectionId: B256::ZERO,
-        conditionId: candidate.condition_id,
-        partition: vec![U256::from(1_u8), U256::from(2_u8)],
-        amount: U256::from(candidate.merge_micros),
-    }
-    .abi_encode();
     let response = proxy_factory
-        .proxy(vec![ProxyCall {
-            typeCode: 1,
-            to: SdkAddress::from_str(POLYGON_CTF)
-                .map_err(|error| format!("invalid CTF address: {error}"))?,
-            value: U256::ZERO,
-            data: AlloyBytes::from(calldata),
-        }])
+        .proxy(vec![proxy_merge_call(candidate)?])
         .send()
         .await
         .map_err(|error| {
@@ -779,44 +1201,13 @@ where
             .map_err(|error| format!("invalid proxy factory address: {error}"))?,
         provider.clone(),
     );
-    let (target, calldata, method) = if candidate.negative_risk {
+    if candidate.negative_risk {
         ensure_neg_risk_operator_approval_proxy(provider.clone(), execution_profile, rpc_url)
             .await?;
-        (
-            SdkAddress::from_str(POLYGON_NEG_RISK_ADAPTER)
-                .map_err(|error| format!("invalid neg risk adapter address: {error}"))?,
-            INegRiskAdapterLite::redeemPositionsCall {
-                conditionId: candidate.condition_id,
-                amounts: vec![
-                    U256::from(candidate.yes_micros),
-                    U256::from(candidate.no_micros),
-                ],
-            }
-            .abi_encode(),
-            "redeem_neg_risk",
-        )
-    } else {
-        (
-            SdkAddress::from_str(POLYGON_CTF)
-                .map_err(|error| format!("invalid CTF address: {error}"))?,
-            IConditionalTokensLite::redeemPositionsCall {
-                collateralToken: SdkAddress::from_str(POLYGON_PUSD)
-                    .map_err(|error| format!("invalid pUSD address: {error}"))?,
-                parentCollectionId: B256::ZERO,
-                conditionId: candidate.condition_id,
-                indexSets: vec![U256::from(1_u8), U256::from(2_u8)],
-            }
-            .abi_encode(),
-            "redeem_positions",
-        )
-    };
+    }
+    let (call, method) = proxy_redeem_call(candidate)?;
     let response = proxy_factory
-        .proxy(vec![ProxyCall {
-            typeCode: 1,
-            to: target,
-            value: U256::ZERO,
-            data: AlloyBytes::from(calldata),
-        }])
+        .proxy(vec![call])
         .send()
         .await
         .map_err(|error| {
@@ -847,20 +1238,8 @@ async fn ensure_neg_risk_operator_approval_proxy<P>(
 where
     P: alloy::providers::Provider + Clone,
 {
-    let owner = proxy_owner_address(execution_profile)?;
-    let operator = SdkAddress::from_str(POLYGON_NEG_RISK_ADAPTER)
-        .map_err(|error| format!("invalid neg risk adapter address: {error}"))?;
-    let ctf = IERC1155Lite::new(
-        SdkAddress::from_str(POLYGON_CTF)
-            .map_err(|error| format!("invalid CTF address: {error}"))?,
-        provider.clone(),
-    );
-    let approved = ctf
-        .isApprovedForAll(owner, operator)
-        .call()
-        .await
-        .map_err(|error| format!("failed to check CTF operator approval via {rpc_url}: {error}"))?;
-    if approved {
+    if !proxy_needs_neg_risk_operator_approval(provider.clone(), execution_profile, rpc_url).await?
+    {
         return Ok(());
     }
     let proxy_factory = IProxyWalletFactory::new(
@@ -868,19 +1247,8 @@ where
             .map_err(|error| format!("invalid proxy factory address: {error}"))?,
         provider,
     );
-    let calldata = IERC1155Lite::setApprovalForAllCall {
-        operator,
-        approved: true,
-    }
-    .abi_encode();
     let response = proxy_factory
-        .proxy(vec![ProxyCall {
-            typeCode: 1,
-            to: SdkAddress::from_str(POLYGON_CTF)
-                .map_err(|error| format!("invalid CTF address: {error}"))?,
-            value: U256::ZERO,
-            data: AlloyBytes::from(calldata),
-        }])
+        .proxy(vec![proxy_neg_risk_approval_call()?])
         .send()
         .await
         .map_err(|error| {
@@ -900,12 +1268,36 @@ where
     })?;
     println!(
         "[info]: operator approval submitted operator={} wallet_kind={} tx_hash={} block_number={}",
-        operator,
+        POLYGON_NEG_RISK_ADAPTER,
         execution_profile.wallet_kind.label(),
         tx_hash,
         receipt.block_number.unwrap_or_default(),
     );
     Ok(())
+}
+
+async fn proxy_needs_neg_risk_operator_approval<P>(
+    provider: P,
+    execution_profile: &ExecutionProfile,
+    rpc_url: &str,
+) -> Result<bool, String>
+where
+    P: alloy::providers::Provider + Clone,
+{
+    let owner = proxy_owner_address(execution_profile)?;
+    let operator = SdkAddress::from_str(POLYGON_NEG_RISK_ADAPTER)
+        .map_err(|error| format!("invalid neg risk adapter address: {error}"))?;
+    let ctf = IERC1155Lite::new(
+        SdkAddress::from_str(POLYGON_CTF)
+            .map_err(|error| format!("invalid CTF address: {error}"))?,
+        provider,
+    );
+    let approved = ctf
+        .isApprovedForAll(owner, operator)
+        .call()
+        .await
+        .map_err(|error| format!("failed to check CTF operator approval via {rpc_url}: {error}"))?;
+    Ok(!approved)
 }
 
 async fn ensure_neg_risk_operator_approval_direct<P>(
@@ -1024,6 +1416,25 @@ fn rpc_urls_to_try(root: &Path) -> Result<Vec<String>, String> {
     Ok(urls)
 }
 
+async fn connect_polygon_provider(root: &Path) -> Result<DynProvider, String> {
+    let signer = private_key_signer(root)?;
+    let rpc_urls = rpc_urls_to_try(root)?;
+    let mut last_error = None;
+    for rpc_url in rpc_urls {
+        match ProviderBuilder::new()
+            .wallet(signer.clone())
+            .connect(&rpc_url)
+            .await
+        {
+            Ok(provider) => return Ok(provider.erased()),
+            Err(error) => {
+                last_error = Some(format!("failed to connect polygon rpc {rpc_url}: {error}"));
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "failed to connect any polygon rpc".to_string()))
+}
+
 fn split_rpc_list(value: &str) -> impl Iterator<Item = &str> {
     value
         .split(|ch: char| ch == ',' || ch == ';' || ch.is_ascii_whitespace())
@@ -1138,10 +1549,19 @@ fn resolve_execution_profile(
         Some(Some(explicit)) => explicit,
         Some(None) => match wallet_kind {
             WalletKind::Eoa => ExecutionTransport::DirectRpc,
-            WalletKind::Proxy | WalletKind::Safe => {
+            WalletKind::Proxy => {
                 if has_relayer_api_auth {
                     ExecutionTransport::RelayerApi
                 } else if has_builder_api_auth {
+                    ExecutionTransport::BuilderApi
+                } else if has_clob_l2_auth {
+                    ExecutionTransport::ClobL2Hook
+                } else {
+                    ExecutionTransport::DirectRpc
+                }
+            }
+            WalletKind::Safe => {
+                if has_builder_api_auth {
                     ExecutionTransport::BuilderApi
                 } else if has_clob_l2_auth {
                     ExecutionTransport::ClobL2Hook
@@ -1177,9 +1597,21 @@ fn env_has_all(env_map: &BTreeMap<String, String>, keys: &[&str]) -> bool {
     })
 }
 
+fn execution_transport_is_placeholder(execution_profile: &ExecutionProfile) -> bool {
+    matches!(
+        execution_profile.transport,
+        ExecutionTransport::BuilderApi | ExecutionTransport::ClobL2Hook
+    ) || (execution_profile.transport == ExecutionTransport::RelayerApi
+        && execution_profile.wallet_kind != WalletKind::Proxy)
+}
+
 fn execution_transport_placeholder_error(execution_profile: &ExecutionProfile) -> String {
     match execution_profile.transport {
-        ExecutionTransport::RelayerApi => "proxy/safe sweeper selected relayer_api transport but relayer submission is not wired yet. Keep this seam for current proxy accounts and future relayer auth; configure RELAYER_API_KEY + RELAYER_API_KEY_ADDRESS when the relayer hook lands, or force --execution-mode direct_rpc for manual testing.".to_string(),
+        ExecutionTransport::RelayerApi => match execution_profile.wallet_kind {
+            WalletKind::Proxy => "proxy sweeper selected relayer_api but hit an unsupported path. This transport is wired only for proxy merge/redeem submissions; verify RELAYER_API_KEY auth and avoid routing safe-specific flows through the proxy relayer path.".to_string(),
+            WalletKind::Safe => "safe sweeper selected relayer_api transport but only proxy relayer submission is wired today. Safe gasless execution still needs a dedicated implementation.".to_string(),
+            WalletKind::Eoa => "EOA sweeper selected relayer_api transport, but relayer gasless execution is only supported for proxy/safe wallet flows.".to_string(),
+        },
         ExecutionTransport::BuilderApi => "proxy/safe sweeper selected builder_api transport but builder relayer submission is not wired yet. Keep this seam for future builder gasless auth; configure POLY_BUILDER_API_KEY + POLY_BUILDER_SECRET + POLY_BUILDER_PASSPHRASE when the relayer hook lands, or force --execution-mode direct_rpc for manual testing.".to_string(),
         ExecutionTransport::ClobL2Hook => "proxy/safe sweeper detected CLOB L2 auth and selected clob_l2_hook. The hook is reserved so proxy signature_type=1 accounts and future L2-auth-backed flows can share the same execution seam; current official gasless docs still require RELAYER_API_KEY or builder keys for relayer auth, so force --execution-mode direct_rpc for manual testing until the relayer hook lands.".to_string(),
         ExecutionTransport::DirectRpc => match execution_profile.wallet_kind {
@@ -1538,6 +1970,56 @@ FUNDER_ADDRESS=0x0bDC847347571342E1563971E8bA206c8B03e345
         assert_eq!(profile.wallet_kind, WalletKind::Proxy);
         assert_eq!(profile.transport, ExecutionTransport::ClobL2Hook);
         assert!(profile.has_clob_l2_auth);
+    }
+
+    #[test]
+    fn resolve_execution_profile_prefers_relayer_api_for_proxy_accounts() {
+        let root = unique_temp_dir("proxy-relayer");
+        fs::create_dir_all(&root).expect("dir created");
+        fs::write(
+            root.join(".env"),
+            "PRIVATE_KEY=0x59c6995e998f97a5a0044966f094538c5f34f6c4a0499b6f6f489f5fabe59d3f
+CLOB_API_KEY=00000000-0000-0000-0000-000000000001
+CLOB_SECRET=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+CLOB_PASS_PHRASE=test-pass
+RELAYER_API_KEY=relayer-key
+RELAYER_API_KEY_ADDRESS=0x1d1499e622D69689cdf9004d05Ec547d650Ff211
+SIGNATURE_TYPE=1
+FUNDER_ADDRESS=0x0bDC847347571342E1563971E8bA206c8B03e345
+",
+        )
+        .expect("env written");
+        let material = super::auth_material_with_signer_fallback(&root).expect("material");
+        let profile =
+            resolve_execution_profile(&root, &material, &Options::default()).expect("profile");
+        assert_eq!(profile.wallet_kind, WalletKind::Proxy);
+        assert_eq!(profile.transport, ExecutionTransport::RelayerApi);
+        assert!(profile.has_relayer_api_auth);
+    }
+
+    #[test]
+    fn resolve_execution_profile_avoids_relayer_api_for_safe_accounts() {
+        let root = unique_temp_dir("safe-relayer");
+        fs::create_dir_all(&root).expect("dir created");
+        fs::write(
+            root.join(".env"),
+            "PRIVATE_KEY=0x59c6995e998f97a5a0044966f094538c5f34f6c4a0499b6f6f489f5fabe59d3f
+CLOB_API_KEY=00000000-0000-0000-0000-000000000001
+CLOB_SECRET=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+CLOB_PASS_PHRASE=test-pass
+RELAYER_API_KEY=relayer-key
+RELAYER_API_KEY_ADDRESS=0x1d1499e622D69689cdf9004d05Ec547d650Ff211
+SIGNATURE_TYPE=2
+FUNDER_ADDRESS=0x0bDC847347571342E1563971E8bA206c8B03e345
+",
+        )
+        .expect("env written");
+        let material = super::auth_material_with_signer_fallback(&root).expect("material");
+        let profile =
+            resolve_execution_profile(&root, &material, &Options::default()).expect("profile");
+        assert_eq!(profile.wallet_kind, WalletKind::Safe);
+        assert_eq!(profile.transport, ExecutionTransport::ClobL2Hook);
+        assert!(profile.has_relayer_api_auth);
     }
 
     #[test]
